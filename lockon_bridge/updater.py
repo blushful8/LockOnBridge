@@ -132,53 +132,109 @@ def apply_update_and_restart(downloaded: Path) -> None:
     install_dir = app_install_dir()
     launch = installed_exe_path()
     data_root().mkdir(parents=True, exist_ok=True)
+    log_dir = data_root() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     pid = os.getpid()
     src = str(downloaded).replace("'", "''")
     install = str(install_dir).replace("'", "''")
     launch_q = str(launch).replace("'", "''")
+    update_log = str(log_dir / "update.log").replace("'", "''")
 
     if downloaded.suffix.lower() == ".zip":
         script = f"""
 $ErrorActionPreference = 'Stop'
-$pidToWait = {pid}
-$zip = '{src}'
-$installDir = '{install}'
-$launch = '{launch_q}'
-for ($i = 0; $i -lt 60; $i++) {{
-  if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
-  Start-Sleep -Milliseconds 500
+$log = '{update_log}'
+function Write-UpdLog([string]$msg) {{
+  $line = ('{{0:yyyy-MM-dd HH:mm:ss}} {{1}}' -f (Get-Date), $msg)
+  Add-Content -LiteralPath $log -Value $line -Encoding UTF8
 }}
-Start-Sleep -Milliseconds 800
-$staging = Join-Path $env:TEMP ("lockon_bridge_upd_" + $pidToWait)
-if (Test-Path $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force }}
-New-Item -ItemType Directory -Force -Path $staging | Out-Null
-Expand-Archive -LiteralPath $zip -DestinationPath $staging -Force
-$exe = Get-ChildItem -Path $staging -Filter 'LockOnBridge.exe' -Recurse | Select-Object -First 1
-if (-not $exe) {{ throw 'LockOnBridge.exe missing in update zip' }}
-$bundle = $exe.Directory.FullName
-if (Test-Path $installDir) {{ Remove-Item -LiteralPath $installDir -Recurse -Force }}
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installDir) | Out-Null
-Copy-Item -LiteralPath $bundle -Destination $installDir -Recurse -Force
-Start-Process -FilePath $launch
-Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+try {{
+  Write-UpdLog 'update helper start'
+  $pidToWait = {pid}
+  $zip = '{src}'
+  $installDir = '{install}'
+  $launch = '{launch_q}'
+  for ($i = 0; $i -lt 90; $i++) {{
+    if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
+    Start-Sleep -Milliseconds 500
+  }}
+  Start-Sleep -Milliseconds 1000
+  Write-UpdLog ("extract " + $zip)
+  $staging = Join-Path $env:TEMP ("lockon_bridge_upd_" + $pidToWait)
+  if (Test-Path $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force }}
+  New-Item -ItemType Directory -Force -Path $staging | Out-Null
+  Expand-Archive -LiteralPath $zip -DestinationPath $staging -Force
+  $exe = Get-ChildItem -Path $staging -Filter 'LockOnBridge.exe' -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if (-not $exe) {{ throw 'LockOnBridge.exe missing in update zip' }}
+  $bundle = $exe.Directory.FullName
+  Write-UpdLog ("bundle " + $bundle)
+  $parent = Split-Path -Parent $installDir
+  New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  $backup = $installDir + '.bak'
+  if (Test-Path $backup) {{ Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }}
+  if (Test-Path $installDir) {{
+    Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $backup) -Force
+  }}
+  Copy-Item -LiteralPath $bundle -Destination $installDir -Recurse -Force
+  if (-not (Test-Path $launch)) {{ throw ("launch missing after copy: " + $launch) }}
+  Write-UpdLog ("launch " + $launch)
+  Start-Process -FilePath $launch -WorkingDirectory $installDir
+  Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+  Write-UpdLog 'update helper done'
+}} catch {{
+  Write-UpdLog ("FAIL: " + $_.Exception.Message)
+  try {{
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show(
+      ("LockOn Bridge update failed:`n" + $_.Exception.Message + "`n`nSee:`n" + $log),
+      'LockOn Bridge',
+      'OK',
+      'Error'
+    ) | Out-Null
+  }} catch {{}}
+  exit 1
+}}
 """
     else:
         script = f"""
 $ErrorActionPreference = 'Stop'
-$pidToWait = {pid}
-$srcExe = '{src}'
-$launch = '{launch_q}'
-$installDir = '{install}'
-for ($i = 0; $i -lt 60; $i++) {{
-  if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
-  Start-Sleep -Milliseconds 500
+$log = '{update_log}'
+function Write-UpdLog([string]$msg) {{
+  $line = ('{{0:yyyy-MM-dd HH:mm:ss}} {{1}}' -f (Get-Date), $msg)
+  Add-Content -LiteralPath $log -Value $line -Encoding UTF8
 }}
-Start-Sleep -Milliseconds 800
-New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-Copy-Item -LiteralPath $srcExe -Destination (Join-Path $installDir 'LockOnBridge.exe') -Force
-Start-Process -FilePath $launch
-Remove-Item -LiteralPath $srcExe -Force -ErrorAction SilentlyContinue
+try {{
+  Write-UpdLog 'update helper start (exe)'
+  $pidToWait = {pid}
+  $srcExe = '{src}'
+  $launch = '{launch_q}'
+  $installDir = '{install}'
+  for ($i = 0; $i -lt 90; $i++) {{
+    if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
+    Start-Sleep -Milliseconds 500
+  }}
+  Start-Sleep -Milliseconds 1000
+  New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+  Copy-Item -LiteralPath $srcExe -Destination (Join-Path $installDir 'LockOnBridge.exe') -Force
+  Start-Process -FilePath $launch -WorkingDirectory $installDir
+  Remove-Item -LiteralPath $srcExe -Force -ErrorAction SilentlyContinue
+  Write-UpdLog 'update helper done (exe)'
+}} catch {{
+  Write-UpdLog ("FAIL: " + $_.Exception.Message)
+  try {{
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show(
+      ("LockOn Bridge update failed:`n" + $_.Exception.Message + "`n`nSee:`n" + $log),
+      'LockOn Bridge',
+      'OK',
+      'Error'
+    ) | Out-Null
+  }} catch {{}}
+  exit 1
+}}
 """
 
     tmp = Path(tempfile.gettempdir()) / f"lockon_bridge_update_{pid}.ps1"
@@ -195,5 +251,7 @@ Remove-Item -LiteralPath $srcExe -Force -ErrorAction SilentlyContinue
             str(tmp),
         ],
         close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    log.info("update helper scheduled for pid %s → %s", pid, install_dir)
+    log.info("update helper scheduled for pid %s → %s (log %s)", pid, install_dir, log_dir / "update.log")
+

@@ -798,15 +798,18 @@ class BridgeApp:
             self.agent.stop(join=True)
         self._exit_clean()
 
+    def _set_update_controls_busy(self, busy: bool) -> None:
+        """Update used to disable a dedicated button; it now lives in More ▾."""
+        self._updating = busy
+
     def _check_updates(self) -> None:
         if self._updating:
             return
         if not is_frozen():
             messagebox.showinfo(PRODUCT_NAME, self.strings.update_dev_only)
             return
-        self._updating = True
+        self._set_update_controls_busy(True)
         self.status_var.set(self.strings.update_checking)
-        self.btn_update.configure(state="disabled")
 
         def work() -> None:
             try:
@@ -820,13 +823,13 @@ class BridgeApp:
                 self.root.after(0, lambda: self._prompt_and_install(release))
             except Exception as exc:  # noqa: BLE001
                 err = str(exc)
+                log.exception("update check failed")
                 self.root.after(0, lambda: self._update_failed(err))
 
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
     def _update_result_up_to_date(self, version: str) -> None:
-        self._updating = False
-        self.btn_update.configure(state="normal")
+        self._set_update_controls_busy(False)
         messagebox.showinfo(
             PRODUCT_NAME,
             self.strings.update_up_to_date.format(version=version),
@@ -837,8 +840,11 @@ class BridgeApp:
             self.status_var.set(self.strings.status_disabled)
 
     def _update_failed(self, error: str) -> None:
-        self._updating = False
-        self.btn_update.configure(state="normal")
+        self._set_update_controls_busy(False)
+        if self.settings.enabled:
+            self.status_var.set(self.strings.status_enabled_waiting)
+        else:
+            self.status_var.set(self.strings.status_disabled)
         messagebox.showerror(
             PRODUCT_NAME,
             self.strings.update_failed.format(error=error),
@@ -851,8 +857,11 @@ class BridgeApp:
             t.update_available_body.format(latest=release.version, current=__version__),
         )
         if not ok:
-            self._updating = False
-            self.btn_update.configure(state="normal")
+            self._set_update_controls_busy(False)
+            if self.settings.enabled:
+                self.status_var.set(self.strings.status_enabled_waiting)
+            else:
+                self.status_var.set(self.strings.status_disabled)
             return
 
         self.status_var.set(t.update_downloading)
@@ -879,6 +888,7 @@ class BridgeApp:
                 self.root.after(0, finish)
             except Exception as exc:  # noqa: BLE001
                 err = str(exc)
+                log.exception("update download/install failed")
                 self.root.after(0, lambda: self._update_failed(err))
 
         threading.Thread(target=download, name="update-download", daemon=True).start()
