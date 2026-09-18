@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any
 
+from .i18n import detect_system_language
 from .paths import DEFAULT_PORT, settings_path
 
 
@@ -17,6 +17,7 @@ class BridgeSettings:
     bind: str = "0.0.0.0"
     game_host: str = "127.0.0.1"
     game_port: int = 8111
+    language: str = "en"
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "BridgeSettings":
@@ -26,6 +27,9 @@ class BridgeSettings:
         idle = float(raw.get("idle_poll_sec", 30.0))
         if idle < 5.0:
             idle = 5.0
+        language = str(raw.get("language") or "").strip().lower()
+        if language not in ("en", "uk"):
+            language = detect_system_language()
         return cls(
             enabled=bool(raw.get("enabled", False)),
             port=port,
@@ -33,6 +37,7 @@ class BridgeSettings:
             bind=str(raw.get("bind", "0.0.0.0")),
             game_host=str(raw.get("game_host", "127.0.0.1")),
             game_port=int(raw.get("game_port", 8111)),
+            language=language,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,14 +51,14 @@ def load_settings() -> BridgeSettings:
     path = settings_path()
     with _lock:
         if not path.is_file():
-            return BridgeSettings()
+            return BridgeSettings(language=detect_system_language())
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
-                return BridgeSettings()
+                return BridgeSettings(language=detect_system_language())
             return BridgeSettings.from_dict(raw)
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            return BridgeSettings()
+            return BridgeSettings(language=detect_system_language())
 
 
 def save_settings(settings: BridgeSettings) -> None:

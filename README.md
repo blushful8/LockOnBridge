@@ -50,6 +50,8 @@ After you run it once, Windows usually stops asking for that same file. Always d
 |---|---|
 | **Enabled ON** | Autostart at Windows logon; wakes with War Thunder; stops when the game exits; tray icon while running |
 | **Enabled OFF** | Autostart removed; agent stopped; **no background process** — zero PC load until you turn it on again |
+| **Language** | English or Ukrainian |
+| **Check for updates** | Asks GitHub Releases; after confirmation downloads and replaces the program, then restarts |
 | **Hide to tray** | Window closes to the notification area (only when enabled) |
 | **Uninstall** | Removes autostart, firewall rule, and local files |
 
