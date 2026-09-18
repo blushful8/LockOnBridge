@@ -8,10 +8,11 @@ from http.server import ThreadingHTTPServer
 from typing import Optional
 
 from .capture import ocr_screen
-from .ocr_parse import parse_rewards_from_ocr_text
+from .ocr_parse import parse_rewards_from_ocr_text, summarize_ocr_text
 from .phase import read_phase
 from .report_store import ReportStore
 from .server import serve
+from .paths import log_dir
 
 log = logging.getLogger("lockon_bridge")
 
@@ -22,8 +23,10 @@ class RuntimeConfig:
     port: int = 8112
     game_host: str = "127.0.0.1"
     game_port: int = 8111
-    frames: int = 5
-    frame_gap: float = 1.2
+    # Results UI often animates in after hangar flip — give it a moment, then sample longer.
+    frames: int = 10
+    frame_gap: float = 1.4
+    capture_delay_sec: float = 1.5
     # Hangar/battle phase poll — only while War Thunder is running.
     poll_sec: float = 1.5
 
@@ -114,15 +117,29 @@ class BridgeRuntime:
 
     def _capture_burst(self) -> None:
         cfg = self.config
-        log.info("battle ended — capturing %s frame(s)", cfg.frames)
+        log.info(
+            "battle ended — waiting %.1fs then capturing %s frame(s)",
+            cfg.capture_delay_sec,
+            cfg.frames,
+        )
+        if cfg.capture_delay_sec > 0:
+            self._stop.wait(cfg.capture_delay_sec)
+        last_preview = ""
         for index in range(cfg.frames):
             if self._stop.is_set():
                 return
             try:
                 text = ocr_screen()
+                last_preview = summarize_ocr_text(text)
                 report = parse_rewards_from_ocr_text(text)
                 if report is None:
-                    log.info("frame %s/%s: no RP/SL labels yet", index + 1, cfg.frames)
+                    log.info(
+                        "frame %s/%s: no RP/SL yet | ocr=%s",
+                        index + 1,
+                        cfg.frames,
+                        last_preview,
+                    )
+                    self._write_ocr_dump(text)
                 elif self.store.publish(report):
                     log.info(
                         "frame %s/%s: RP=%s SL=%s conf=%.2f",
@@ -138,4 +155,15 @@ class BridgeRuntime:
             except Exception as exc:  # noqa: BLE001
                 log.warning("frame %s/%s failed: %s", index + 1, cfg.frames, exc)
             self._stop.wait(cfg.frame_gap)
-        log.info("burst finished without a confident report")
+        log.info(
+            "burst finished without a confident report | last_ocr=%s",
+            last_preview or "(none)",
+        )
+
+    def _write_ocr_dump(self, text: str) -> None:
+        try:
+            path = log_dir() / "last_ocr.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text or "", encoding="utf-8")
+        except OSError:
+            pass

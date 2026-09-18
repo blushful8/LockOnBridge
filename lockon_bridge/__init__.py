@@ -1,3 +1,3 @@
 """LockOn Bridge — local OCR companion for War Thunder battle totals."""
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"

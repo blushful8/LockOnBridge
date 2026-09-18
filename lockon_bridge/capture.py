@@ -29,12 +29,19 @@ async def _recognize_png(data: bytes) -> str:
     return result.text or ""
 
 
-def grab_primary_monitor_png(max_width: int = 1600) -> bytes:
+def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
     with mss.MSS() as sct:
         monitor = sct.monitors[1]
         shot = sct.grab(monitor)
         image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    if image.width > max_width:
+    # Mild upscale helps OCR on fine UI text when the capture is already small.
+    if image.width < 1280:
+        ratio = 1280 / float(image.width)
+        image = image.resize(
+            (1280, max(1, int(image.height * ratio))),
+            Image.Resampling.LANCZOS,
+        )
+    elif image.width > max_width:
         ratio = max_width / float(image.width)
         image = image.resize(
             (max_width, max(1, int(image.height * ratio))),
