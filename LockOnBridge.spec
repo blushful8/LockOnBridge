@@ -30,7 +30,7 @@ a = Analysis(
     ["run_bridge.py"],
     pathex=[],
     binaries=binaries,
-    datas=datas,
+    datas=datas + [("assets/lockon_bridge.png", "assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -59,4 +59,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="assets/lockon_bridge.ico",
 )

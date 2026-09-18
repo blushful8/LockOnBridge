@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Optional
 
@@ -35,6 +36,37 @@ OK = "#3d9a6a"
 OFF = "#6b7280"
 
 
+def _asset_path(name: str) -> Path | None:
+    """Resolve bundled assets next to the package or inside the frozen exe."""
+    candidates = [
+        Path(__file__).resolve().parent.parent / "assets" / name,
+    ]
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.insert(0, Path(meipass) / "assets" / name)
+        candidates.insert(0, Path(sys.executable).resolve().parent / "assets" / name)
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_brand_image(size: int = 64):
+    """Pillow image for tray / window icon (LockOn reticle)."""
+    from PIL import Image
+
+    path = _asset_path("lockon_bridge.png")
+    if path is not None:
+        image = Image.open(path).convert("RGBA")
+        if image.size != (size, size):
+            image = image.resize((size, size), Image.Resampling.LANCZOS)
+        return image
+    # Fallback if assets missing from a source checkout.
+    image = Image.new("RGBA", (size, size), (18, 20, 24, 255))
+    return image
+
+
 class BridgeApp:
     def __init__(self, *, start_hidden: bool = False) -> None:
         self.agent = BridgeAgent()
@@ -49,6 +81,7 @@ class BridgeApp:
         self.root.minsize(420, 460)
         self.root.geometry("440x500")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
+        self._apply_window_icon()
 
         self._build_ui()
         self.agent.set_status_callback(self._on_agent_status)
@@ -69,6 +102,18 @@ class BridgeApp:
     def run(self) -> int:
         self.root.mainloop()
         return 0
+
+    def _apply_window_icon(self) -> None:
+        ico = _asset_path("lockon_bridge.ico")
+        png = _asset_path("lockon_bridge.png")
+        try:
+            if ico is not None and sys.platform == "win32":
+                self.root.iconbitmap(default=str(ico))
+            elif png is not None:
+                self._window_icon = tk.PhotoImage(file=str(png))
+                self.root.iconphoto(True, self._window_icon)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("window icon skipped: %s", exc)
 
     def _build_ui(self) -> None:
         pad = {"padx": 20, "pady": 8}
@@ -310,16 +355,11 @@ class BridgeApp:
             return
         try:
             import pystray
-            from PIL import Image, ImageDraw
         except ImportError:
-            log.warning("pystray/Pillow not available — tray disabled")
+            log.warning("pystray not available — tray disabled")
             return
 
-        image = Image.new("RGB", (64, 64), ACCENT)
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((12, 12, 52, 52), outline=(255, 255, 255), width=3)
-        draw.line((20, 32, 44, 32), fill=(255, 255, 255), width=3)
-
+        image = _load_brand_image(64)
         menu = pystray.Menu(
             pystray.MenuItem("Open", self._show_window, default=True),
             pystray.MenuItem("Disable Bridge", self._tray_disable),

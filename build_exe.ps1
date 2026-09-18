@@ -21,6 +21,7 @@ if (-not $py) {
 Write-Host "Using $py"
 & $py -m pip install -r requirements.txt -q
 & $py -m pip install pyinstaller -q
+& $py (Join-Path $Root "assets\generate_icon.py")
 
 if (Test-Path "$Root\build") { Remove-Item -Recurse -Force "$Root\build" }
 if (Test-Path "$Root\dist\LockOnBridge.exe") { Remove-Item -Force "$Root\dist\LockOnBridge.exe" }

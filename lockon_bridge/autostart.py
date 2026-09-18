@@ -125,7 +125,7 @@ $regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{PRO
 New-Item -Path $regPath -Force | Out-Null
 Set-ItemProperty -Path $regPath -Name 'DisplayName' -Value '{PRODUCT_NAME}'
 Set-ItemProperty -Path $regPath -Name 'Publisher' -Value 'LockOn'
-Set-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '0.2.0'
+Set-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '0.2.1'
 Set-ItemProperty -Path $regPath -Name 'InstallLocation' -Value '{str(data_root()).replace("'", "''")}'
 Set-ItemProperty -Path $regPath -Name 'NoModify' -Value 1 -Type DWord
 Set-ItemProperty -Path $regPath -Name 'NoRepair' -Value 1 -Type DWord
