@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from typing import Optional
 
-from .capture import ocr_screen
-from .ocr_parse import parse_rewards_from_ocr_text, summarize_ocr_text
+from .capture import ocr_screen_variants
+from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .phase import read_phase
 from .report_store import ReportStore
 from .server import serve
@@ -129,28 +129,56 @@ class BridgeRuntime:
             if self._stop.is_set():
                 return
             try:
-                text = ocr_screen()
-                last_preview = summarize_ocr_text(text)
-                report = parse_rewards_from_ocr_text(text)
-                if report is None:
+                variants = ocr_screen_variants()
+                if not variants:
+                    last_preview = "(empty OCR)"
                     log.info(
-                        "frame %s/%s: no RP/SL yet | ocr=%s",
+                        "frame %s/%s: no OCR text | engines empty",
                         index + 1,
                         cfg.frames,
+                    )
+                    self._write_ocr_dump("")
+                    self._stop.wait(cfg.frame_gap)
+                    continue
+
+                candidates = [
+                    (text, parse_rewards_from_ocr_text(text)) for _tag, text in variants
+                ]
+                best = choose_best_report(candidates)
+                dump_parts: list[str] = []
+                for tag, text in variants:
+                    parsed = parse_rewards_from_ocr_text(text)
+                    if parsed is None:
+                        dump_parts.append(f"[{tag}]\n{text}\n=> (no parse)")
+                    else:
+                        dump_parts.append(
+                            f"[{tag}]\n{text}\n"
+                            f"=> RP={parsed.research_points} SL={parsed.silver_lions}"
+                        )
+                self._write_ocr_dump("\n\n---OCR---\n\n".join(dump_parts))
+
+                if best is None:
+                    last_preview = summarize_ocr_text(variants[0][1])
+                    log.info(
+                        "frame %s/%s: no RP/SL yet | engines=%s | ocr=%s",
+                        index + 1,
+                        cfg.frames,
+                        ",".join(tag for tag, _ in variants),
                         last_preview,
                     )
-                    self._write_ocr_dump(text)
-                elif self.store.publish(report):
-                    log.info(
-                        "frame %s/%s: RP=%s SL=%s conf=%.2f",
-                        index + 1,
-                        cfg.frames,
-                        report.research_points,
-                        report.silver_lions,
-                        report.confidence,
-                    )
-                    return
                 else:
+                    text, report = best
+                    last_preview = summarize_ocr_text(text)
+                    if self.store.publish(report):
+                        log.info(
+                            "frame %s/%s: RP=%s SL=%s conf=%.2f",
+                            index + 1,
+                            cfg.frames,
+                            report.research_points,
+                            report.silver_lions,
+                            report.confidence,
+                        )
+                        return
                     log.info("frame %s/%s: duplicate, skip", index + 1, cfg.frames)
             except Exception as exc:  # noqa: BLE001
                 log.warning("frame %s/%s failed: %s", index + 1, cfg.frames, exc)

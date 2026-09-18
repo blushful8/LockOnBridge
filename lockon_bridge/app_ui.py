@@ -21,6 +21,7 @@ from .autostart import (
     unregister_autostart,
 )
 from .i18n import EN, UK, Strings, strings_for
+from .dpi import enable_windows_dpi_awareness, sync_tk_scaling
 from .paths import PRODUCT_NAME, data_root, is_frozen, log_dir, log_file
 from .settings import load_settings, update_settings
 from .updater import (
@@ -80,13 +81,18 @@ class BridgeApp:
         self._last_agent_status = AgentStatus.DISABLED
         self._updating = False
 
+        enable_windows_dpi_awareness()
         self.root = tk.Tk()
+        sync_tk_scaling(self.root)
         self.root.title(f"{PRODUCT_NAME} {__version__}")
         self.root.configure(bg=BG)
-        self.root.minsize(440, 560)
-        self.root.geometry("460x600")
+        self.root.minsize(420, 460)
+        self.root.geometry("460x520")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self._apply_window_icon()
+        # Re-sync after the HWND exists (per-monitor DPI).
+        self.root.after(50, lambda: sync_tk_scaling(self.root))
+        self._ocr_busy = False
 
         # First open of the .exe installs a stable LocalAppData copy + Desktop shortcut.
         if is_frozen():
@@ -100,6 +106,10 @@ class BridgeApp:
         self.language_var = tk.StringVar(
             value=self.strings.lang_uk if self.settings.language == "uk" else self.strings.lang_en
         )
+        self._wt_code_by_label: dict[str, str] = {}
+        self.wt_language_var = tk.StringVar(value="")
+        self.ocr_backend_var = tk.StringVar(value="")
+        self._ocr_backend_by_label: dict[str, str] = {}
 
         self._build_ui()
         self.agent.set_status_callback(self._on_agent_status)
@@ -137,7 +147,7 @@ class BridgeApp:
             child.destroy()
 
         t = self.strings
-        pad = {"padx": 20, "pady": 8}
+        pad = {"padx": 20, "pady": 6}
 
         header = tk.Frame(self.root, bg=BG)
         header.pack(fill="x", **pad)
@@ -158,10 +168,10 @@ class BridgeApp:
         self.subtitle_label.pack(anchor="w")
 
         card = tk.Frame(self.root, bg=PANEL, highlightthickness=0)
-        card.pack(fill="x", padx=20, pady=12)
+        card.pack(fill="x", padx=20, pady=10)
 
         toggle_row = tk.Frame(card, bg=PANEL)
-        toggle_row.pack(fill="x", padx=16, pady=(16, 8))
+        toggle_row.pack(fill="x", padx=16, pady=(14, 6))
         self.enabled_label = tk.Label(
             toggle_row,
             text=t.bridge_enabled,
@@ -182,10 +192,10 @@ class BridgeApp:
             font=("Segoe UI", 10),
             fg=MUTED,
             bg=PANEL,
-            wraplength=400,
+            wraplength=380,
             justify="left",
         )
-        self.status_label.pack(anchor="w", padx=16, pady=(0, 8))
+        self.status_label.pack(anchor="w", padx=16, pady=(0, 6))
 
         self.badge = tk.Label(
             card,
@@ -194,9 +204,9 @@ class BridgeApp:
             fg="#ffffff",
             bg=OFF,
             padx=10,
-            pady=4,
+            pady=3,
         )
-        self.badge.pack(anchor="w", padx=16, pady=(0, 16))
+        self.badge.pack(anchor="w", padx=16, pady=(0, 12))
 
         self.tip_label = tk.Label(
             self.root,
@@ -205,12 +215,12 @@ class BridgeApp:
             fg=MUTED,
             bg=BG,
             justify="left",
-            wraplength=410,
+            wraplength=390,
         )
-        self.tip_label.pack(anchor="w", padx=20, pady=(0, 8))
+        self.tip_label.pack(anchor="w", padx=20, pady=(0, 4))
 
         port_row = tk.Frame(self.root, bg=BG)
-        port_row.pack(fill="x", padx=20, pady=4)
+        port_row.pack(fill="x", padx=20, pady=2)
         self.port_label = tk.Label(
             port_row,
             text=t.http_port,
@@ -234,7 +244,7 @@ class BridgeApp:
         port_entry.bind("<FocusOut>", lambda _e: self._save_port())
 
         lang_row = tk.Frame(self.root, bg=BG)
-        lang_row.pack(fill="x", padx=20, pady=8)
+        lang_row.pack(fill="x", padx=20, pady=2)
         self.language_label = tk.Label(
             lang_row,
             text=t.language,
@@ -248,23 +258,100 @@ class BridgeApp:
             textvariable=self.language_var,
             values=(t.lang_en, t.lang_uk),
             state="readonly",
-            width=14,
+            width=18,
         )
         self.language_combo.pack(side="right")
         self.language_combo.bind("<<ComboboxSelected>>", self._on_language_chosen)
 
+        from .wt_languages import WT_LANGUAGES
+
+        self._wt_code_by_label = {}
+        wt_labels: list[str] = []
+        for item in WT_LANGUAGES:
+            label = item.label_uk if self.settings.language == "uk" else item.label_en
+            self._wt_code_by_label[label] = item.code
+            wt_labels.append(label)
+        current_wt = next(
+            (lbl for lbl, code in self._wt_code_by_label.items() if code == self.settings.wt_ui_language),
+            wt_labels[0],
+        )
+        self.wt_language_var.set(current_wt)
+        wt_row = tk.Frame(self.root, bg=BG)
+        wt_row.pack(fill="x", padx=20, pady=2)
+        tk.Label(wt_row, text=t.wt_language, font=("Segoe UI", 10), fg=FG, bg=BG).pack(side="left")
+        self.wt_language_combo = ttk.Combobox(
+            wt_row,
+            textvariable=self.wt_language_var,
+            values=tuple(wt_labels),
+            state="readonly",
+            width=18,
+        )
+        self.wt_language_combo.pack(side="right")
+        self.wt_language_combo.bind("<<ComboboxSelected>>", self._on_wt_language_chosen)
+
+        # Primary actions stay visible; the rest go into a dropdown.
         btns = tk.Frame(self.root, bg=BG)
-        btns.pack(fill="x", padx=20, pady=12)
-        self.btn_logs = self._btn(btns, t.open_logs, self._open_logs)
-        self.btn_logs.pack(fill="x", pady=4)
-        self.btn_tray = self._btn(btns, t.hide_to_tray, self._hide_to_tray)
-        self.btn_tray.pack(fill="x", pady=4)
-        self.btn_update = self._btn(btns, t.check_updates, self._check_updates)
-        self.btn_update.pack(fill="x", pady=4)
-        self.btn_uninstall = self._btn(btns, t.uninstall, self._uninstall, danger=True)
-        self.btn_uninstall.pack(fill="x", pady=4)
+        btns.pack(fill="x", padx=20, pady=(8, 4))
+        self.btn_test_ocr = self._btn(btns, t.test_ocr, self._test_ocr)
+        self.btn_test_ocr.pack(fill="x", pady=3)
+
+        more_row = tk.Frame(btns, bg=BG)
+        more_row.pack(fill="x", pady=3)
+        self.btn_tray = self._btn(more_row, t.hide_to_tray, self._hide_to_tray)
+        self.btn_tray.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.btn_more = self._menubutton(more_row, t.menu_more)
+        self.btn_more.pack(side="right", fill="x", expand=True, padx=(4, 0))
+
+        more_menu = tk.Menu(
+            self.btn_more,
+            tearoff=0,
+            bg=PANEL,
+            fg=FG,
+            activebackground=ACCENT,
+            activeforeground="#ffffff",
+            bd=0,
+            font=("Segoe UI", 10),
+        )
+        more_menu.add_command(label=t.replay_log, command=self._replay_last_ocr)
+        more_menu.add_command(label=t.setup_tesseract, command=self._setup_tesseract)
+        more_menu.add_command(label=t.ocr_packs, command=self._ocr_packs_clicked)
+        ocr_sub = tk.Menu(
+            more_menu,
+            tearoff=0,
+            bg=PANEL,
+            fg=FG,
+            activebackground=ACCENT,
+            activeforeground="#ffffff",
+            bd=0,
+            font=("Segoe UI", 10),
+        )
+        self._ocr_backend_by_label = {
+            t.ocr_backend_auto: "auto",
+            t.ocr_backend_windows: "windows",
+            t.ocr_backend_tesseract: "tesseract",
+        }
+        for label, code in self._ocr_backend_by_label.items():
+            ocr_sub.add_radiobutton(
+                label=label,
+                variable=self.ocr_backend_var,
+                value=label,
+                command=self._on_ocr_backend_chosen,
+            )
+        backend_label = next(
+            (lbl for lbl, code in self._ocr_backend_by_label.items() if code == self.settings.ocr_backend),
+            t.ocr_backend_auto,
+        )
+        self.ocr_backend_var.set(backend_label)
+        more_menu.add_cascade(label=t.ocr_backend, menu=ocr_sub)
+        more_menu.add_command(label=t.open_logs, command=self._open_logs)
+        more_menu.add_command(label=t.check_updates, command=self._check_updates)
+        more_menu.add_separator()
+        more_menu.add_command(label=t.uninstall, command=self._uninstall)
+        self.btn_more.configure(menu=more_menu)
+        self._more_menu = more_menu
+
         self.btn_quit = self._btn(btns, t.quit, self._quit_keep_enabled)
-        self.btn_quit.pack(fill="x", pady=4)
+        self.btn_quit.pack(fill="x", pady=(8, 3))
 
         try:
             ttk.Style().theme_use("clam")
@@ -289,6 +376,23 @@ class BridgeApp:
             cursor="hand2",
         )
 
+    def _menubutton(self, parent: tk.Widget, text: str) -> tk.Menubutton:
+        return tk.Menubutton(
+            parent,
+            text=text,
+            font=("Segoe UI", 10),
+            fg=FG,
+            bg=PANEL,
+            activebackground="#2f343c",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=8,
+            cursor="hand2",
+            direction="below",
+            indicatoron=False,
+        )
+
     def _on_language_chosen(self, _event=None) -> None:
         selected = self.language_var.get()
         language = "uk" if selected in (EN.lang_uk, UK.lang_uk) else "en"
@@ -308,6 +412,93 @@ class BridgeApp:
             self.status_var.set(self.strings.status_disabled)
         self._refresh_badge_for_status(self._last_agent_status)
 
+    def _on_wt_language_chosen(self, _event=None) -> None:
+        label = self.wt_language_var.get()
+        code = self._wt_code_by_label.get(label, "en")
+        if code == self.settings.wt_ui_language:
+            return
+        self.settings = update_settings(wt_ui_language=code)
+
+    def _on_ocr_backend_chosen(self, _event=None) -> None:
+        label = self.ocr_backend_var.get()
+        code = self._ocr_backend_by_label.get(label, "auto")
+        if code == self.settings.ocr_backend:
+            return
+        self.settings = update_settings(ocr_backend=code)
+
+    def _setup_tesseract(self) -> None:
+        from .ocr_backends import (
+            describe_ocr_status,
+            download_tessdata,
+            install_tesseract_via_winget,
+            missing_tessdata_for_wt,
+            tesseract_available,
+        )
+        from .wt_languages import get_wt_language
+
+        t = self.strings
+        wt = self.settings.wt_ui_language or "uk"
+        if not tesseract_available():
+            if not messagebox.askyesno(PRODUCT_NAME, t.setup_tesseract_no_exe):
+                return
+            messagebox.showinfo(PRODUCT_NAME, t.setup_tesseract_installing)
+
+            def install_work() -> None:
+                ok, detail = install_tesseract_via_winget()
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        PRODUCT_NAME,
+                        (t.setup_tesseract_done if ok else t.setup_tesseract_failed).format(
+                            detail=detail
+                        ),
+                    ),
+                )
+
+            threading.Thread(target=install_work, name="tesseract-winget", daemon=True).start()
+            return
+        status = describe_ocr_status(wt)
+        missing = missing_tessdata_for_wt(wt)
+        lang = get_wt_language(wt)
+        if not missing:
+            messagebox.showinfo(
+                PRODUCT_NAME,
+                t.setup_tesseract_done.format(detail=status),
+            )
+            return
+        body = t.setup_tesseract_body.format(status=status, lang=lang.code)
+        if not messagebox.askyesno(PRODUCT_NAME, body):
+            return
+
+        def work() -> None:
+            ok, detail = download_tessdata(missing)
+            self.root.after(
+                0,
+                lambda: messagebox.showinfo(
+                    PRODUCT_NAME,
+                    (t.setup_tesseract_done if ok else t.setup_tesseract_failed).format(
+                        detail=detail
+                    ),
+                ),
+            )
+
+        threading.Thread(target=work, name="tessdata-dl", daemon=True).start()
+
+    def _maybe_offer_tesseract(self) -> None:
+        from .ocr_backends import tesseract_available, tesseract_recommended_for
+
+        wt = self.settings.wt_ui_language or "uk"
+        if tesseract_available() or not tesseract_recommended_for(wt):
+            return
+        t = self.strings
+        lang = wt.upper() if len(wt) <= 3 else wt
+        if not messagebox.askyesno(
+            t.setup_tesseract_offer_title,
+            t.setup_tesseract_offer_body.format(lang=lang),
+        ):
+            return
+        self._setup_tesseract()
+
     def _on_toggle(self) -> None:
         if bool(self.enabled_var.get()):
             self._start_enabled(persist=True)
@@ -322,12 +513,75 @@ class BridgeApp:
         register_autostart()
         register_uninstall_entry()
         ensure_firewall_rule(self.settings.port)
-        self.agent.start(self.settings)
         self._set_ui_enabled(True)
+        self.status_var.set(self.strings.status_enabled_waiting)
+        self.agent.start(self.settings)
         self._ensure_tray()
-        if persist:
-            self.status_var.set(self.strings.status_enabled_waiting)
-        log.info("Bridge enabled (port %s)", self.settings.port)
+        # Offer official Microsoft OCR packs once (or when still missing).
+        self.root.after(400, lambda: self._maybe_prompt_ocr_packs(force=False))
+
+    def _ocr_packs_clicked(self) -> None:
+        self._maybe_prompt_ocr_packs(force=True)
+
+    def _maybe_prompt_ocr_packs(self, *, force: bool) -> None:
+        from .ocr_setup import OCR_TAG_LABELS, advise_ocr_packs, install_ocr_packs
+
+        # Prefer Bridge UI language as a hint for WT UI (user can change later).
+        wt_lang = self.settings.wt_ui_language or self.settings.language or "uk"
+        advice = advise_ocr_packs(wt_lang)
+        t = self.strings
+
+        def label_list(tags: tuple[str, ...]) -> str:
+            lines = []
+            for tag in tags:
+                lines.append(f"• {OCR_TAG_LABELS.get(tag, tag)} ({tag})")
+            return "\n".join(lines) if lines else "—"
+
+        if not advice.missing_tags:
+            if force:
+                messagebox.showinfo(
+                    PRODUCT_NAME,
+                    t.ocr_packs_ok.format(packs=label_list(advice.recommended_tags)),
+                )
+            update_settings(ocr_setup_done=True, wt_ui_language=wt_lang)
+            if not force:
+                self.root.after(200, self._maybe_offer_tesseract)
+            return
+
+        if not force and self.settings.ocr_setup_done:
+            return
+
+        note = t.ocr_packs_uk_note if advice.ui_language == "uk" else (advice.note + "\n\n" if advice.note else "")
+        body = t.ocr_packs_missing_body.format(
+            lang=advice.ui_language,
+            packs=label_list(advice.recommended_tags),
+            missing=label_list(advice.missing_tags),
+            note=note,
+        )
+        # askyesno: Yes = install, No = skip
+        install = messagebox.askyesno(t.ocr_packs_missing_title, body)
+        update_settings(ocr_setup_done=True, wt_ui_language=wt_lang)
+        if not install:
+            if not force:
+                self.root.after(200, self._maybe_offer_tesseract)
+            return
+
+        messagebox.showinfo(PRODUCT_NAME, t.ocr_packs_installing)
+
+        def work() -> None:
+            ok, detail = install_ocr_packs(list(advice.missing_tags))
+            self.root.after(0, lambda: self._ocr_install_finished(ok, detail, offer_tess=not force))
+
+        threading.Thread(target=work, name="ocr-pack-install", daemon=True).start()
+
+    def _ocr_install_finished(self, ok: bool, detail: str, *, offer_tess: bool = False) -> None:
+        t = self.strings
+        if ok:
+            messagebox.showinfo(PRODUCT_NAME, t.ocr_packs_done.format(detail=detail or ""))
+        else:
+            messagebox.showerror(PRODUCT_NAME, t.ocr_packs_failed.format(detail=detail or ""))
+        if offer_tess:
+            self.root.after(200, self._maybe_offer_tesseract)
 
     def _disable_completely(self) -> None:
         self.settings = update_settings(enabled=False)
@@ -412,6 +666,69 @@ class BridgeApp:
             self.root.after(0, apply)
         except tk.TclError:
             pass
+
+    def _test_ocr(self) -> None:
+        if getattr(self, "_ocr_busy", False):
+            return
+        self._ocr_busy = True
+        self.status_var.set(self.strings.test_ocr_busy)
+
+        def work() -> None:
+            try:
+                from .selftest import ocr_once
+
+                text, report, _dump = ocr_once(save_dump=True)
+                self.root.after(0, lambda: self._show_ocr_result(text, report, None))
+            except Exception as exc:  # noqa: BLE001
+                self.root.after(0, lambda: self._show_ocr_result("", None, str(exc)))
+
+        threading.Thread(target=work, name="ocr-test", daemon=True).start()
+
+    def _show_ocr_result(self, text: str, report, error: str | None) -> None:
+        self._ocr_busy = False
+        t = self.strings
+        if error:
+            messagebox.showerror(PRODUCT_NAME, t.test_ocr_error.format(error=error))
+            return
+        if report is None:
+            from .ocr_parse import summarize_ocr_text
+
+            messagebox.showwarning(
+                PRODUCT_NAME,
+                t.test_ocr_fail.format(preview=summarize_ocr_text(text, limit=240)),
+            )
+            return
+        messagebox.showinfo(
+            PRODUCT_NAME,
+            t.test_ocr_ok.format(
+                rp=report.research_points,
+                sl=report.silver_lions,
+                outcome=report.outcome,
+                conf=report.confidence,
+            ),
+        )
+
+    def _replay_last_ocr(self) -> None:
+        from .ocr_parse import parse_rewards_from_ocr_text
+
+        path = log_dir() / "last_ocr.txt"
+        t = self.strings
+        if not path.is_file():
+            messagebox.showwarning(PRODUCT_NAME, t.replay_fail)
+            return
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            messagebox.showwarning(PRODUCT_NAME, t.replay_fail)
+            return
+        report = parse_rewards_from_ocr_text(text)
+        if report is None:
+            messagebox.showwarning(PRODUCT_NAME, t.replay_fail)
+            return
+        messagebox.showinfo(
+            PRODUCT_NAME,
+            t.replay_ok.format(rp=report.research_points, sl=report.silver_lions),
+        )
 
     def _open_logs(self) -> None:
         path = log_dir()

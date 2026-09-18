@@ -1,4 +1,9 @@
-from lockon_bridge.ocr_parse import looks_like_desktop_noise, parse_rewards_from_ocr_text
+from lockon_bridge.lang_labels import LANGUAGE_FIXTURES, MANGLED_LANGUAGE_FIXTURES
+from lockon_bridge.ocr_parse import (
+    choose_best_report,
+    looks_like_desktop_noise,
+    parse_rewards_from_ocr_text,
+)
 
 
 def test_parses_english_total_block():
@@ -17,7 +22,7 @@ def test_parses_english_total_block():
 
 
 def test_parses_inline_labels():
-    text = "Reward +2,100 RP and +15 000 SL"
+    text = "Reward +2,100 Research Points and +15 000 Silver Lions"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.research_points == 2100
@@ -55,7 +60,6 @@ def test_parses_total_pair():
 
 
 def test_parses_latinized_ukrainian_premium_columns():
-    # Real OCR dump from UA client (Cyrillic mangled to Latin lookalikes).
     text = (
         "Bepciq 2.59.0.13 Micifl npoBaneHa APGAHi 60i, "
         "Haropona 3a yuacTb B Micii: +34% , +20%' "
@@ -69,12 +73,25 @@ def test_parses_latinized_ukrainian_premium_columns():
     assert report.outcome == "defeat"
 
 
+def test_parses_victory_boost_line():
+    text = "Haropona 3a nepeMory: +100% , +47%' 1 148 2 732'"
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1148
+    assert report.silver_lions == 2732
+    assert report.outcome == "victory"
+
+
 def test_parses_bare_second_premium_header():
     text = "Micifl npoBaneHa 3 npeMiYMOM 9 596' npeMiYMa 1 088 6 127'"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.research_points == 1088
     assert report.silver_lions == 6127
+
+
+def test_rejects_rp1_junk():
+    assert parse_rewards_from_ocr_text("team board rp 1 noise 2.59.0.13") is None
 
 
 def test_skips_desktop_noise():
@@ -88,3 +105,60 @@ def test_skips_desktop_noise():
 
 def test_returns_none_without_currency():
     assert parse_rewards_from_ocr_text("Player shot down enemy") is None
+
+
+def test_all_language_fixtures_parse():
+    for lang, labels in LANGUAGE_FIXTURES.items():
+        premium = (
+            f"{labels['victory']}\n"
+            f"{labels['with']} 9 999\n"
+            f"{labels['without']} 1 250 8 400\n"
+        )
+        report = parse_rewards_from_ocr_text(premium)
+        assert report is not None, lang
+        assert report.research_points == 1250, lang
+        assert report.silver_lions == 8400, lang
+
+        labeled = f"{labels['rp']} 2 100\n{labels['sl']} 7 500\n"
+        report2 = parse_rewards_from_ocr_text(labeled)
+        assert report2 is not None, lang
+        assert report2.research_points == 2100, lang
+        assert report2.silver_lions == 7500, lang
+
+
+def test_mangled_non_en_ru_fixtures_parse():
+    """Wrong OCR pack strips diacritics / Latinizes — same failure class as UA."""
+    for lang, labels in MANGLED_LANGUAGE_FIXTURES.items():
+        premium = (
+            f"{labels['victory']}\n"
+            f"{labels['with']} 9 999\n"
+            f"{labels['without']} 1 250 8 400\n"
+        )
+        report = parse_rewards_from_ocr_text(premium)
+        assert report is not None, f"mangled premium {lang}"
+        assert report.research_points == 1250, lang
+        assert report.silver_lions == 8400, lang
+
+        labeled = f"{labels['rp']} 2 100\n{labels['sl']} 7 500\n"
+        report2 = parse_rewards_from_ocr_text(labeled)
+        assert report2 is not None, f"mangled labels {lang}: {labeled!r}"
+        assert report2.research_points == 2100, lang
+        assert report2.silver_lions == 7500, lang
+
+
+def test_choose_best_ignores_bad_engine():
+    bad = "Chinese OCR garbage 银 1 2 3 random"
+    good = "Without premium 1 088 6 016"
+    chinese_only = "有高级账号 9 999 无高级账号 1 250 8 400"
+    best = choose_best_report(
+        [
+            (bad, parse_rewards_from_ocr_text(bad)),
+            (good, parse_rewards_from_ocr_text(good)),
+            (chinese_only, parse_rewards_from_ocr_text(chinese_only)),
+        ]
+    )
+    assert best is not None
+    _text, report = best
+    # Either the latinized UA without-premium or Chinese fixture — both valid pairs.
+    assert report.research_points in (1088, 1250)
+    assert report.silver_lions in (6016, 8400)

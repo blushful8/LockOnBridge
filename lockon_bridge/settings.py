@@ -18,6 +18,12 @@ class BridgeSettings:
     game_host: str = "127.0.0.1"
     game_port: int = 8111
     language: str = "en"
+    # War Thunder UI language for OCR pack advice (en/uk/ru/…).
+    wt_ui_language: str = "uk"
+    # auto | windows | tesseract
+    ocr_backend: str = "auto"
+    # User already answered the OCR pack setup prompt.
+    ocr_setup_done: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "BridgeSettings":
@@ -30,6 +36,12 @@ class BridgeSettings:
         language = str(raw.get("language") or "").strip().lower()
         if language not in ("en", "uk"):
             language = detect_system_language()
+        wt_ui = str(raw.get("wt_ui_language") or language or "uk").strip().lower()
+        if len(wt_ui) > 8:
+            wt_ui = wt_ui[:8]
+        backend = str(raw.get("ocr_backend") or "auto").strip().lower()
+        if backend not in ("auto", "windows", "tesseract"):
+            backend = "auto"
         return cls(
             enabled=bool(raw.get("enabled", False)),
             port=port,
@@ -38,6 +50,9 @@ class BridgeSettings:
             game_host=str(raw.get("game_host", "127.0.0.1")),
             game_port=int(raw.get("game_port", 8111)),
             language=language,
+            wt_ui_language=wt_ui or "uk",
+            ocr_backend=backend,
+            ocr_setup_done=bool(raw.get("ocr_setup_done", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:

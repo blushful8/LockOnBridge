@@ -127,6 +127,23 @@ def main(argv: list[str] | None = None) -> int:
         default=str(log_file()),
         help="Rotating log path (empty string disables file log)",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run offline OCR parser checks (fixtures + bridge.log) — no match needed",
+    )
+    parser.add_argument(
+        "--ocr-once",
+        action="store_true",
+        help="Capture the screen once, OCR, print RP/SL (open a results screenshot first)",
+    )
+    parser.add_argument(
+        "--serve-test",
+        action="store_true",
+        help="Serve a fixed test RP/SL report on the Bridge port (no War Thunder)",
+    )
+    parser.add_argument("--test-rp", type=int, default=1088, help="RP for --serve-test")
+    parser.add_argument("--test-sl", type=int, default=6016, help="SL for --serve-test")
     args = parser.parse_args(argv)
 
     log_path = Path(args.log_file) if args.log_file else None
@@ -138,9 +155,36 @@ def main(argv: list[str] | None = None) -> int:
         full_uninstall()
         return 0
 
+    if args.self_test:
+        from .selftest import run_self_test
+
+        return run_self_test()
+
+    if args.ocr_once:
+        from .selftest import run_ocr_once_cli
+
+        return run_ocr_once_cli()
+
+    if args.serve_test:
+        from .selftest import run_serve_test
+        from .settings import load_settings
+
+        settings = load_settings()
+        port = args.port if args.port is not None else settings.port
+        bind = args.bind if args.bind is not None else settings.bind
+        return run_serve_test(
+            bind=bind,
+            port=port,
+            research_points=args.test_rp,
+            silver_lions=args.test_sl,
+        )
+
     # Default for frozen exe: UI. For python -m: keep CLI unless --ui/--background.
     want_ui = args.ui or args.background or getattr(sys, "frozen", False)
     if want_ui and not args.session:
+        from .dpi import enable_windows_dpi_awareness
+
+        enable_windows_dpi_awareness()
         from .app_ui import run_ui
 
         return run_ui(start_hidden=bool(args.background))

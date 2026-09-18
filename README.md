@@ -6,7 +6,7 @@
 
 War Thunder’s local API (`:8111`) tells LockOn when you are in a battle and which vehicle you use — but it does **not** give the final **Research Points** and **Silver Lions** after a match. Those numbers only show on the results screen.
 
-**LockOn Bridge** is a small Windows program that detects the end of a battle, briefly reads that screen with **Windows OCR**, and sends the totals to your phone over Wi‑Fi (port **8112**).
+**LockOn Bridge** is a small Windows program that detects the end of a battle, briefly reads that screen with **OCR** (Windows packs and optional **Tesseract** for every War Thunder UI language, including Ukrainian), and sends the totals to your phone over Wi‑Fi (port **8112**).
 
 - No Gaijin login  
 - Nothing leaves your home network  
@@ -28,11 +28,12 @@ If you are fine editing rewards manually in LockOn, you can skip this entirely.
 
 ## Install
 
-1. Download **`LockOnBridge.zip`** from [Releases](https://github.com/blushful8/LockOnBridge/releases) (or build it — see below).
-2. Extract the archive, then run **`LockOnBridge.exe`** inside the folder.
-3. A control window opens (a **Desktop shortcut** is created automatically).
-4. Turn **Bridge enabled** **ON** (optional: change the HTTP port, default `8112`).
-5. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP as for the game).
+1. Download **`LockOnBridge.zip`** from [Releases](https://github.com/blushful8/LockOnBridge/releases).
+2. Extract → run **`LockOnBridge.exe`**.
+3. Set **War Thunder language**, turn **Bridge enabled** **ON**.
+4. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP; port `8112`).
+
+That is the full path for most players. On first enable, Bridge may ask to install **Windows OCR packs** (Microsoft). For Ukrainian (and a few other cases) it may also offer free offline **Tesseract** via winget — one Yes/No, no manual GitHub hunting.
 
 > Prefer the **ZIP** build. Single-file PyInstaller executables (especially with UPX) are often false-positive’d by Windows Defender. This release is an **onedir** package **without UPX**.
 
@@ -88,7 +89,7 @@ Local LAN only. No cloud. No account. OCR runs only for a few frames right after
 
 **Навіщо:** гра не віддає Total RP/SL через `:8111`. Bridge на ПК зчитує екран результатів і надсилає цифри в LockOn.
 
-**Встановлення:** завантажте **`LockOnBridge.zip`** з Releases → розпакуйте → запустіть **`LockOnBridge.exe`** → увімкніть **Bridge enabled** → у LockOn увімкніть **Use LockOn Bridge**.
+**Встановлення:** ZIP з Releases → `LockOnBridge.exe` → мова WT + **Bridge enabled** → у LockOn увімкніть **Use LockOn Bridge**. OCR-пакети Bridge пропонує сам при першому увімкненні.
 
 **SmartScreen / Defender:** немає платного підпису коду. SmartScreen: **Додаткові відомості** → **Виконати**. Якщо Defender позначає файл як вірус — типова хибна тривога для непідписаних Python-програм; беріть лише офіційний ZIP. Повний фікс — лише платний code signing.
 

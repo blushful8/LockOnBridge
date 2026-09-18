@@ -15,6 +15,19 @@ class Strings:
     uninstall: str
     quit: str
     language: str
+    wt_language: str
+    ocr_backend: str
+    ocr_backend_auto: str
+    ocr_backend_windows: str
+    ocr_backend_tesseract: str
+    setup_tesseract: str
+    setup_tesseract_body: str
+    setup_tesseract_no_exe: str
+    setup_tesseract_done: str
+    setup_tesseract_failed: str
+    setup_tesseract_offer_title: str
+    setup_tesseract_offer_body: str
+    setup_tesseract_installing: str
     lang_en: str
     lang_uk: str
     badge_on: str
@@ -42,15 +55,35 @@ class Strings:
     update_failed: str
     update_dev_only: str
     update_restarting: str
+    test_ocr: str
+    test_ocr_busy: str
+    test_ocr_ok: str
+    test_ocr_fail: str
+    test_ocr_error: str
+    replay_log: str
+    replay_ok: str
+    replay_fail: str
+    ocr_packs: str
+    ocr_packs_ok: str
+    ocr_packs_missing_title: str
+    ocr_packs_missing_body: str
+    ocr_packs_uk_note: str
+    ocr_packs_install: str
+    ocr_packs_skip: str
+    ocr_packs_installing: str
+    ocr_packs_done: str
+    ocr_packs_failed: str
+    ocr_packs_nothing: str
+    menu_more: str
 
 
 EN = Strings(
     subtitle="OCR companion for LockOn (War Thunder)",
     bridge_enabled="Bridge enabled",
     tip=(
-        "When enabled: starts with Windows, wakes with War Thunder, "
-        "stops when the game exits.\n"
-        "When disabled: no autostart, no background process, no CPU/RAM use."
+        "Choose your War Thunder UI language once. "
+        "When you enable Bridge, it can install OCR helpers automatically — "
+        "no separate tools for most users."
     ),
     http_port="HTTP port",
     open_logs="Open logs",
@@ -58,7 +91,33 @@ EN = Strings(
     check_updates="Check for updates",
     uninstall="Uninstall…",
     quit="Quit",
-    language="Language",
+    language="App language",
+    wt_language="War Thunder language",
+    ocr_backend="OCR engine",
+    ocr_backend_auto="Auto (Windows + Tesseract)",
+    ocr_backend_windows="Windows only",
+    ocr_backend_tesseract="Tesseract only",
+    setup_tesseract="Setup Tesseract OCR…",
+    setup_tesseract_body=(
+        "Tesseract can read Ukrainian and other WT languages that Windows OCR lacks.\n\n"
+        "Status:\n{status}\n\n"
+        "Download official tessdata_fast models for {lang} now? (Apache-2.0, from GitHub)"
+    ),
+    setup_tesseract_no_exe=(
+        "Tesseract is not installed.\n\n"
+        "Install via winget now?\n"
+        "(UB-Mannheim.TesseractOCR — free, offline OCR after install)\n\n"
+        "Or later: https://github.com/UB-Mannheim/tesseract/wiki"
+    ),
+    setup_tesseract_done="Language models ready.\n\n{detail}",
+    setup_tesseract_failed="Could not download / install.\n\n{detail}",
+    setup_tesseract_offer_title="Better OCR for your WT language?",
+    setup_tesseract_offer_body=(
+        "Windows OCR alone is weak for {lang} (e.g. no Ukrainian pack).\n\n"
+        "Install free offline Tesseract now via winget?\n"
+        "One click — recommended. You can skip and rely on Windows packs only."
+    ),
+    setup_tesseract_installing="Installing Tesseract… Confirm if Windows asks.",
     lang_en="English",
     lang_uk="Ukrainian",
     badge_on="ON",
@@ -92,15 +151,53 @@ EN = Strings(
     update_failed="Could not update: {error}",
     update_dev_only="Automatic updates work with the packaged LockOn Bridge build. Download the ZIP release to update.",
     update_restarting="Update downloaded. LockOn Bridge will restart.",
+    test_ocr="Test OCR now",
+    test_ocr_busy="Reading screen…",
+    test_ocr_ok=(
+        "Parsed rewards:\n"
+        "Research Points: {rp}\n"
+        "Silver Lions: {sl}\n"
+        "Outcome: {outcome}\n"
+        "Confidence: {conf:.0%}"
+    ),
+    test_ocr_fail=(
+        "No RP/SL found on screen.\n\n"
+        "Open a War Thunder results screenshot full-screen, then try again.\n\n"
+        "OCR preview:\n{preview}"
+    ),
+    test_ocr_error="OCR failed:\n{error}",
+    replay_log="Replay last OCR dump",
+    replay_ok="Replayed last OCR dump:\nResearch Points: {rp}\nSilver Lions: {sl}",
+    replay_fail="Could not parse last OCR dump (or file missing).",
+    ocr_packs="Windows OCR packs…",
+    ocr_packs_ok="Recommended Windows OCR packs are already installed:\n{packs}",
+    ocr_packs_missing_title="Install Windows OCR packs?",
+    ocr_packs_missing_body=(
+        "Recommended Windows OCR packs for ({lang}):\n{packs}\n\n"
+        "Missing:\n{missing}\n\n"
+        "{note}"
+        "Install from Microsoft Windows Update now?"
+    ),
+    ocr_packs_uk_note=(
+        "Note: Windows has no Ukrainian OCR pack. "
+        "Use Tesseract (ukr) or Russian Windows OCR for Cyrillic.\n\n"
+    ),
+    ocr_packs_install="Install from Microsoft",
+    ocr_packs_skip="Not now",
+    ocr_packs_installing="Installing OCR packs… Confirm UAC if asked.",
+    ocr_packs_done="OCR packs installed.\n\n{detail}",
+    ocr_packs_failed="Could not install OCR packs.\n\n{detail}",
+    ocr_packs_nothing="Nothing to install — required packs are present.",
+    menu_more="More ▾",
 )
 
 UK = Strings(
     subtitle="OCR-супутник для LockOn (War Thunder)",
     bridge_enabled="Bridge увімкнено",
     tip=(
-        "Коли увімкнено: автозапуск із Windows, робота з War Thunder, "
-        "зупинка після виходу з гри.\n"
-        "Коли вимкнено: без автозапуску, без фонового процесу, без навантаження на процесор і памʼять."
+        "Один раз оберіть мову інтерфейсу War Thunder. "
+        "Після увімкнення Bridge сам запропонує OCR-пакети — "
+        "окремі утиліти більшості користувачів не потрібні."
     ),
     http_port="Порт HTTP",
     open_logs="Відкрити журнали",
@@ -108,7 +205,33 @@ UK = Strings(
     check_updates="Перевірити оновлення",
     uninstall="Видалити…",
     quit="Вийти",
-    language="Мова",
+    language="Мова програми",
+    wt_language="Мова War Thunder",
+    ocr_backend="Рушій OCR",
+    ocr_backend_auto="Авто (Windows + Tesseract)",
+    ocr_backend_windows="Лише Windows",
+    ocr_backend_tesseract="Лише Tesseract",
+    setup_tesseract="Налаштувати Tesseract OCR…",
+    setup_tesseract_body=(
+        "Tesseract читає українську та інші мови WT, яких немає у Windows OCR.\n\n"
+        "Статус:\n{status}\n\n"
+        "Завантажити офіційні моделі tessdata_fast для {lang}? (Apache-2.0, GitHub)"
+    ),
+    setup_tesseract_no_exe=(
+        "Tesseract не встановлено.\n\n"
+        "Встановити зараз через winget?\n"
+        "(UB-Mannheim.TesseractOCR — безкоштовно, далі офлайн)\n\n"
+        "Або пізніше: https://github.com/UB-Mannheim/tesseract/wiki"
+    ),
+    setup_tesseract_done="Мовні моделі готові.\n\n{detail}",
+    setup_tesseract_failed="Не вдалося завантажити / встановити.\n\n{detail}",
+    setup_tesseract_offer_title="Кращий OCR для вашої мови WT?",
+    setup_tesseract_offer_body=(
+        "Лише Windows OCR слабкий для {lang} (наприклад, немає українського пакета).\n\n"
+        "Встановити безкоштовний офлайн Tesseract через winget?\n"
+        "Один клік — рекомендовано. Можна пропустити й лишити лише пакети Windows."
+    ),
+    setup_tesseract_installing="Встановлення Tesseract… Підтвердіть запит Windows, якщо з’явиться.",
     lang_en="English",
     lang_uk="Українська",
     badge_on="УВІМК.",
@@ -142,6 +265,44 @@ UK = Strings(
     update_failed="Не вдалося оновити: {error}",
     update_dev_only="Автоматичні оновлення працюють із зібраною програмою LockOn Bridge. Завантажте ZIP-реліз для оновлення.",
     update_restarting="Оновлення завантажено. LockOn Bridge перезапуститься.",
+    test_ocr="Перевірити OCR",
+    test_ocr_busy="Читаю екран…",
+    test_ocr_ok=(
+        "Розпізнано нагороди:\n"
+        "Очки досліджень: {rp}\n"
+        "Срібні леви: {sl}\n"
+        "Результат: {outcome}\n"
+        "Впевненість: {conf:.0%}"
+    ),
+    test_ocr_fail=(
+        "RP/SL на екрані не знайдено.\n\n"
+        "Відкрийте повноекранний скрін результатів і спробуйте ще раз.\n\n"
+        "Фрагмент OCR:\n{preview}"
+    ),
+    test_ocr_error="Помилка OCR:\n{error}",
+    replay_log="Повторити останній OCR",
+    replay_ok="Останній OCR-дамп:\nОчки досліджень: {rp}\nСрібні леви: {sl}",
+    replay_fail="Не вдалося розпарсити останній OCR-дамп (або файлу немає).",
+    ocr_packs="Пакети Windows OCR…",
+    ocr_packs_ok="Рекомендовані пакети Windows OCR уже встановлені:\n{packs}",
+    ocr_packs_missing_title="Встановити пакети Windows OCR?",
+    ocr_packs_missing_body=(
+        "Рекомендовані пакети Windows OCR для ({lang}):\n{packs}\n\n"
+        "Бракує:\n{missing}\n\n"
+        "{note}"
+        "Встановити з Microsoft Windows Update?"
+    ),
+    ocr_packs_uk_note=(
+        "У Windows немає українського OCR. "
+        "Для кирилиці — Tesseract (ukr) або російський Windows OCR.\n\n"
+    ),
+    ocr_packs_install="Встановити від Microsoft",
+    ocr_packs_skip="Не зараз",
+    ocr_packs_installing="Встановлення пакетів OCR… Підтвердіть UAC.",
+    ocr_packs_done="Пакети OCR встановлено.\n\n{detail}",
+    ocr_packs_failed="Не вдалося встановити пакети OCR.\n\n{detail}",
+    ocr_packs_nothing="Нічого встановлювати — потрібні пакети вже є.",
+    menu_more="Ще ▾",
 )
 
 

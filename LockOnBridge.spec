@@ -7,6 +7,7 @@ binaries = []
 hiddenimports = [
     "pystray._win32",
     "PIL._tkinter_finder",
+    "pytesseract",
 ]
 for pkg in (
     "winrt",
@@ -59,6 +60,7 @@ exe = EXE(
     entitlements_file=None,
     icon="assets/lockon_bridge.ico",
     version="file_version_info.txt",
+    manifest="assets/LockOnBridge.manifest",
 )
 
 coll = COLLECT(
