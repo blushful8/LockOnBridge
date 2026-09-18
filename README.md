@@ -6,7 +6,7 @@
 
 War Thunder’s local API (`:8111`) tells LockOn when you are in a battle and which vehicle you use — but it does **not** give the final **Research Points** and **Silver Lions** after a match. Those numbers only show on the results screen.
 
-**LockOn Bridge** is a small Windows app that detects the end of a battle, briefly reads that screen with **Windows OCR**, and sends the totals to your phone over Wi‑Fi (port **8112**).
+**LockOn Bridge** is a small Windows program that detects the end of a battle, briefly reads that screen with **Windows OCR**, and sends the totals to your phone over Wi‑Fi (port **8112**).
 
 - No Gaijin login  
 - Nothing leaves your home network  
@@ -22,7 +22,7 @@ War Thunder’s local API (`:8111`) tells LockOn when you are in a battle and wh
 | Match history | Yes | Yes |
 | RP / SL after a match | Manual edit (or stay `0`) | Filled automatically |
 
-If you are fine editing rewards by hand in the app, you can skip this entirely.
+If you are fine editing rewards manually in LockOn, you can skip this entirely.
 
 ---
 
@@ -59,8 +59,8 @@ Logs: `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`
 
 ## Uninstall
 
-In the app: **Uninstall…**  
-Or: **Settings → Apps → LockOn Bridge → Uninstall**
+In LockOn Bridge: **Uninstall…**  
+Or: **Windows Settings → Apps → LockOn Bridge → Uninstall**
 
 ---
 
@@ -82,13 +82,13 @@ Local LAN only. No cloud. No account. OCR runs only for a few frames right after
 
 **Навіщо:** гра не віддає Total RP/SL через `:8111`. Bridge на ПК зчитує екран результатів і надсилає цифри в LockOn.
 
-**Встановлення:** скачайте **`LockOnBridge.exe`** з Releases → увімкніть **Bridge enabled** → у телефоні увімкніть **Use LockOn Bridge**.
+**Встановлення:** завантажте **`LockOnBridge.exe`** з Releases → увімкніть **Bridge enabled** → у LockOn увімкніть **Use LockOn Bridge**.
 
-**SmartScreen:** Windows може показати «ОС Windows захистила цей ПК» (немає платного підпису). Натисніть **Додаткові відомості** → **Виконати**. Це нормально для open-source з GitHub; беріть файл лише з офіційного Releases.
+**SmartScreen:** Windows може показати «ОС Windows захистила цей ПК» (немає платного підпису коду). Натисніть **Додаткові відомості** → **Виконати**. Це очікувано для відкритого програмного забезпечення з GitHub; завантажуйте файл лише з офіційної сторінки Releases.
 
-**Вимкнути без навантаження:** вимкніть **Bridge enabled** — автозапуск знімається, процес не крутиться.
+**Вимкнути без навантаження:** вимкніть **Bridge enabled** — автозапуск знімається, фоновий процес не працює.
 
-Апка LockOn: https://github.com/blushful8/LockOn
+Застосунок LockOn: https://github.com/blushful8/LockOn
 
 ---
 
