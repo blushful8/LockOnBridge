@@ -33,6 +33,17 @@ If you are fine editing rewards by hand in the app, you can skip this entirely.
 3. Turn **Bridge enabled** **ON** (optional: change the HTTP port, default `8112`).
 4. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP as for the game).
 
+### Windows SmartScreen (“Windows protected your PC”)
+
+The exe is **not code-signed** (no paid certificate). Windows may show a blue/yellow warning the first time. That is expected for open-source builds from GitHub — not a virus alert from Defender scan.
+
+**What to do:**
+
+1. Click **More info** (or **Додаткові відомості**).
+2. Click **Run anyway** (or **Виконати**).
+
+After you run it once, Windows usually stops asking for that same file. Always download from the official [Releases](https://github.com/blushful8/LockOnBridge/releases) page only.
+
 ### Control window
 
 | | |
@@ -71,7 +82,9 @@ Local LAN only. No cloud. No account. OCR runs only for a few frames right after
 
 **Навіщо:** гра не віддає Total RP/SL через `:8111`. Bridge на ПК зчитує екран результатів і надсилає цифри в LockOn.
 
-**Встановлення:** скачайте **`LockOnBridge.exe`** → увімкніть **Bridge enabled** → у телефоні увімкніть **Use LockOn Bridge**.
+**Встановлення:** скачайте **`LockOnBridge.exe`** з Releases → увімкніть **Bridge enabled** → у телефоні увімкніть **Use LockOn Bridge**.
+
+**SmartScreen:** Windows може показати «ОС Windows захистила цей ПК» (немає платного підпису). Натисніть **Додаткові відомості** → **Виконати**. Це нормально для open-source з GitHub; беріть файл лише з офіційного Releases.
 
 **Вимкнути без навантаження:** вимкніть **Bridge enabled** — автозапуск знімається, процес не крутиться.
 
