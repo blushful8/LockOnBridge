@@ -4,3 +4,6 @@
 .venv/
 venv/
 *.log
+build/
+dist/
+*.spec.bak
