@@ -14,6 +14,11 @@ def data_root() -> Path:
     return Path.home() / "AppData" / "Local" / PRODUCT_ID
 
 
+def app_install_dir() -> Path:
+    """Stable onedir install location (exe + _internal)."""
+    return data_root() / "app"
+
+
 def settings_path() -> Path:
     return data_root() / "settings.json"
 
@@ -31,14 +36,12 @@ def is_frozen() -> bool:
 
 
 def app_executable() -> Path:
-    """Path used for autostart / uninstall registration."""
-    if is_frozen():
-        return Path(sys.executable).resolve()
+    """Path of the currently running binary."""
     return Path(sys.executable).resolve()
 
 
 def installed_exe_path() -> Path:
-    return data_root() / "LockOnBridge.exe"
+    return app_install_dir() / "LockOnBridge.exe"
 
 
 def desktop_dir() -> Path:

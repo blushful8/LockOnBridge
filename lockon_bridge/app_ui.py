@@ -542,7 +542,9 @@ class BridgeApp:
 
         def download() -> None:
             try:
-                dest = data_root() / "LockOnBridge.exe.new"
+                dest = data_root() / "LockOnBridge.zip"
+                if release.download_url.lower().endswith(".exe"):
+                    dest = data_root() / "LockOnBridge.exe.new"
                 download_release_exe(release.download_url, dest)
                 apply_update_and_restart(dest)
 

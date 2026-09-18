@@ -28,21 +28,24 @@ If you are fine editing rewards manually in LockOn, you can skip this entirely.
 
 ## Install
 
-1. Download **`LockOnBridge.exe`** from [Releases](https://github.com/blushful8/LockOnBridge/releases) (or build it — see below).
-2. Double‑click the exe → a control window opens (a **Desktop shortcut** is created automatically).
-3. Turn **Bridge enabled** **ON** (optional: change the HTTP port, default `8112`).
-4. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP as for the game).
+1. Download **`LockOnBridge.zip`** from [Releases](https://github.com/blushful8/LockOnBridge/releases) (or build it — see below).
+2. Extract the archive, then run **`LockOnBridge.exe`** inside the folder.
+3. A control window opens (a **Desktop shortcut** is created automatically).
+4. Turn **Bridge enabled** **ON** (optional: change the HTTP port, default `8112`).
+5. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP as for the game).
 
-### Windows SmartScreen (“Windows protected your PC”)
+> Prefer the **ZIP** build. Single-file PyInstaller executables (especially with UPX) are often false-positive’d by Windows Defender. This release is an **onedir** package **without UPX**.
 
-The exe is **not code-signed** (no paid certificate). Windows may show a blue/yellow warning the first time. That is expected for open-source builds from GitHub — not a virus alert from Defender scan.
+### Windows SmartScreen / Defender
 
-**What to do:**
+The build is **not code-signed** (no paid certificate).
+
+**SmartScreen (“Windows protected your PC”):**
 
 1. Click **More info**.
 2. Click **Run anyway**.
 
-After you run it once, Windows usually stops asking for that same file. Always download from the official [Releases](https://github.com/blushful8/LockOnBridge/releases) page only.
+**Defender “virus” on download/extract:** this is a known false positive for many unsigned Python tools. Prefer the ZIP from the official Releases page. You can report it as a false positive to Microsoft, or allow the extracted folder. Code signing is the only lasting fix and requires a paid certificate.
 
 ### Control window
 
@@ -85,9 +88,9 @@ Local LAN only. No cloud. No account. OCR runs only for a few frames right after
 
 **Навіщо:** гра не віддає Total RP/SL через `:8111`. Bridge на ПК зчитує екран результатів і надсилає цифри в LockOn.
 
-**Встановлення:** завантажте **`LockOnBridge.exe`** з Releases → увімкніть **Bridge enabled** → у LockOn увімкніть **Use LockOn Bridge**.
+**Встановлення:** завантажте **`LockOnBridge.zip`** з Releases → розпакуйте → запустіть **`LockOnBridge.exe`** → увімкніть **Bridge enabled** → у LockOn увімкніть **Use LockOn Bridge**.
 
-**SmartScreen:** Windows може показати «ОС Windows захистила цей ПК» (немає платного підпису коду). Натисніть **Додаткові відомості** → **Виконати**. Це очікувано для відкритого програмного забезпечення з GitHub; завантажуйте файл лише з офіційної сторінки Releases.
+**SmartScreen / Defender:** немає платного підпису коду. SmartScreen: **Додаткові відомості** → **Виконати**. Якщо Defender позначає файл як вірус — типова хибна тривога для непідписаних Python-програм; беріть лише офіційний ZIP. Повний фікс — лише платний code signing.
 
 **Вимкнути без навантаження:** вимкніть **Bridge enabled** — автозапуск знімається, фоновий процес не працює.
 
@@ -108,6 +111,6 @@ Build the exe:
 Build LockOn Bridge.bat
 ```
 
-Output: `dist\LockOnBridge.exe`
+Output: `dist\LockOnBridge\` and `dist\LockOnBridge.zip`
 
 CLI (no UI): `py -3 -m lockon_bridge --session`

@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# onedir + no UPX: unsigned one-file/UPX builds are frequently false-positive'd by Defender.
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas = []
@@ -30,7 +31,7 @@ a = Analysis(
     ["run_bridge.py"],
     pathex=[],
     binaries=binaries,
-    datas=datas + [("assets/lockon_bridge.png", "assets")],
+    datas=datas + [("assets/lockon_bridge.png", "assets"), ("assets/lockon_bridge.ico", "assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -43,16 +44,13 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="LockOnBridge",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -60,4 +58,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon="assets/lockon_bridge.ico",
+    version="file_version_info.txt",
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="LockOnBridge",
 )

@@ -12,6 +12,7 @@ from .paths import (
     PRODUCT_NAME,
     TASK_NAME,
     app_executable,
+    app_install_dir,
     data_root,
     desktop_shortcut_path,
     installed_exe_path,
@@ -54,25 +55,38 @@ def _launch_parts() -> tuple[str, str, str]:
 
 def ensure_install_copy() -> Path | None:
     """
-    When running as a frozen exe from Downloads/etc., copy into LocalAppData
-    so autostart always points at a stable path.
+    Copy the onedir bundle (exe + _internal) into LocalAppData\\LockOnBridge\\app
+    and create a Desktop shortcut to the installed exe.
     """
     if not is_frozen():
         return None
-    src = app_executable()
-    dst = installed_exe_path()
+    src_exe = app_executable()
+    src_dir = src_exe.parent
+    dst_dir = app_install_dir()
+    dst_exe = installed_exe_path()
     data_root().mkdir(parents=True, exist_ok=True)
     log_dir().mkdir(parents=True, exist_ok=True)
     try:
-        if src.resolve() != dst.resolve():
-            shutil.copy2(src, dst)
-            log.info("Installed copy → %s", dst)
-        ensure_desktop_shortcut(dst)
-        return dst
+        if src_exe.resolve() != dst_exe.resolve():
+            if dst_dir.exists():
+                # Replace tree carefully — keep going even if some files are locked.
+                for item in src_dir.iterdir():
+                    target = dst_dir / item.name
+                    if item.is_dir():
+                        if target.exists():
+                            shutil.rmtree(target, ignore_errors=True)
+                        shutil.copytree(item, target, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(item, target)
+            else:
+                shutil.copytree(src_dir, dst_dir)
+            log.info("Installed onedir copy → %s", dst_dir)
+        ensure_desktop_shortcut(dst_exe if dst_exe.is_file() else src_exe)
+        return dst_exe if dst_exe.is_file() else src_exe
     except OSError as exc:
-        log.warning("Could not copy exe to install folder: %s", exc)
-        ensure_desktop_shortcut(src)
-        return src
+        log.warning("Could not copy install folder: %s", exc)
+        ensure_desktop_shortcut(src_exe)
+        return src_exe
 
 
 def ensure_desktop_shortcut(target: Path | None = None) -> bool:
@@ -173,7 +187,7 @@ $regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{PRO
 New-Item -Path $regPath -Force | Out-Null
 Set-ItemProperty -Path $regPath -Name 'DisplayName' -Value '{PRODUCT_NAME}'
 Set-ItemProperty -Path $regPath -Name 'Publisher' -Value 'LockOn'
-Set-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '0.3.1'
+Set-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '0.3.2'
 Set-ItemProperty -Path $regPath -Name 'InstallLocation' -Value '{str(data_root()).replace("'", "''")}'
 Set-ItemProperty -Path $regPath -Name 'NoModify' -Value 1 -Type DWord
 Set-ItemProperty -Path $regPath -Name 'NoRepair' -Value 1 -Type DWord

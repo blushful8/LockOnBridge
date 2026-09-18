@@ -3,21 +3,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import __version__
-from .paths import data_root, installed_exe_path, is_frozen
+from .paths import app_install_dir, data_root, installed_exe_path, is_frozen
 
 log = logging.getLogger("lockon_bridge")
 
 GITHUB_LATEST = "https://api.github.com/repos/blushful8/LockOnBridge/releases/latest"
-ASSET_NAME = "LockOnBridge.exe"
+ASSET_NAME = "LockOnBridge.zip"
 USER_AGENT = f"LockOnBridge/{__version__}"
 
 
@@ -58,11 +59,18 @@ def fetch_latest_release(timeout: float = 15.0) -> ReleaseInfo:
     assets = payload.get("assets") or []
     url = ""
     for asset in assets:
-        if str(asset.get("name") or "") == ASSET_NAME:
+        name = str(asset.get("name") or "")
+        if name == ASSET_NAME:
             url = str(asset.get("browser_download_url") or "")
             break
+    if not url:
+        # Fallback for older releases that only shipped a single .exe
+        for asset in assets:
+            if str(asset.get("name") or "") == "LockOnBridge.exe":
+                url = str(asset.get("browser_download_url") or "")
+                break
     if not tag or not url:
-        raise RuntimeError("latest release has no LockOnBridge.exe asset")
+        raise RuntimeError("latest release has no LockOnBridge.zip (or .exe) asset")
     return ReleaseInfo(
         tag=tag,
         version=version,
@@ -71,7 +79,7 @@ def fetch_latest_release(timeout: float = 15.0) -> ReleaseInfo:
     )
 
 
-def download_release_exe(url: str, destination: Path, timeout: float = 120.0) -> Path:
+def download_release_file(url: str, destination: Path, timeout: float = 180.0) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".partial")
     request = urllib.request.Request(
@@ -88,42 +96,91 @@ def download_release_exe(url: str, destination: Path, timeout: float = 120.0) ->
     return destination
 
 
-def apply_update_and_restart(new_exe: Path) -> None:
+# Back-compat name used by the UI.
+download_release_exe = download_release_file
+
+
+def _extract_onedir(zip_path: Path, dest_dir: Path) -> Path:
+    """Extract zip so dest_dir contains LockOnBridge.exe (+ _internal)."""
+    staging = dest_dir.parent / (dest_dir.name + "_staging")
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(staging)
+
+    # Zip may contain LockOnBridge/LockOnBridge.exe or LockOnBridge.exe at root.
+    exe = next(staging.rglob("LockOnBridge.exe"), None)
+    if exe is None:
+        raise RuntimeError("downloaded zip does not contain LockOnBridge.exe")
+    bundle_root = exe.parent
+    if dest_dir.exists():
+        shutil.rmtree(dest_dir, ignore_errors=True)
+    shutil.move(str(bundle_root), str(dest_dir))
+    shutil.rmtree(staging, ignore_errors=True)
+    return dest_dir / "LockOnBridge.exe"
+
+
+def apply_update_and_restart(downloaded: Path) -> None:
     """
-    Schedule replacement of the running frozen exe after this process exits, then relaunch.
+    After this process exits, replace the installed onedir bundle and relaunch.
+    `downloaded` is either LockOnBridge.zip or a legacy single .exe.
     """
     if not is_frozen():
         raise RuntimeError("not a frozen build")
 
-    current = Path(sys.executable).resolve()
-    install = installed_exe_path()
+    install_dir = app_install_dir()
+    launch = installed_exe_path()
     data_root().mkdir(parents=True, exist_ok=True)
-
-    # Prefer updating the stable install path; also replace the running copy if different.
-    targets = [install]
-    if current != install:
-        targets.append(current)
-
     pid = os.getpid()
-    script = f"""
+    src = str(downloaded).replace("'", "''")
+    install = str(install_dir).replace("'", "''")
+    launch_q = str(launch).replace("'", "''")
+
+    if downloaded.suffix.lower() == ".zip":
+        script = f"""
 $ErrorActionPreference = 'Stop'
 $pidToWait = {pid}
-$src = '{str(new_exe).replace("'", "''")}'
-$targets = @({", ".join("'" + str(t).replace("'", "''") + "'" for t in targets)})
-$launch = '{str(install).replace("'", "''")}'
+$zip = '{src}'
+$installDir = '{install}'
+$launch = '{launch_q}'
 for ($i = 0; $i -lt 60; $i++) {{
   if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
   Start-Sleep -Milliseconds 500
 }}
 Start-Sleep -Milliseconds 800
-foreach ($dst in $targets) {{
-  $dir = Split-Path -Parent $dst
-  if ($dir) {{ New-Item -ItemType Directory -Force -Path $dir | Out-Null }}
-  Copy-Item -LiteralPath $src -Destination $dst -Force
-}}
+$staging = Join-Path $env:TEMP ("lockon_bridge_upd_" + $pidToWait)
+if (Test-Path $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force }}
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
+Expand-Archive -LiteralPath $zip -DestinationPath $staging -Force
+$exe = Get-ChildItem -Path $staging -Filter 'LockOnBridge.exe' -Recurse | Select-Object -First 1
+if (-not $exe) {{ throw 'LockOnBridge.exe missing in update zip' }}
+$bundle = $exe.Directory.FullName
+if (Test-Path $installDir) {{ Remove-Item -LiteralPath $installDir -Recurse -Force }}
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installDir) | Out-Null
+Copy-Item -LiteralPath $bundle -Destination $installDir -Recurse -Force
 Start-Process -FilePath $launch
-Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
 """
+    else:
+        script = f"""
+$ErrorActionPreference = 'Stop'
+$pidToWait = {pid}
+$srcExe = '{src}'
+$launch = '{launch_q}'
+$installDir = '{install}'
+for ($i = 0; $i -lt 60; $i++) {{
+  if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
+  Start-Sleep -Milliseconds 500
+}}
+Start-Sleep -Milliseconds 800
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+Copy-Item -LiteralPath $srcExe -Destination (Join-Path $installDir 'LockOnBridge.exe') -Force
+Start-Process -FilePath $launch
+Remove-Item -LiteralPath $srcExe -Force -ErrorAction SilentlyContinue
+"""
+
     tmp = Path(tempfile.gettempdir()) / f"lockon_bridge_update_{pid}.ps1"
     tmp.write_text(script, encoding="utf-8")
     subprocess.Popen(
@@ -139,4 +196,4 @@ Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue
         ],
         close_fds=True,
     )
-    log.info("update helper scheduled for pid %s → %s", pid, install)
+    log.info("update helper scheduled for pid %s → %s", pid, install_dir)

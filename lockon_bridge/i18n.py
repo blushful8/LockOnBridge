@@ -90,7 +90,7 @@ EN = Strings(
     update_cancel="Cancel",
     update_downloading="Downloading update…",
     update_failed="Could not update: {error}",
-    update_dev_only="Automatic updates work with LockOnBridge.exe builds. Run the packaged release to update.",
+    update_dev_only="Automatic updates work with the packaged LockOn Bridge build. Download the ZIP release to update.",
     update_restarting="Update downloaded. LockOn Bridge will restart.",
 )
 
@@ -140,7 +140,7 @@ UK = Strings(
     update_cancel="Скасувати",
     update_downloading="Завантаження оновлення…",
     update_failed="Не вдалося оновити: {error}",
-    update_dev_only="Автоматичні оновлення працюють із зібраним LockOnBridge.exe. Запустіть релізну збірку.",
+    update_dev_only="Автоматичні оновлення працюють із зібраною програмою LockOn Bridge. Завантажте ZIP-реліз для оновлення.",
     update_restarting="Оновлення завантажено. LockOn Bridge перезапуститься.",
 )
 
