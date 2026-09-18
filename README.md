@@ -39,8 +39,8 @@ The exe is **not code-signed** (no paid certificate). Windows may show a blue/ye
 
 **What to do:**
 
-1. Click **More info** (or **Додаткові відомості**).
-2. Click **Run anyway** (or **Виконати**).
+1. Click **More info**.
+2. Click **Run anyway**.
 
 After you run it once, Windows usually stops asking for that same file. Always download from the official [Releases](https://github.com/blushful8/LockOnBridge/releases) page only.
 
