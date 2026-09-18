@@ -29,7 +29,7 @@ If you are fine editing rewards manually in LockOn, you can skip this entirely.
 ## Install
 
 1. Download **`LockOnBridge.exe`** from [Releases](https://github.com/blushful8/LockOnBridge/releases) (or build it — see below).
-2. Double‑click the exe → a control window opens.
+2. Double‑click the exe → a control window opens (a **Desktop shortcut** is created automatically).
 3. Turn **Bridge enabled** **ON** (optional: change the HTTP port, default `8112`).
 4. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP as for the game).
 
@@ -52,6 +52,7 @@ After you run it once, Windows usually stops asking for that same file. Always d
 | **Enabled OFF** | Autostart removed; agent stopped; **no background process** — zero PC load until you turn it on again |
 | **Language** | English or Ukrainian |
 | **Check for updates** | Asks GitHub Releases; after confirmation downloads and replaces the program, then restarts |
+| **Desktop shortcut** | Created on first launch (points to the installed copy under LocalAppData) |
 | **Hide to tray** | Window closes to the notification area (only when enabled) |
 | **Uninstall** | Removes autostart, firewall rule, and local files |
 

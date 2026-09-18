@@ -13,6 +13,7 @@ from .paths import (
     TASK_NAME,
     app_executable,
     data_root,
+    desktop_shortcut_path,
     installed_exe_path,
     is_frozen,
     log_dir,
@@ -66,10 +67,57 @@ def ensure_install_copy() -> Path | None:
         if src.resolve() != dst.resolve():
             shutil.copy2(src, dst)
             log.info("Installed copy → %s", dst)
+        ensure_desktop_shortcut(dst)
         return dst
     except OSError as exc:
         log.warning("Could not copy exe to install folder: %s", exc)
+        ensure_desktop_shortcut(src)
         return src
+
+
+def ensure_desktop_shortcut(target: Path | None = None) -> bool:
+    """Create or refresh a Desktop shortcut that opens the Bridge control window."""
+    exe = target
+    if exe is None:
+        if is_frozen() and installed_exe_path().is_file():
+            exe = installed_exe_path()
+        else:
+            exe = app_executable()
+    if not exe.is_file():
+        return False
+
+    def q(value: str) -> str:
+        return value.replace("'", "''")
+
+    shortcut = desktop_shortcut_path()
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$shell = New-Object -ComObject WScript.Shell
+$lnkPath = '{q(str(shortcut))}'
+$shortcut = $shell.CreateShortcut($lnkPath)
+$shortcut.TargetPath = '{q(str(exe))}'
+$shortcut.WorkingDirectory = '{q(str(exe.parent))}'
+$shortcut.WindowStyle = 1
+$shortcut.Description = '{q(PRODUCT_NAME)}'
+$shortcut.IconLocation = '{q(str(exe))},0'
+$shortcut.Save()
+"""
+    result = _run_ps(script)
+    if result.returncode != 0:
+        log.warning("desktop shortcut failed: %s", (result.stderr or result.stdout).strip())
+        return False
+    log.info("Desktop shortcut → %s", shortcut)
+    return True
+
+
+def remove_desktop_shortcut() -> None:
+    path = desktop_shortcut_path()
+    try:
+        if path.is_file():
+            path.unlink()
+            log.info("Desktop shortcut removed")
+    except OSError as exc:
+        log.warning("Could not remove desktop shortcut: %s", exc)
 
 
 def register_autostart() -> bool:
@@ -125,7 +173,7 @@ $regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{PRO
 New-Item -Path $regPath -Force | Out-Null
 Set-ItemProperty -Path $regPath -Name 'DisplayName' -Value '{PRODUCT_NAME}'
 Set-ItemProperty -Path $regPath -Name 'Publisher' -Value 'LockOn'
-Set-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '0.3.0'
+Set-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '0.3.1'
 Set-ItemProperty -Path $regPath -Name 'InstallLocation' -Value '{str(data_root()).replace("'", "''")}'
 Set-ItemProperty -Path $regPath -Name 'NoModify' -Value 1 -Type DWord
 Set-ItemProperty -Path $regPath -Name 'NoRepair' -Value 1 -Type DWord
@@ -181,6 +229,7 @@ def full_uninstall() -> None:
     stop_other_bridge_processes()
     remove_firewall_rule(8112)
     remove_uninstall_entry()
+    remove_desktop_shortcut()
     # Wipe data dir after this process exits (may include our exe).
     root = str(data_root()).replace("'", "''")
     remove_cmd = (

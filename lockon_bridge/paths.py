@@ -39,3 +39,11 @@ def app_executable() -> Path:
 
 def installed_exe_path() -> Path:
     return data_root() / "LockOnBridge.exe"
+
+
+def desktop_dir() -> Path:
+    return Path.home() / "Desktop"
+
+
+def desktop_shortcut_path() -> Path:
+    return desktop_dir() / f"{PRODUCT_NAME}.lnk"

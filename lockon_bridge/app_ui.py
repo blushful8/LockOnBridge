@@ -88,6 +88,11 @@ class BridgeApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self._apply_window_icon()
 
+        # First open of the .exe installs a stable LocalAppData copy + Desktop shortcut.
+        if is_frozen():
+            ensure_install_copy()
+            register_uninstall_entry()
+
         self.enabled_var = tk.BooleanVar(value=self.settings.enabled)
         self.port_var = tk.StringVar(value=str(self.settings.port))
         self.status_var = tk.StringVar(value="…")
