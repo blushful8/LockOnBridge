@@ -23,10 +23,10 @@ class RuntimeConfig:
     port: int = 8112
     game_host: str = "127.0.0.1"
     game_port: int = 8111
-    # Results UI often animates in after hangar flip — give it a moment, then sample longer.
-    frames: int = 10
-    frame_gap: float = 1.4
-    capture_delay_sec: float = 1.5
+    # Results UI often animates in after hangar flip — sample quickly while it is still open.
+    frames: int = 12
+    frame_gap: float = 0.9
+    capture_delay_sec: float = 0.8
     # Hangar/battle phase poll — only while War Thunder is running.
     poll_sec: float = 1.5
 

@@ -1,4 +1,4 @@
-from lockon_bridge.ocr_parse import parse_rewards_from_ocr_text
+from lockon_bridge.ocr_parse import looks_like_desktop_noise, parse_rewards_from_ocr_text
 
 
 def test_parses_english_total_block():
@@ -52,6 +52,38 @@ def test_parses_total_pair():
     assert report is not None
     assert report.research_points == 2100
     assert report.silver_lions == 7500
+
+
+def test_parses_latinized_ukrainian_premium_columns():
+    # Real OCR dump from UA client (Cyrillic mangled to Latin lookalikes).
+    text = (
+        "Bepciq 2.59.0.13 Micifl npoBaneHa APGAHi 60i, "
+        "Haropona 3a yuacTb B Micii: +34% , +20%' "
+        "3 npeMiYM0M 9 426' be3 npeMiYMa 1 088 6 016' "
+        "nporpec nocninxeHb"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1088
+    assert report.silver_lions == 6016
+    assert report.outcome == "defeat"
+
+
+def test_parses_bare_second_premium_header():
+    text = "Micifl npoBaneHa 3 npeMiYMOM 9 596' npeMiYMa 1 088 6 127'"
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1088
+    assert report.silver_lions == 6127
+
+
+def test_skips_desktop_noise():
+    text = (
+        "EPIC GAMES Telegram LockOn Bridge nopr HTTP "
+        "Microsoft Malware Protection NVIDIA App"
+    )
+    assert looks_like_desktop_noise(text)
+    assert parse_rewards_from_ocr_text(text) is None
 
 
 def test_returns_none_without_currency():
