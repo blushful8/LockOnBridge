@@ -184,14 +184,24 @@ if ($failed) {{ exit 1 }} else {{ exit 0 }}
             pass
 
     elevate = (
-        f"Start-Process -FilePath powershell.exe -Verb RunAs -Wait "
-        f"-ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"{script_path}\"'"
+        f"Start-Process -FilePath powershell.exe -Verb RunAs -Wait -WindowStyle Hidden "
+        f"-ArgumentList '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden "
+        f"-ExecutionPolicy Bypass -File \"{script_path}\"'"
     )
     try:
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
         completed = subprocess.run(
             [
                 "powershell.exe",
+                "-NoLogo",
                 "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
@@ -201,6 +211,8 @@ if ($failed) {{ exit 1 }} else {{ exit 0 }}
             text=True,
             timeout=900,
             check=False,
+            startupinfo=startupinfo,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"Could not start elevated installer: {exc}"

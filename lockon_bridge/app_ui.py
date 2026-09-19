@@ -15,9 +15,8 @@ from .autostart import (
     ensure_firewall_rule,
     ensure_install_copy,
     full_uninstall,
-    register_autostart,
+    prepare_enabled_runtime,
     register_uninstall_entry,
-    stop_other_bridge_processes,
     unregister_autostart,
 )
 from .i18n import EN, UK, Strings, strings_for
@@ -508,11 +507,7 @@ class BridgeApp:
     def _start_enabled(self, *, persist: bool) -> None:
         port = self._read_port()
         self.settings = update_settings(enabled=True, port=port)
-        stop_other_bridge_processes()
-        ensure_install_copy()
-        register_autostart()
-        register_uninstall_entry()
-        ensure_firewall_rule(self.settings.port)
+        prepare_enabled_runtime(port=port)
         self._set_ui_enabled(True)
         self.status_var.set(self.strings.status_enabled_waiting)
         self.agent.start(self.settings)

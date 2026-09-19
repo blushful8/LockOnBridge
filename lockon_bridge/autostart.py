@@ -5,8 +5,10 @@ import os
 import shutil
 import subprocess
 import sys
+import winreg
 from pathlib import Path
 
+from . import __version__
 from .paths import (
     PRODUCT_ID,
     PRODUCT_NAME,
@@ -22,12 +24,25 @@ from .paths import (
 
 log = logging.getLogger("lockon_bridge")
 
+# Prevent console flashes when spawning helpers on Windows.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
 
 def _run_ps(script: str) -> subprocess.CompletedProcess[str]:
+    """Run PowerShell with no visible window."""
+    startupinfo = None
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
     return subprocess.run(
         [
             "powershell.exe",
+            "-NoLogo",
             "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
@@ -36,7 +51,29 @@ def _run_ps(script: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        startupinfo=startupinfo,
+        creationflags=_CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
+
+
+def _run_hidden(args: list[str]) -> subprocess.CompletedProcess[str]:
+    startupinfo = None
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+        startupinfo=startupinfo,
+        creationflags=_CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
+
+
+def _q(value: str) -> str:
+    return value.replace("'", "''")
 
 
 def _launch_parts() -> tuple[str, str, str]:
@@ -44,13 +81,11 @@ def _launch_parts() -> tuple[str, str, str]:
     if is_frozen():
         exe = str(installed_exe_path() if installed_exe_path().is_file() else app_executable())
         return exe, "--background", str(Path(exe).parent)
-    # Dev / source: prefer pythonw so no console flashes at logon.
     py = Path(sys.executable)
     pythonw = py.with_name("pythonw.exe")
     execute = str(pythonw if pythonw.is_file() else py)
-    # Package root = parent of lockon_bridge/
     package_root = Path(__file__).resolve().parent.parent
-    return execute, f'-m lockon_bridge --background', str(package_root)
+    return execute, "-m lockon_bridge --background", str(package_root)
 
 
 def ensure_install_copy() -> Path | None:
@@ -69,7 +104,6 @@ def ensure_install_copy() -> Path | None:
     try:
         if src_exe.resolve() != dst_exe.resolve():
             if dst_dir.exists():
-                # Replace tree carefully — keep going even if some files are locked.
                 for item in src_dir.iterdir():
                     target = dst_dir / item.name
                     if item.is_dir():
@@ -100,20 +134,17 @@ def ensure_desktop_shortcut(target: Path | None = None) -> bool:
     if not exe.is_file():
         return False
 
-    def q(value: str) -> str:
-        return value.replace("'", "''")
-
     shortcut = desktop_shortcut_path()
     script = f"""
 $ErrorActionPreference = 'Stop'
 $shell = New-Object -ComObject WScript.Shell
-$lnkPath = '{q(str(shortcut))}'
+$lnkPath = '{_q(str(shortcut))}'
 $shortcut = $shell.CreateShortcut($lnkPath)
-$shortcut.TargetPath = '{q(str(exe))}'
-$shortcut.WorkingDirectory = '{q(str(exe.parent))}'
+$shortcut.TargetPath = '{_q(str(exe))}'
+$shortcut.WorkingDirectory = '{_q(str(exe.parent))}'
 $shortcut.WindowStyle = 1
-$shortcut.Description = '{q(PRODUCT_NAME)}'
-$shortcut.IconLocation = '{q(str(exe))},0'
+$shortcut.Description = '{_q(PRODUCT_NAME)}'
+$shortcut.IconLocation = '{_q(str(exe))},0'
 $shortcut.Save()
 """
     result = _run_ps(script)
@@ -142,34 +173,57 @@ def register_autostart() -> bool:
         cwd = str(Path(execute).parent)
         arguments = "--background"
 
-    # Escape for PowerShell single-quoted strings
-    def q(value: str) -> str:
-        return value.replace("'", "''")
+    # Prefer schtasks (no PowerShell window) with a silent fallback to PS.
+    # /RL LIMITED = standard user; /F = overwrite.
+    tr = f'"{execute}" {arguments}'.strip()
+    result = _run_hidden(
+        [
+            "schtasks.exe",
+            "/Create",
+            "/TN",
+            TASK_NAME,
+            "/TR",
+            tr,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/F",
+        ]
+    )
+    if result.returncode == 0:
+        log.info("Autostart registered via schtasks (%s)", TASK_NAME)
+        return True
 
     script = f"""
 $ErrorActionPreference = 'Stop'
-$taskName = '{q(TASK_NAME)}'
-$action = New-ScheduledTaskAction -Execute '{q(execute)}' -Argument '{q(arguments)}' -WorkingDirectory '{q(cwd)}'
+$taskName = '{_q(TASK_NAME)}'
+$action = New-ScheduledTaskAction -Execute '{_q(execute)}' -Argument '{_q(arguments)}' -WorkingDirectory '{_q(cwd)}'
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 """
-    result = _run_ps(script)
-    if result.returncode != 0:
-        log.warning("register_autostart failed: %s", (result.stderr or result.stdout).strip())
+    result_ps = _run_ps(script)
+    if result_ps.returncode != 0:
+        log.warning(
+            "register_autostart failed (schtasks: %s; ps: %s)",
+            (result.stderr or result.stdout).strip(),
+            (result_ps.stderr or result_ps.stdout).strip(),
+        )
         return False
     log.info("Autostart registered (%s)", TASK_NAME)
     return True
 
 
 def unregister_autostart() -> None:
-    script = f"""
-Unregister-ScheduledTask -TaskName '{TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
-Stop-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue
-"""
-    _run_ps(script)
+    _run_hidden(["schtasks.exe", "/Delete", "/TN", TASK_NAME, "/F"])
+    _run_ps(
+        f"Unregister-ScheduledTask -TaskName '{_q(TASK_NAME)}' -Confirm:$false "
+        f"-ErrorAction SilentlyContinue; "
+        f"Stop-ScheduledTask -TaskName '{_q(TASK_NAME)}' -ErrorAction SilentlyContinue"
+    )
     log.info("Autostart removed")
 
 
@@ -178,54 +232,101 @@ def register_uninstall_entry() -> None:
     if is_frozen():
         uninstall = f'"{exe}" --uninstall'
     else:
-        uninstall = (
-            f'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
-            f'"& \'{sys.executable}\' -m lockon_bridge --uninstall"'
+        uninstall = f'"{sys.executable}" -m lockon_bridge --uninstall'
+    try:
+        key = winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER,
+            rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{PRODUCT_ID}",
         )
-    script = f"""
-$regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{PRODUCT_ID}'
-New-Item -Path $regPath -Force | Out-Null
-Set-ItemProperty -Path $regPath -Name 'DisplayName' -Value '{PRODUCT_NAME}'
-Set-ItemProperty -Path $regPath -Name 'Publisher' -Value 'LockOn'
-Set-ItemProperty -Path $regPath -Name 'DisplayVersion' -Value '0.3.9'
-Set-ItemProperty -Path $regPath -Name 'InstallLocation' -Value '{str(data_root()).replace("'", "''")}'
-Set-ItemProperty -Path $regPath -Name 'NoModify' -Value 1 -Type DWord
-Set-ItemProperty -Path $regPath -Name 'NoRepair' -Value 1 -Type DWord
-Set-ItemProperty -Path $regPath -Name 'UninstallString' -Value '{uninstall.replace("'", "''")}'
-Set-ItemProperty -Path $regPath -Name 'QuietUninstallString' -Value '{uninstall.replace("'", "''")}'
-"""
-    if is_frozen() and exe.is_file():
-        script += f"\nSet-ItemProperty -Path $regPath -Name 'DisplayIcon' -Value '{str(exe).replace(chr(39), chr(39)+chr(39))}'"
-    _run_ps(script)
+        with key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, PRODUCT_NAME)
+            winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "LockOn")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, __version__)
+            winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(data_root()))
+            winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstall)
+            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, uninstall)
+            if is_frozen() and exe.is_file():
+                winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(exe))
+        log.info("Uninstall registry entry registered")
+    except OSError as exc:
+        log.warning("register_uninstall_entry failed: %s", exc)
 
 
 def remove_uninstall_entry() -> None:
-    _run_ps(
-        f"Remove-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{PRODUCT_ID}' "
-        f"-Recurse -Force -ErrorAction SilentlyContinue"
-    )
+    try:
+        winreg.DeleteKey(
+            winreg.HKEY_CURRENT_USER,
+            rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{PRODUCT_ID}",
+        )
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        log.warning("remove_uninstall_entry failed: %s", exc)
 
 
 def ensure_firewall_rule(port: int) -> None:
-    script = f"""
-$ruleName = 'LockOn Bridge {port}'
-Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort {int(port)} -Action Allow -Profile Private -ErrorAction SilentlyContinue | Out-Null
+    name = f"LockOn Bridge {int(port)}"
+    # Remove old rule(s) then add — all hidden.
+    _run_hidden(
+        [
+            "netsh",
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            f"name={name}",
+        ]
+    )
+    result = _run_hidden(
+        [
+            "netsh",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            f"name={name}",
+            "dir=in",
+            "action=allow",
+            "protocol=TCP",
+            f"localport={int(port)}",
+            "profile=private",
+        ]
+    )
+    if result.returncode != 0:
+        # Fallback to PowerShell (still hidden) if netsh is restricted.
+        script = f"""
+$ruleName = '{_q(name)}'
+Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
+  Remove-NetFirewallRule -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP `
+  -LocalPort {int(port)} -Action Allow -Profile Private -ErrorAction SilentlyContinue | Out-Null
 """
-    _run_ps(script)
+        _run_ps(script)
 
 
 def remove_firewall_rule(port: int = 8112) -> None:
-    _run_ps(
-        f"Get-NetFirewallRule -DisplayName 'LockOn Bridge {port}' -ErrorAction SilentlyContinue | "
-        f"Remove-NetFirewallRule -ErrorAction SilentlyContinue"
+    name = f"LockOn Bridge {int(port)}"
+    _run_hidden(
+        [
+            "netsh",
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            f"name={name}",
+        ]
     )
 
 
 def stop_other_bridge_processes() -> None:
     """Stop other LockOn Bridge agents (not the current PID)."""
     me = os.getpid()
-    script = f"""
+    try:
+        import psutil
+    except ImportError:
+        script = f"""
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
   Where-Object {{
     $_.ProcessId -ne {me} -and (
@@ -235,7 +336,32 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
   }} |
   ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}
 """
-    _run_ps(script)
+        _run_ps(script)
+        return
+
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            pid = int(proc.info["pid"] or 0)
+            if pid == me or pid <= 0:
+                continue
+            name = (proc.info.get("name") or "").lower()
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            if "lockonbridge" in name or "lockon_bridge" in cmdline:
+                proc.kill()
+        except (psutil.Error, OSError, TypeError, ValueError):
+            continue
+
+
+def prepare_enabled_runtime(*, port: int) -> None:
+    """
+    One-shot setup when Bridge is turned ON / starts enabled.
+    Keeps PowerShell usage minimal and fully hidden.
+    """
+    stop_other_bridge_processes()
+    ensure_install_copy()
+    register_autostart()
+    register_uninstall_entry()
+    ensure_firewall_rule(port)
 
 
 def full_uninstall() -> None:
@@ -244,13 +370,28 @@ def full_uninstall() -> None:
     remove_firewall_rule(8112)
     remove_uninstall_entry()
     remove_desktop_shortcut()
-    # Wipe data dir after this process exits (may include our exe).
     root = str(data_root()).replace("'", "''")
     remove_cmd = (
         f"Start-Sleep -Seconds 2; "
         f"Remove-Item -LiteralPath '{root}' -Recurse -Force -ErrorAction SilentlyContinue"
     )
+    startupinfo = None
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
     subprocess.Popen(
-        ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", remove_cmd],
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            remove_cmd,
+        ],
         close_fds=True,
+        startupinfo=startupinfo,
+        creationflags=_CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
