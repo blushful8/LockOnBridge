@@ -132,19 +132,51 @@ def crop_norm(image: Image.Image, rect: NormRect) -> Image.Image | None:
     return image.crop((left, top, right, bottom))
 
 
-def iter_reward_digit_rois(image: Image.Image) -> list[tuple[str, Image.Image]]:
-    """With / without / both / totals digit crops from a WT client frame."""
+def iter_reward_digit_rois(
+    image: Image.Image,
+    *,
+    dense: bool = False,
+) -> list[tuple[str, Image.Image]]:
+    """
+    With / without / both / totals digit crops from a WT client frame.
+
+    ``dense=False`` (default): only the primary ROIs needed for a confident vote —
+    much faster than OCR'ing every wide/tight/shift duplicate every frame.
+    """
     full = is_full_client_frame(image)
     rects: list[NormRect] = []
+
+    def _pick(pool: tuple[NormRect, ...], *, prefer_substrings: tuple[str, ...]) -> list[NormRect]:
+        if dense:
+            return list(pool)
+        chosen: list[NormRect] = []
+        for needle in prefer_substrings:
+            for rect in pool:
+                if needle in rect.tag and rect not in chosen:
+                    chosen.append(rect)
+                    break
+        return chosen
+
     if full:
-        # Left + center header columns; skip mid chat ROIs (they misread on full client).
-        rects.extend(WITH_DIGIT_ROIS)
-        rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" not in r.tag)
-        rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" not in r.tag)
+        rects.extend(
+            _pick(
+                WITH_DIGIT_ROIS,
+                prefer_substrings=("with-digits-center", "with-digits"),
+            )
+        )
+        without_pool = tuple(r for r in WITHOUT_DIGIT_ROIS if "-mid" not in r.tag)
+        rects.extend(
+            _pick(
+                without_pool,
+                prefer_substrings=("without-digits-center", "without-digits"),
+            )
+        )
+        both_pool = tuple(r for r in BOTH_DIGIT_ROIS if "-mid" not in r.tag)
+        rects.extend(_pick(both_pool, prefer_substrings=("both-digits-center", "both-digits")))
     else:
         rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag)
         rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" in r.tag)
-    rects.extend(TOTAL_DIGIT_ROIS)
+    rects.extend(_pick(TOTAL_DIGIT_ROIS, prefer_substrings=("total-digits-wide", "total-digits")))
 
     out: list[tuple[str, Image.Image]] = []
     for rect in rects:

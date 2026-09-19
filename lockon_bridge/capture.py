@@ -437,8 +437,15 @@ def ocr_screen_capture(
     *,
     wt_ui_language: str | None = None,
     backend: str | None = None,
+    roi_only: bool = False,
 ) -> tuple[bytes, list[tuple[str, str]]]:
-    """Return (primary_png, variants) so callers can dump the frame that was OCR'd."""
+    """Return (primary_png, variants) so callers can dump the frame that was OCR'd.
+
+    When digit ROIs already yield a confident reward pair, skip the multi-engine
+    full-panel OCR (~several seconds). Pass ``roi_only=True`` to force that path
+    (settle confirmation frames).
+    """
+    from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
     from .roi_rewards import extract_roi_reward_variants
     from .settings import load_settings
 
@@ -460,13 +467,32 @@ def ocr_screen_capture(
     primary = _png_from_image(panel)
 
     variants: list[tuple[str, str]] = []
-    # 1) Geometric digit ROIs first (highest priority in choose_best).
     try:
         variants.extend(extract_roi_reward_variants(frame))
     except Exception as exc:  # noqa: BLE001
         log.warning("ROI digit extract failed: %s", exc)
 
-    # 2) Broader panel / band OCR as fallback.
+    roi_best = choose_best_report(
+        [
+            (text, parse_rewards_from_ocr_text(text))
+            for tag, text in variants
+            if tag.startswith("roi:")
+        ]
+    )
+    roi_confident = (
+        roi_best is not None and roi_best[1].confidence >= 0.85
+    )
+    if roi_only or roi_confident:
+        if roi_confident:
+            log.info(
+                "OCR fast path: ROI confident RP=%s SL=%s conf=%.2f — skip panel engines",
+                roi_best[1].research_points,
+                roi_best[1].silver_lions,
+                roi_best[1].confidence,
+            )
+        return primary, variants
+
+    # Fallback: broader panel / band OCR when digit ROIs are weak.
     for roi_tag, crop in _crop_results_rois(frame):
         png = _png_from_image(crop)
         for eng_tag, text in ocr_png_variants(png, wt_ui_language=lang, backend=mode):

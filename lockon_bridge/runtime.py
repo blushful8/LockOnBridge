@@ -27,16 +27,16 @@ class RuntimeConfig:
     port: int = 8112
     game_host: str = "127.0.0.1"
     game_port: int = 8111
-    # Sample long enough for the RP/SL count-up animation to finish.
-    frames: int = 24
-    # After the first burst, space frames a bit — settle still needs duplicates.
-    frame_gap: float = 0.7
-    # First N frames after hangar flip — capture densely so a quick results close is not missed.
-    early_frames: int = 10
-    early_frame_gap: float = 0.35
+    # Hard ceiling only — settle usually publishes after 2 matching frames.
+    frames: int = 8
+    # Idle gap *after* OCR finishes (OCR itself is the long part).
+    frame_gap: float = 0.35
+    # First frames: almost no idle; catch quick results closes.
+    early_frames: int = 4
+    early_frame_gap: float = 0.12
     # Almost no wait: results often appear immediately; a long delay misses users who close fast.
     # Count-up is handled by SettleTracker, not by sitting idle before the first screenshot.
-    capture_delay_sec: float = 0.35
+    capture_delay_sec: float = 0.2
     # Consecutive near-identical OCR pairs required before publish (never publish frame 1 alone).
     settle_stable_frames: int = 2
     # Hangar/battle phase poll — only while War Thunder is running.
@@ -146,13 +146,15 @@ class BridgeRuntime:
             cfg=SettleConfig(stable_required=max(2, cfg.settle_stable_frames)),
         )
         last_preview = ""
+        saw_confident = False
 
         for index in range(cfg.frames):
             if self._stop.is_set():
                 return
             gap = cfg.early_frame_gap if index < cfg.early_frames else cfg.frame_gap
             try:
-                png, variants = ocr_screen_capture()
+                # After the first confident ROI read, confirm settle with digit ROIs only.
+                png, variants = ocr_screen_capture(roi_only=saw_confident)
                 if not variants:
                     last_preview = "(empty OCR)"
                     log.info(
@@ -203,6 +205,7 @@ class BridgeRuntime:
                             _MIN_CONFIDENT_REPORT,
                         )
                     else:
+                        saw_confident = True
                         settled = tracker.observe(report)
                         if settled is None:
                             log.info(

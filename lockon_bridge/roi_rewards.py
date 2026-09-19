@@ -250,16 +250,19 @@ def _vote_pair(pairs: list[tuple[int, int]]) -> tuple[int, int] | None:
 
 
 def _read_roi_pair(crop: Image.Image) -> tuple[str, tuple[int, int] | None]:
-    """Prefer Windows OCR on ROI; fall back to digit Tesseract."""
+    """Windows OCR first (accurate on blue RP); Tesseract digits as fallback."""
     text = windows_roi_text(crop)
     pair = pair_from_digit_text(text) if text else None
-    if pair is not None:
+    if pair is not None and _column_pair_usable(*pair):
         return text, pair
     digits = tesseract_digits_text(crop)
     if digits:
-        pair = pair_from_digit_text(digits)
-        return digits, pair
-    return text, None
+        tess_pair = pair_from_digit_text(digits)
+        if tess_pair is not None and _column_pair_usable(*tess_pair):
+            return digits, tess_pair
+    if pair is not None:
+        return text, pair
+    return text or digits, None
 
 
 # --- Landmark path (WinRT word boxes) ---
@@ -533,12 +536,13 @@ def extract_roi_reward_variants(
     image: Image.Image,
     *,
     prefer_with: bool | None = None,
+    dense: bool = False,
 ) -> list[tuple[str, str]]:
     """
     Synthetic OCR texts for choose_best / parse_rewards_from_ocr_text.
 
-    Combines landmark boxes + relative digit ROIs, then emits a consensus when
-    the preferred premium column (and optionally Всього) agree.
+    Digits first (fast). Landmark WinRT only if digit votes are weak. Dense ROI
+    set is a fallback when the lean set cannot form a usable preferred pair.
     """
     if prefer_with is None:
         try:
@@ -553,66 +557,77 @@ def extract_roi_reward_variants(
     without_pairs: list[tuple[int, int]] = []
     total_pairs: list[tuple[int, int]] = []
 
-    try:
-        landmark_variants = pairs_from_landmarks(image)
-        variants.extend(landmark_variants)
-        for tag, text in landmark_variants:
-            pair = pair_from_digit_text(text)
-            if pair is None:
+    def _ingest_digit_rois(*, use_dense: bool) -> None:
+        for tag, crop in iter_reward_digit_rois(image, dense=use_dense):
+            text, pair = _read_roi_pair(crop)
+            if not text:
                 continue
-            if "without" in tag:
-                without_pairs.append(pair)
-            elif "with" in tag and "without" not in tag:
+            if pair is None:
+                variants.append((f"roi:{tag}", text))
+                continue
+            rp, sl = pair
+            if tag.startswith("with") and not tag.startswith("without"):
                 with_pairs.append(pair)
-            else:
-                total_pairs.append(pair)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("landmark ROI failed: %s", exc)
-
-    for tag, crop in iter_reward_digit_rois(image):
-        text, pair = _read_roi_pair(crop)
-        if not text:
-            continue
-        if pair is None:
-            variants.append((f"roi:{tag}", text))
-            continue
-        rp, sl = pair
-        if tag.startswith("with") and not tag.startswith("without"):
-            with_pairs.append(pair)
-            with_pairs.append(pair)  # digit ROI outweighs landmark band
-            labeled = f"З преміумом {rp} {sl}"
-        elif tag.startswith("without"):
-            without_pairs.append(pair)
-            without_pairs.append(pair)
-            labeled = f"Без преміума {rp} {sl}"
-        elif tag.startswith("both"):
-            # Four-cell crop: parse both columns via premium-table helpers.
-            from .ocr_parse import (
-                _with_pair_from_premium_amounts,
-                _without_pair_from_premium_amounts,
-            )
-
-            amounts = [a for a in _amounts_in(text, min_value=50) if a <= 250_000]
-            w_pair = _with_pair_from_premium_amounts(amounts)
-            wo_pair = _without_pair_from_premium_amounts(amounts)
-            if w_pair[0] is not None and w_pair[1] is not None:
-                with_pairs.extend([(w_pair[0], w_pair[1])] * 2)
-                variants.append((f"roi:{tag}-with", f"З преміумом {w_pair[0]} {w_pair[1]}"))
-            if wo_pair[0] is not None and wo_pair[1] is not None:
-                without_pairs.extend([(wo_pair[0], wo_pair[1])] * 2)
-                variants.append((f"roi:{tag}-without", f"Без преміума {wo_pair[0]} {wo_pair[1]}"))
-            # Also keep the naive pair as a weak signal for the preferred column.
-            if prefer_with:
-                with_pairs.append(pair)
+                with_pairs.append(pair)  # digit ROI outweighs landmark band
                 labeled = f"З преміумом {rp} {sl}"
-            else:
+            elif tag.startswith("without"):
+                without_pairs.append(pair)
                 without_pairs.append(pair)
                 labeled = f"Без преміума {rp} {sl}"
-        else:
-            total_pairs.append(pair)
-            total_pairs.append(pair)  # digit ROI totals beat landmark band noise
-            labeled = f"Всього {rp} {sl}"
-        variants.append((f"roi:{tag}", labeled))
+            elif tag.startswith("both"):
+                from .ocr_parse import (
+                    _with_pair_from_premium_amounts,
+                    _without_pair_from_premium_amounts,
+                )
+
+                amounts = [a for a in _amounts_in(text, min_value=50) if a <= 250_000]
+                w_pair = _with_pair_from_premium_amounts(amounts)
+                wo_pair = _without_pair_from_premium_amounts(amounts)
+                if w_pair[0] is not None and w_pair[1] is not None:
+                    with_pairs.extend([(w_pair[0], w_pair[1])] * 2)
+                    variants.append((f"roi:{tag}-with", f"З преміумом {w_pair[0]} {w_pair[1]}"))
+                if wo_pair[0] is not None and wo_pair[1] is not None:
+                    without_pairs.extend([(wo_pair[0], wo_pair[1])] * 2)
+                    variants.append(
+                        (f"roi:{tag}-without", f"Без преміума {wo_pair[0]} {wo_pair[1]}")
+                    )
+                if prefer_with:
+                    with_pairs.append(pair)
+                    labeled = f"З преміумом {rp} {sl}"
+                else:
+                    without_pairs.append(pair)
+                    labeled = f"Без преміума {rp} {sl}"
+            else:
+                total_pairs.append(pair)
+                total_pairs.append(pair)
+                labeled = f"Всього {rp} {sl}"
+            variants.append((f"roi:{tag}", labeled))
+
+    _ingest_digit_rois(use_dense=dense)
+
+    preferred_early = _vote_pair(with_pairs if prefer_with else without_pairs)
+    need_more = preferred_early is None or not _column_pair_usable(*preferred_early)
+    if need_more and not dense:
+        _ingest_digit_rois(use_dense=True)
+        preferred_early = _vote_pair(with_pairs if prefer_with else without_pairs)
+        need_more = preferred_early is None or not _column_pair_usable(*preferred_early)
+
+    if need_more:
+        try:
+            landmark_variants = pairs_from_landmarks(image)
+            variants.extend(landmark_variants)
+            for tag, text in landmark_variants:
+                pair = pair_from_digit_text(text)
+                if pair is None:
+                    continue
+                if "without" in tag:
+                    without_pairs.append(pair)
+                elif "with" in tag and "without" not in tag:
+                    with_pairs.append(pair)
+                else:
+                    total_pairs.append(pair)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("landmark ROI failed: %s", exc)
 
     with_vote = _vote_pair(with_pairs)
     without_vote = _vote_pair(without_pairs)
