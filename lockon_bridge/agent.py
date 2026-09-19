@@ -25,8 +25,9 @@ StatusCallback = Callable[[AgentStatus, str], None]
 
 class BridgeAgent:
     """
-    Background controller: when enabled, waits for War Thunder, then runs OCR/HTTP.
-    When disabled, no threads and no sockets.
+    Background controller: when enabled, HTTP :8112 stays up so the phone can
+    always fetch the last OCR report. OCR watching runs whenever War Thunder is
+    detected; closing the game no longer wipes the report or stops HTTP.
     """
 
     def __init__(self) -> None:
@@ -89,58 +90,85 @@ class BridgeAgent:
         self._set_status(AgentStatus.DISABLED, "Off")
 
     def apply_settings(self, settings: BridgeSettings) -> None:
-        """Hot-update settings; restarts runtime if already active."""
+        """Hot-update settings; restarts HTTP if already running (port/bind)."""
         with self._lock:
             self._settings = settings
             runtime = self._runtime
         if runtime is not None and runtime.running:
-            # Port/bind changes need a restart of HTTP — stop and let loop restart.
             runtime.stop()
             with self._lock:
                 self._runtime = None
 
+    def _ensure_runtime(self, settings: BridgeSettings) -> BridgeRuntime:
+        with self._lock:
+            runtime = self._runtime
+            if runtime is not None and runtime.running:
+                return runtime
+            if runtime is not None:
+                # Stopped HTTP but keep store if same object — rebuild cleanly.
+                try:
+                    runtime.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            config = RuntimeConfig(
+                bind=settings.bind,
+                port=settings.port,
+                game_host=settings.game_host,
+                game_port=settings.game_port,
+            )
+            runtime = BridgeRuntime(config)
+            self._runtime = runtime
+        runtime.start()
+        return runtime
+
     def _loop(self) -> None:
-        self._set_status(AgentStatus.IDLE, "Waiting for War Thunder…")
+        self._set_status(AgentStatus.IDLE, "Starting…")
         try:
             while not self._stop.is_set():
                 settings = self._settings
-                if not is_war_thunder_running():
-                    self._set_status(
-                        AgentStatus.IDLE,
-                        f"Idle — checks every {settings.idle_poll_sec:.0f}s",
-                    )
-                    # Sleep in chunks so Disable reacts quickly.
+                try:
+                    self._ensure_runtime(settings)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("failed to start Bridge HTTP: %s", exc)
+                    self._set_status(AgentStatus.IDLE, f"Port {settings.port} busy/error")
                     waited = 0.0
-                    while waited < settings.idle_poll_sec and not self._stop.is_set():
+                    while waited < 5.0 and not self._stop.is_set():
                         time.sleep(0.5)
                         waited += 0.5
                     continue
 
-                self._set_status(AgentStatus.ACTIVE, "War Thunder — Bridge active")
-                config = RuntimeConfig(
-                    bind=settings.bind,
-                    port=settings.port,
-                    game_host=settings.game_host,
-                    game_port=settings.game_port,
-                )
-                runtime = BridgeRuntime(config)
-                with self._lock:
-                    self._runtime = runtime
-                runtime.start()
-                try:
+                if is_war_thunder_running():
+                    self._set_status(AgentStatus.ACTIVE, "War Thunder — Bridge active")
                     while not self._stop.is_set() and is_war_thunder_running():
+                        # Port/bind change from UI stops runtime; restart below.
+                        with self._lock:
+                            runtime = self._runtime
+                        if runtime is None or not runtime.running:
+                            break
                         time.sleep(1.0)
-                finally:
-                    runtime.stop()
-                    with self._lock:
-                        if self._runtime is runtime:
-                            self._runtime = None
-                if not self._stop.is_set():
-                    self._set_status(AgentStatus.IDLE, "War Thunder closed")
-                    time.sleep(1.0)
+                else:
+                    self._set_status(
+                        AgentStatus.IDLE,
+                        f"Waiting for War Thunder — phone can still read last report (:{settings.port})",
+                    )
+                    waited = 0.0
+                    while waited < settings.idle_poll_sec and not self._stop.is_set():
+                        with self._lock:
+                            runtime = self._runtime
+                        if runtime is None or not runtime.running:
+                            break
+                        if is_war_thunder_running():
+                            break
+                        time.sleep(0.5)
+                        waited += 0.5
         except Exception as exc:  # noqa: BLE001
             log.exception("agent loop crashed: %s", exc)
             self._set_status(AgentStatus.DISABLED, f"Error: {exc}")
         finally:
+            with self._lock:
+                runtime = self._runtime
+                self._runtime = None
+            if runtime is not None:
+                runtime.stop()
             if self._stop.is_set():
                 self._set_status(AgentStatus.DISABLED, "Off")

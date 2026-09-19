@@ -53,7 +53,7 @@ class BridgeRuntime:
         if self.running:
             return
         self._stop.clear()
-        self.store = ReportStore()
+        # Keep existing store (and disk-backed last report) across WT sessions.
         self._server = serve(self.store, host=self.config.bind, port=self.config.port)
         self._http_thread = threading.Thread(
             target=self._server.serve_forever,
@@ -93,8 +93,8 @@ class BridgeRuntime:
         if self._watch_thread is not None:
             self._watch_thread.join(timeout=3.0)
             self._watch_thread = None
-        self.store = ReportStore()
-        log.info("Bridge stopped (War Thunder closed)")
+        # Do NOT clear self.store — phone may still poll after the game closes.
+        log.info("Bridge HTTP stopped (last report kept)")
 
     def _watch_loop(self) -> None:
         was_in_battle = False

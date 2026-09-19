@@ -20,12 +20,12 @@ VSVersionInfo(
           [
             StringStruct("CompanyName", "LockOn"),
             StringStruct("FileDescription", "LockOn Bridge вЂ” OCR companion for War Thunder"),
-            StringStruct("FileVersion", "0.3.15"),
+            StringStruct("FileVersion", "0.3.16"),
             StringStruct("InternalName", "LockOnBridge"),
             StringStruct("LegalCopyright", "Copyright (c) LockOn contributors"),
             StringStruct("OriginalFilename", "LockOnBridge.exe"),
             StringStruct("ProductName", "LockOn Bridge"),
-            StringStruct("ProductVersion", "0.3.15"),
+            StringStruct("ProductVersion", "0.3.16"),
           ],
         )
       ]

@@ -6,11 +6,13 @@ from typing import Iterable
 import psutil
 
 # War Thunder client process names (Steam / Gaijin launcher).
-WT_PROCESS_NAMES = frozenset({"aces.exe", "aces_be.exe"})
+# psutil usually returns "aces.exe"; some hosts report the stem only.
+WT_PROCESS_NAMES = frozenset({"aces.exe", "aces_be.exe", "aces", "aces_be"})
 
 
 def _normalize(name: str | None) -> str:
-    return (name or "").strip().lower()
+    raw = (name or "").strip().lower()
+    return raw[:-4] if raw.endswith(".exe") else raw
 
 
 def war_thunder_pids(names: Iterable[str] = WT_PROCESS_NAMES) -> list[int]:
