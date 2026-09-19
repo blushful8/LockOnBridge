@@ -41,8 +41,13 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $folder = Join-Path $Root "dist\LockOnBridge"
 $exe = Join-Path $folder "LockOnBridge.exe"
+$uninst = Join-Path $folder "uninstall.exe"
 if (-not (Test-Path $exe)) {
     Write-Host "Build failed - exe not found in onedir output." -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path $uninst)) {
+    Write-Host "Build failed - uninstall.exe not found next to LockOnBridge.exe." -ForegroundColor Red
     exit 1
 }
 

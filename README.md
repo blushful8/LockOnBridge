@@ -68,7 +68,7 @@ This is a **false positive**, not real malware. Releases are built as **onedir Z
 | **Check for updates** | Asks GitHub Releases; after confirmation downloads and replaces the program, then restarts |
 | **Desktop shortcut** | Created on first launch (points to the installed copy under LocalAppData) |
 | **Hide to tray** | Window closes to the notification area (only when enabled) |
-| **Uninstall** | Removes autostart, firewall rule, and local files |
+| **Uninstall** | In-app **Uninstall…**, or double-click **`uninstall.exe`** next to `LockOnBridge.exe` |
 
 Logs: `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`
 
@@ -76,8 +76,13 @@ Logs: `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`
 
 ## Uninstall
 
-In LockOn Bridge: **Uninstall…**  
-Or: **Windows Settings → Apps → LockOn Bridge → Uninstall**
+Any of:
+
+- Double-click **`uninstall.exe`** in the same folder as `LockOnBridge.exe` (ZIP extract or `%LOCALAPPDATA%\LockOnBridge\app`)
+- In LockOn Bridge: **Uninstall…**
+- **Windows Settings → Apps → LockOn Bridge → Uninstall**
+
+This stops Bridge processes, removes autostart (scheduled task), the firewall rule for port 8112, the Desktop shortcut, the Apps & Features entry, and deletes `%LOCALAPPDATA%\LockOnBridge` (app, logs, settings).
 
 ---
 
@@ -104,6 +109,8 @@ Local LAN only. No cloud. No account. OCR runs only for a few frames right after
 **SmartScreen / Defender:** немає платного підпису. Defender часто хибно позначає ZIP як `Sabsik.TE.A!ml` / `Wacatac.B!ml` (ML). Відновіть у **Захист від вірусів → Журнал захисту → Дозволити**, або виключіть `%LOCALAPPDATA%\LockOnBridge`. Беріть лише офіційний ZIP з Releases. Повний фікс — платний code signing.
 
 **Вимкнути без навантаження:** вимкніть **Bridge enabled** — автозапуск знімається, фоновий процес не працює.
+
+**Видалити:** запустіть **`uninstall.exe`** поруч із `LockOnBridge.exe`, або **Видалити…** у вікні Bridge / через Параметри Windows → Застосунки.
 
 Застосунок LockOn: https://github.com/blushful8/LockOn
 

@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # onedir + no UPX: unsigned one-file/UPX builds are frequently false-positive'd by Defender.
+# Two EXEs share one _internal folder: LockOnBridge.exe + uninstall.exe
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas = []
@@ -40,7 +41,24 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+u = Analysis(
+    ["run_uninstall.py"],
+    pathex=[],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+)
+
+MERGE((a, "LockOnBridge", "LockOnBridge"), (u, "uninstall", "uninstall"))
+
 pyz = PYZ(a.pure)
+pyz_u = PYZ(u.pure)
 
 exe = EXE(
     pyz,
@@ -63,10 +81,33 @@ exe = EXE(
     manifest="assets/LockOnBridge.manifest",
 )
 
+uninstall_exe = EXE(
+    pyz_u,
+    u.scripts,
+    [],
+    exclude_binaries=True,
+    name="uninstall",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon="assets/lockon_bridge.ico",
+    version="uninstall_version_info.txt",
+)
+
 coll = COLLECT(
     exe,
+    uninstall_exe,
     a.binaries,
     a.datas,
+    u.binaries,
+    u.datas,
     strip=False,
     upx=False,
     upx_exclude=[],

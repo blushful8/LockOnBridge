@@ -44,6 +44,10 @@ def installed_exe_path() -> Path:
     return app_install_dir() / "LockOnBridge.exe"
 
 
+def installed_uninstall_path() -> Path:
+    return app_install_dir() / "uninstall.exe"
+
+
 def desktop_dir() -> Path:
     return Path.home() / "Desktop"
 

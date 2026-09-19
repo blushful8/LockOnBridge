@@ -1,6 +1,6 @@
 # UTF-8
 #
-# PyInstaller version resource for LockOnBridge.exe
+# PyInstaller version resource for uninstall.exe
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(0, 3, 12, 0),
@@ -19,11 +19,11 @@ VSVersionInfo(
           "040904B0",
           [
             StringStruct("CompanyName", "LockOn"),
-            StringStruct("FileDescription", "LockOn Bridge — OCR companion for War Thunder"),
+            StringStruct("FileDescription", "LockOn Bridge Uninstaller"),
             StringStruct("FileVersion", "0.3.12"),
-            StringStruct("InternalName", "LockOnBridge"),
+            StringStruct("InternalName", "uninstall"),
             StringStruct("LegalCopyright", "Copyright (c) LockOn contributors"),
-            StringStruct("OriginalFilename", "LockOnBridge.exe"),
+            StringStruct("OriginalFilename", "uninstall.exe"),
             StringStruct("ProductName", "LockOn Bridge"),
             StringStruct("ProductVersion", "0.3.12"),
           ],

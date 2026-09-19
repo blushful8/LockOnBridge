@@ -18,6 +18,7 @@ from .paths import (
     data_root,
     desktop_shortcut_path,
     installed_exe_path,
+    installed_uninstall_path,
     is_frozen,
     log_dir,
 )
@@ -227,12 +228,28 @@ def unregister_autostart() -> None:
     log.info("Autostart removed")
 
 
+def _uninstall_command() -> tuple[str, str]:
+    """Return (UninstallString, QuietUninstallString) for Apps & Features."""
+    if is_frozen():
+        uninstaller = installed_uninstall_path()
+        if not uninstaller.is_file():
+            # ZIP / first-run folder before LocalAppData copy exists
+            sibling = app_executable().parent / "uninstall.exe"
+            if sibling.is_file():
+                uninstaller = sibling
+        if uninstaller.is_file():
+            cmd = f'"{uninstaller}"'
+            return cmd, f"{cmd} --quiet"
+        exe = installed_exe_path() if installed_exe_path().is_file() else app_executable()
+        cmd = f'"{exe}" --uninstall'
+        return cmd, cmd
+    cmd = f'"{sys.executable}" -m lockon_bridge --uninstall'
+    return cmd, cmd
+
+
 def register_uninstall_entry() -> None:
     exe = installed_exe_path() if is_frozen() and installed_exe_path().is_file() else app_executable()
-    if is_frozen():
-        uninstall = f'"{exe}" --uninstall'
-    else:
-        uninstall = f'"{sys.executable}" -m lockon_bridge --uninstall'
+    uninstall, quiet = _uninstall_command()
     try:
         key = winreg.CreateKey(
             winreg.HKEY_CURRENT_USER,
@@ -246,10 +263,10 @@ def register_uninstall_entry() -> None:
             winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
             winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
             winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstall)
-            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, uninstall)
+            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, quiet)
             if is_frozen() and exe.is_file():
                 winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(exe))
-        log.info("Uninstall registry entry registered")
+        log.info("Uninstall registry entry registered → %s", uninstall)
     except OSError as exc:
         log.warning("register_uninstall_entry failed: %s", exc)
 
