@@ -1,4 +1,4 @@
-﻿# UTF-8
+# UTF-8
 #
 # PyInstaller version resource for LockOnBridge.exe
 VSVersionInfo(
@@ -19,13 +19,13 @@ VSVersionInfo(
           "040904B0",
           [
             StringStruct("CompanyName", "LockOn"),
-            StringStruct("FileDescription", "LockOn Bridge вЂ” OCR companion for War Thunder"),
-            StringStruct("FileVersion", "0.4.5"),
+            StringStruct("FileDescription", "LockOn Bridge — OCR companion for War Thunder"),
+            StringStruct("FileVersion", "0.4.7"),
             StringStruct("InternalName", "LockOnBridge"),
             StringStruct("LegalCopyright", "Copyright (c) LockOn contributors"),
             StringStruct("OriginalFilename", "LockOnBridge.exe"),
             StringStruct("ProductName", "LockOn Bridge"),
-            StringStruct("ProductVersion", "0.4.5"),
+            StringStruct("ProductVersion", "0.4.7"),
           ],
         )
       ]

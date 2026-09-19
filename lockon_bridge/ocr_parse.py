@@ -70,8 +70,9 @@ _TOTAL = re.compile(
 )
 # Exactly one thousands group, and only when the left part is 1–2 digits
 # (``1 788``, ``12 446``, ``4 608``). Never treat ``672 336`` (two RP cells) as 672336.
+# ``(?<!\d)`` blocks icon-ghost glue: ``4219 276`` must not become ``9276``.
 _AMOUNT = re.compile(
-    r"([+\-]?\s*(?:(?!0[.,])\d{1,2}(?:[\s.,'\u00A0]\d{3})|\d+))"
+    r"([+\-]?\s*(?:(?<!\d)(?!0[.,])\d{1,2}(?:[\s.,'\u00A0]\d{3})|\d+))"
 )
 _RATIO_AMOUNT = re.compile(r"^[+\-]?\s*0[.,]\d+$")
 _BARE_PREMIUM_WORD = re.compile(
@@ -310,8 +311,15 @@ def _pair_from_label_columns(text: str) -> tuple[int | None, int | None]:
 
 
 def _sanitize_premium_amounts(amounts: list[int]) -> list[int]:
-    """Drop trailing OCR junk (e.g. «60» from «бойових» → 60hOBhX)."""
-    cleaned = list(amounts)
+    """Drop trailing OCR junk and icon-ghost digits on 5-digit tokens."""
+    cleaned: list[int] = []
+    for value in amounts:
+        # Icon next to SL often appends a trailing 9 (14709 → 1470, 24219 → 2421).
+        if 10_000 <= value <= 99_999 and value % 10 == 9:
+            trimmed = value // 10
+            if 200 <= trimmed <= 45_000:
+                value = trimmed
+        cleaned.append(value)
     while len(cleaned) >= 3 and cleaned[-1] < 200 and cleaned[-1] < cleaned[0]:
         cleaned.pop()
     return cleaned

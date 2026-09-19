@@ -104,6 +104,8 @@ WITH_PREMIUM_PHRASES: tuple[str, ...] = (
     r"有\s*高级账号",
     r"有\s*高級帳號",
     r"[3zсЗ]\s*npe?[mn]i?[yуu0о]?m\w*",
+    # Truncated strip OCR: «З 564» (premium word lost)
+    r"(?<![a-zа-яіїєґA-ZА-ЯІЇЄҐ])[зЗz](?=\s+\d{2,})",
 )
 
 WITHOUT_PREMIUM_PHRASES: tuple[str, ...] = (
@@ -140,6 +142,9 @@ WITHOUT_PREMIUM_PHRASES: tuple[str, ...] = (
     r"sea\s*npe[xх]?[iyu]\w*",
     r"без\s*npa\w*",
     r"bez\s*npa\w*",
+    # Truncated strip OCR: «Без 282» without the premium word
+    r"\bбез(?=\s+\d)",
+    r"\bbez(?=\s+\d)",
 )
 
 VICTORY_PHRASES: tuple[str, ...] = (

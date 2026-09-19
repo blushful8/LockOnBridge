@@ -1,4 +1,4 @@
-"""Digit / landmark ROI extraction for without-premium + totals cells."""
+"""Digit / landmark ROI extraction for with/without-premium + totals cells."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from io import BytesIO
 from PIL import Image, ImageEnhance, ImageOps
 
 from .ocr_parse import _amounts_in, _plausible_reward_pair
-from .roi_layout import iter_reward_digit_rois
+from .roi_layout import is_full_client_frame, iter_reward_digit_rois
 
 log = logging.getLogger("lockon_bridge.roi")
 
@@ -19,8 +19,15 @@ _TOTAL_LABEL = re.compile(
     r"всього|всего|vsego|bcboro|bcsoro|total|итого|gesamt",
     re.IGNORECASE,
 )
+# WinRT often splits «Без преміума» → «bea» + «rupeMiYMa» / «npeMiYMa».
 _WITHOUT_LABEL = re.compile(
-    r"без\s*прем|без\s*prem|without|ohne\s*premium|5[bв]\s*npe|bez\s*prem",
+    r"без\s*прем|без\s*prem|without|ohne\s*premium|"
+    r"be[zsаa3]|bez\s*prem|5[bв]\s*npe|ru?pe?[mn]i?[yуu0о]?m",
+    re.IGNORECASE,
+)
+_WITH_LABEL = re.compile(
+    r"з\s*прем|с\s*прем|with\s*prem|mit\s*premium|"
+    r"[3zс]\s*npe|npe?[mn]i?[yуu0о]?m",
     re.IGNORECASE,
 )
 
@@ -199,22 +206,33 @@ def _vote_pair(pairs: list[tuple[int, int]]) -> tuple[int, int] | None:
     if not pairs:
         return None
     counts = Counter(pairs)
-    best, n = counts.most_common(1)[0]
-    if n >= 2:
-        return best
-    if len(pairs) == 1:
-        return pairs[0]
-    for candidate, _ in counts.most_common():
+
+    def _rank(candidate: tuple[int, int]) -> tuple[float, int]:
         rp, sl = candidate
+        n = counts[candidate]
+        score = float(n) * 10.0
+        if not _plausible_reward_pair(rp, sl) or sl <= rp:
+            return (score - 5.0, n)
+        ratio = sl / max(1, rp)
+        if 4.0 <= ratio <= 20.0:
+            score += 3.0
+        elif 2.5 <= ratio < 4.0:
+            score += 1.0
+        if 200 <= rp <= 4_500:
+            score += 1.0
+        if 800 <= sl <= 45_000:
+            score += 1.0
+        # Near-duplicate allies boost confidence.
         allies = sum(
             1
             for other_rp, other_sl in pairs
             if abs(other_rp - rp) <= max(15, int(rp * 0.02))
             and abs(other_sl - sl) <= max(30, int(sl * 0.02))
         )
-        if allies >= 2:
-            return candidate
-    return counts.most_common(1)[0][0]
+        score += min(3, allies) * 0.5
+        return (score, n)
+
+    return max(counts.keys(), key=_rank)
 
 
 def _read_roi_pair(crop: Image.Image) -> tuple[str, tuple[int, int] | None]:
@@ -277,23 +295,73 @@ async def _windows_words(png: bytes, lang_tag: str) -> list[tuple[str, float, fl
     return out
 
 
-def _amount_from_word(text: str) -> int | None:
-    digits = re.sub(r"\D", "", text)
-    if not digits:
-        return None
-    try:
-        value = int(digits)
-    except ValueError:
-        return None
-    if value < 50 or value > 250_000:
-        return None
-    # Do not auto-trim here — pair_from_digit_text expands OCR ghosts safely.
-    return value
+def _raw_digits(text: str) -> str:
+    return re.sub(r"\D", "", text)
+
+
+def _glue_spaced_amounts(
+    words: list[tuple[str, float, float, float, float]],
+    *,
+    width: float,
+    height: float,
+) -> list[tuple[int, float, float]]:
+    """
+    Rebuild reward amounts from word boxes, gluing ``2`` + ``421`` → 2421.
+
+    WinRT often emits the thousands digit as its own word on the SL row.
+    """
+    tokens: list[tuple[str, float, float]] = []
+    for text, x, y, w, _h in words:
+        digits = _raw_digits(text)
+        if not digits:
+            continue
+        nx = (x + w * 0.5) / max(1.0, width)
+        ny = y / max(1.0, height)
+        tokens.append((digits, nx, ny))
+
+    tokens.sort(key=lambda item: (round(item[2], 3), item[1]))
+    amounts: list[tuple[int, float, float]] = []
+    index = 0
+    while index < len(tokens):
+        digits, nx, ny = tokens[index]
+        # Glue 1–2 digit thousands head with a 3-digit body on the same row.
+        if (
+            index + 1 < len(tokens)
+            and 1 <= len(digits) <= 2
+            and int(digits) < 50
+            and len(tokens[index + 1][0]) == 3
+            and abs(tokens[index + 1][2] - ny) <= 0.02
+            and 0.0 < (tokens[index + 1][1] - nx) <= 0.06
+        ):
+            body = tokens[index + 1][0]
+            # Drop a trailing icon ghost on the body (4219 → 421) when 4 digits leaked in.
+            value = int(digits) * 1000 + int(body)
+            mid_x = (nx + tokens[index + 1][1]) / 2.0
+            amounts.append((value, mid_x, ny))
+            index += 2
+            continue
+        # 4-digit body that is really 3-digit + ghost (4219) next to a 1-digit head
+        # already handled above; standalone 3–6 digit tokens:
+        if len(digits) >= 3:
+            try:
+                value = int(digits)
+            except ValueError:
+                index += 1
+                continue
+            # Soft-trim trailing 9 from 4-digit OCR when value looks like SL body+ghost.
+            if len(digits) == 4 and value % 10 == 9 and 200 <= value // 10 <= 999:
+                # Prefer as-is if already a plausible standalone amount (≥1000).
+                if value < 2000:
+                    value = value // 10
+            if 50 <= value <= 250_000:
+                amounts.append((value, nx, ny))
+        index += 1
+    return amounts
 
 
 def pairs_from_landmarks(image: Image.Image) -> list[tuple[str, str]]:
     """
-    Locate «Всього» / without-premium via word boxes, then take nearby amounts.
+    Locate with/without / «Всього» via word boxes, then take nearby amounts.
 
     Coordinates come from OCR boxes → independent of absolute pixel density.
     """
@@ -315,74 +383,155 @@ def pairs_from_landmarks(image: Image.Image) -> list[tuple[str, str]]:
     def norm(x: float, y: float) -> tuple[float, float]:
         return x / max(1.0, width), y / max(1.0, height)
 
-    amount_words: list[tuple[int, float, float]] = []
+    amount_words = _glue_spaced_amounts(words, width=float(width), height=float(height))
     labels_total: list[tuple[float, float]] = []
     labels_without: list[tuple[float, float]] = []
+    labels_with: list[tuple[float, float]] = []
     for text, x, y, w, _h in words:
         nx, ny = norm(x + w * 0.5, y)
         if _TOTAL_LABEL.search(text):
             labels_total.append((nx, ny))
-        if _WITHOUT_LABEL.search(text):
-            labels_without.append((nx, ny))
-        value = _amount_from_word(text)
-        if value is not None:
-            amount_words.append((value, nx, ny))
+        # Prefer explicit without markers; avoid classifying bare «npeMiYM» as with
+        # when a without-ish token sits on the same row.
+        if _WITHOUT_LABEL.search(text) and not re.match(r"^[3zс]$", text, re.IGNORECASE):
+            # «npeMiYMa» alone is ambiguous — only count when text looks without-ish
+            # or sits to the right of a short «bea/bez» sibling (handled via band).
+            if re.search(r"be[zsаa3]|без|without|ohne|bez", text, re.IGNORECASE) or re.search(
+                r"ru?pe?[mn]i", text, re.IGNORECASE
+            ):
+                labels_without.append((nx, ny))
+        if _WITH_LABEL.search(text) and not re.search(
+            r"be[zsаa3]|без|without|ohne", text, re.IGNORECASE
+        ):
+            labels_with.append((nx, ny))
+
+    # Merge adjacent «3» + «npeMiYM0M» / «bea» + «rupeMiYMa» into column anchors.
+    short_tokens = []
+    for text, x, y, w, _h in words:
+        nx, ny = norm(x + w * 0.5, y)
+        short_tokens.append((text, nx, ny))
+    for i, (text, nx, ny) in enumerate(short_tokens):
+        if re.match(r"^[3zсЗ]$", text) and i + 1 < len(short_tokens):
+            nxt, nx2, ny2 = short_tokens[i + 1]
+            if abs(ny2 - ny) <= 0.02 and _WITH_LABEL.search(nxt):
+                labels_with.append(((nx + nx2) / 2.0, ny))
+        if re.match(r"^be[zsаa3]?$", text, re.IGNORECASE) and i + 1 < len(short_tokens):
+            nxt, nx2, ny2 = short_tokens[i + 1]
+            if abs(ny2 - ny) <= 0.02 and re.search(r"npe|prem|pe?[mn]i", nxt, re.IGNORECASE):
+                labels_without.append(((nx + nx2) / 2.0, ny))
 
     variants: list[tuple[str, str]] = []
 
-    def pair_near(label_xy: tuple[float, float], *, right_only: bool, band: float) -> tuple[int, int] | None:
+    def pair_near(
+        label_xy: tuple[float, float],
+        *,
+        x_min: float | None = None,
+        x_max: float | None = None,
+        band: float = 0.07,
+        y_bias: float = 0.03,
+    ) -> tuple[int, int] | None:
         lx, ly = label_xy
+        target_y = ly + y_bias
         nearby = [
             (value, nx, ny)
             for value, nx, ny in amount_words
-            if abs(ny - ly) <= band and (nx >= lx - 0.02 if right_only else True)
+            if abs(ny - target_y) <= band
+            and (x_min is None or nx >= x_min)
+            and (x_max is None or nx <= x_max)
         ]
-        nearby.sort(key=lambda item: (abs(item[2] - ly), item[1]))
+        nearby.sort(key=lambda item: (abs(item[2] - target_y), item[1]))
         values = [item[0] for item in nearby[:6]]
         return pair_from_digit_text(" ".join(str(v) for v in values))
 
     for lx, ly in labels_total:
-        pair = pair_near((lx, ly), right_only=True, band=0.035)
+        pair = pair_near((lx, ly), x_min=lx - 0.02, band=0.035, y_bias=0.0)
         if pair:
             rp, sl = pair
             variants.append(("roi:landmark-total", f"Всього {rp} {sl}"))
 
     for lx, ly in labels_without:
-        # Without column digits sit under/near the header — slightly below.
-        pair = pair_near((lx, ly + 0.02), right_only=False, band=0.06)
+        pair = pair_near((lx, ly), x_min=lx - 0.04, x_max=lx + 0.10)
         if pair is None:
-            pair = pair_near((lx, ly), right_only=True, band=0.08)
+            pair = pair_near((lx, ly), x_min=lx - 0.02)
         if pair:
             rp, sl = pair
             variants.append(("roi:landmark-without", f"Без преміума {rp} {sl}"))
 
-    # Fallback: amounts in the calibrated without / total bands even without labels.
-    without_band = [(v, x, y) for v, x, y in amount_words if 0.13 <= y <= 0.23 and 0.40 <= x <= 0.55]
-    total_band = [(v, x, y) for v, x, y in amount_words if 0.43 <= y <= 0.49 and 0.48 <= x <= 0.68]
-    if without_band:
-        without_band.sort(key=lambda item: item[2])
-        pair = pair_from_digit_text(" ".join(str(v) for v, _, _ in without_band[:4]))
+    for lx, ly in labels_with:
+        pair = pair_near((lx, ly), x_min=lx - 0.04, x_max=lx + 0.08)
         if pair:
             rp, sl = pair
-            variants.append(("roi:band-without", f"Без преміума {rp} {sl}"))
-    if total_band:
-        total_band.sort(key=lambda item: item[1])
-        pair = pair_from_digit_text(" ".join(str(v) for v, _, _ in total_band[:4]))
+            variants.append(("roi:landmark-with", f"З преміумом {rp} {sl}"))
+
+    # Fallback bands: left-panel full client + mid-panel chat crops.
+    full = is_full_client_frame(image)
+
+    def band_pair(
+        tag: str,
+        label: str,
+        *,
+        x0: float,
+        x1: float,
+        y0: float,
+        y1: float,
+    ) -> None:
+        band = [(v, x, y) for v, x, y in amount_words if y0 <= y <= y1 and x0 <= x <= x1]
+        if not band:
+            return
+        band.sort(key=lambda item: (item[2], item[1]))
+        pair = pair_from_digit_text(" ".join(str(v) for v, _, _ in band[:6]))
         if pair:
             rp, sl = pair
-            variants.append(("roi:band-total", f"Всього {rp} {sl}"))
+            variants.append((tag, f"{label} {rp} {sl}"))
+
+    if full:
+        band_pair("roi:band-with", "З преміумом", x0=0.20, x1=0.295, y0=0.08, y1=0.18)
+        band_pair("roi:band-without", "Без преміума", x0=0.290, x1=0.380, y0=0.08, y1=0.18)
+        left_panel = [
+            (v, x, y) for v, x, y in amount_words if 0.08 <= y <= 0.18 and 0.20 <= x <= 0.38
+        ]
+        if len(left_panel) >= 4:
+            left_panel.sort(key=lambda item: (item[2], item[1]))
+            xs = sorted(item[1] for item in left_panel)
+            mid_x = xs[len(xs) // 2]
+            with_vals = [v for v, x, _y in left_panel if x < mid_x]
+            without_vals = [v for v, x, _y in left_panel if x >= mid_x]
+            with_pair = pair_from_digit_text(" ".join(str(v) for v in with_vals[:4]))
+            without_pair = pair_from_digit_text(" ".join(str(v) for v in without_vals[:4]))
+            if with_pair:
+                rp, sl = with_pair
+                variants.append(("roi:band-with", f"З преміумом {rp} {sl}"))
+            if without_pair:
+                rp, sl = without_pair
+                variants.append(("roi:band-without", f"Без преміума {rp} {sl}"))
+    else:
+        band_pair("roi:band-without", "Без преміума", x0=0.40, x1=0.55, y0=0.12, y1=0.24)
+    band_pair("roi:band-total", "Всього", x0=0.48, x1=0.68, y0=0.42, y1=0.50)
 
     return variants
 
 
-def extract_roi_reward_variants(image: Image.Image) -> list[tuple[str, str]]:
+def extract_roi_reward_variants(
+    image: Image.Image,
+    *,
+    prefer_with: bool | None = None,
+) -> list[tuple[str, str]]:
     """
     Synthetic OCR texts for choose_best / parse_rewards_from_ocr_text.
 
     Combines landmark boxes + relative digit ROIs, then emits a consensus when
-    without-premium and Всього agree.
+    the preferred premium column (and optionally Всього) agree.
     """
+    if prefer_with is None:
+        try:
+            from .settings import load_settings
+
+            prefer_with = bool(load_settings().has_premium_account)
+        except Exception:  # noqa: BLE001
+            prefer_with = False
+
     variants: list[tuple[str, str]] = []
+    with_pairs: list[tuple[int, int]] = []
     without_pairs: list[tuple[int, int]] = []
     total_pairs: list[tuple[int, int]] = []
 
@@ -395,6 +544,8 @@ def extract_roi_reward_variants(image: Image.Image) -> list[tuple[str, str]]:
                 continue
             if "without" in tag:
                 without_pairs.append(pair)
+            elif "with" in tag and "without" not in tag:
+                with_pairs.append(pair)
             else:
                 total_pairs.append(pair)
     except Exception as exc:  # noqa: BLE001
@@ -408,42 +559,94 @@ def extract_roi_reward_variants(image: Image.Image) -> list[tuple[str, str]]:
             variants.append((f"roi:{tag}", text))
             continue
         rp, sl = pair
-        if tag.startswith("without"):
+        if tag.startswith("with") and not tag.startswith("without"):
+            with_pairs.append(pair)
+            with_pairs.append(pair)  # digit ROI outweighs landmark band
+            labeled = f"З преміумом {rp} {sl}"
+        elif tag.startswith("without"):
+            without_pairs.append(pair)
             without_pairs.append(pair)
             labeled = f"Без преміума {rp} {sl}"
+        elif tag.startswith("both"):
+            # Four-cell crop: parse both columns via premium-table helpers.
+            from .ocr_parse import (
+                _with_pair_from_premium_amounts,
+                _without_pair_from_premium_amounts,
+            )
+
+            amounts = [a for a in _amounts_in(text, min_value=50) if a <= 250_000]
+            w_pair = _with_pair_from_premium_amounts(amounts)
+            wo_pair = _without_pair_from_premium_amounts(amounts)
+            if w_pair[0] is not None and w_pair[1] is not None:
+                with_pairs.extend([(w_pair[0], w_pair[1])] * 2)
+                variants.append((f"roi:{tag}-with", f"З преміумом {w_pair[0]} {w_pair[1]}"))
+            if wo_pair[0] is not None and wo_pair[1] is not None:
+                without_pairs.extend([(wo_pair[0], wo_pair[1])] * 2)
+                variants.append((f"roi:{tag}-without", f"Без преміума {wo_pair[0]} {wo_pair[1]}"))
+            # Also keep the naive pair as a weak signal for the preferred column.
+            if prefer_with:
+                with_pairs.append(pair)
+                labeled = f"З преміумом {rp} {sl}"
+            else:
+                without_pairs.append(pair)
+                labeled = f"Без преміума {rp} {sl}"
         else:
             total_pairs.append(pair)
+            total_pairs.append(pair)  # digit ROI totals beat landmark band noise
             labeled = f"Всього {rp} {sl}"
         variants.append((f"roi:{tag}", labeled))
 
-    without = _vote_pair(without_pairs)
+    with_vote = _vote_pair(with_pairs)
+    without_vote = _vote_pair(without_pairs)
     total = _vote_pair(total_pairs)
+    preferred = with_vote if prefer_with else without_vote
+    other = without_vote if prefer_with else with_vote
 
-    if without and total:
-        if without == total:
-            rp, sl = without
+    if preferred and total and not prefer_with:
+        if preferred == total:
+            rp, sl = preferred
             variants.insert(0, ("roi:consensus", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
-        elif without[0] == total[0]:
+        elif preferred[0] == total[0]:
             rp, sl = total
             variants.insert(0, ("roi:consensus-total-sl", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
         else:
             rp, sl = total
             variants.insert(0, ("roi:prefer-total", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
-    elif total:
+    elif preferred:
+        rp, sl = preferred
+        label = "З преміумом" if prefer_with else "Без преміума"
+        tag = "roi:with-only" if prefer_with else "roi:without-only"
+        variants.insert(0, (tag, f"{label} {rp} {sl}"))
+        if other and other != preferred:
+            o_rp, o_sl = other
+            o_label = "Без преміума" if prefer_with else "З преміумом"
+            variants.insert(1, ("roi:other-column", f"{o_label} {o_rp} {o_sl}"))
+    elif total and not prefer_with:
         rp, sl = total
         variants.insert(0, ("roi:total-only", f"Всього {rp} {sl}"))
-    elif without:
-        rp, sl = without
+    elif without_vote:
+        rp, sl = without_vote
         variants.insert(0, ("roi:without-only", f"Без преміума {rp} {sl}"))
+    elif with_vote:
+        rp, sl = with_vote
+        variants.insert(0, ("roi:with-only", f"З преміумом {rp} {sl}"))
 
     return variants
 
 
-def report_from_roi_image(image: Image.Image):
+def report_from_roi_image(image: Image.Image, *, prefer_with: bool | None = None):
     """High-confidence report when ROI / landmark pairs resolve."""
     from .ocr_parse import parse_rewards_from_ocr_text
 
-    variants = extract_roi_reward_variants(image)
+    if prefer_with is None:
+        try:
+            from .settings import load_settings
+
+            prefer_with = bool(load_settings().has_premium_account)
+        except Exception:  # noqa: BLE001
+            prefer_with = False
+
+    variants = extract_roi_reward_variants(image, prefer_with=prefer_with)
     for tag, text in variants:
         if not tag.startswith("roi:"):
             continue
@@ -451,18 +654,41 @@ def report_from_roi_image(image: Image.Image):
             "roi:prefer-total",
             "roi:total-only",
             "roi:without-only",
+            "roi:with-only",
             "roi:landmark-total",
             "roi:landmark-without",
+            "roi:landmark-with",
             "roi:band-total",
             "roi:band-without",
+            "roi:band-with",
         ):
-            report = parse_rewards_from_ocr_text(text)
+            # Skip the non-preferred column landmark when we already know preference.
+            if prefer_with and tag in ("roi:landmark-without", "roi:band-without", "roi:without-only"):
+                # Still allow if no with variant exists later — handled by loop order
+                # (with-only / band-with inserted first when prefer_with).
+                if any(
+                    t in ("roi:with-only", "roi:landmark-with", "roi:band-with")
+                    or t.startswith("roi:consensus")
+                    for t, _ in variants
+                ):
+                    continue
+            if not prefer_with and tag in ("roi:landmark-with", "roi:band-with", "roi:with-only"):
+                if any(
+                    t in ("roi:without-only", "roi:landmark-without", "roi:band-without")
+                    or t.startswith("roi:consensus")
+                    or t == "roi:total-only"
+                    for t, _ in variants
+                ):
+                    continue
+            report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer_with)
             if report is None:
                 continue
             if tag.startswith("roi:consensus"):
                 report.confidence = max(report.confidence, 0.94)
             elif tag.startswith("roi:landmark") or tag.startswith("roi:band"):
                 report.confidence = max(report.confidence, 0.90)
+            elif tag in ("roi:with-only", "roi:without-only"):
+                report.confidence = max(report.confidence, 0.92)
             elif tag == "roi:prefer-total":
                 report.confidence = max(report.confidence, 0.88)
             else:

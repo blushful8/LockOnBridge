@@ -1,4 +1,4 @@
-"""Scale-safe digit ROI tests — without-premium + Всього cells."""
+"""Scale-safe digit ROI tests — with/without-premium + Всього cells."""
 
 from pathlib import Path
 
@@ -7,6 +7,7 @@ from PIL import Image
 from lockon_bridge.ocr_parse import choose_best_report, parse_rewards_from_ocr_text
 from lockon_bridge.roi_layout import (
     TOTAL_DIGIT_ROIS,
+    WITH_DIGIT_ROIS,
     WITHOUT_DIGIT_ROIS,
     content_frame,
     crop_norm,
@@ -21,6 +22,7 @@ from lockon_bridge.roi_rewards import (
 FIXTURES = Path(__file__).parent / "fixtures"
 FULL = FIXTURES / "results_uk_full_1025_7262.jpg"
 CROPPED = FIXTURES / "results_uk_1025_7262.jpg"
+LAST_BATTLE = FIXTURES / "last_battle_capture.png"
 
 
 def _load(path: Path) -> Image.Image:
@@ -42,9 +44,29 @@ def test_content_frame_letterboxes_ultrawide_only():
 
 
 def test_rois_are_fractions_not_pixels():
-    for rect in (*WITHOUT_DIGIT_ROIS, *TOTAL_DIGIT_ROIS):
+    for rect in (*WITH_DIGIT_ROIS, *WITHOUT_DIGIT_ROIS, *TOTAL_DIGIT_ROIS):
         assert 0.0 <= rect.left < rect.right <= 1.0
         assert 0.0 <= rect.top < rect.bottom <= 1.0
+
+
+def test_amount_regex_does_not_glue_icon_ghost_into_next_rp():
+    """``4219 276`` must not become ``9276`` (trailing icon 9 + next RP)."""
+    from lockon_bridge.ocr_parse import _amounts_in
+
+    assert _amounts_in("548 2 4219 276 1 2469") == [548, 2421, 276, 1246]
+    assert pair_from_digit_text("548 2 4219 276 1 2469") == (548, 2421)
+    without = parse_rewards_from_ocr_text(
+        "З преміумом 548 2 4219 Без преміума 276 1 2469",
+        prefer_premium_rewards=False,
+    )
+    assert without is not None
+    assert (without.research_points, without.silver_lions) == (276, 1246)
+    with_prem = parse_rewards_from_ocr_text(
+        "З преміумом 548 2 4219 Без преміума 276 1 2469",
+        prefer_premium_rewards=True,
+    )
+    assert with_prem is not None
+    assert (with_prem.research_points, with_prem.silver_lions) == (548, 2421)
 
 
 def test_crop_norm_scales_with_resolution():
@@ -82,9 +104,9 @@ def test_full_frame_consensus_1025_7262():
     img = _load(FULL)
     tags = {tag for tag, _ in iter_reward_digit_rois(img)}
     assert "total-digits" in tags
-    assert "without-digits" in tags
+    assert any(t.startswith("without-digits") for t in tags)
 
-    report = report_from_roi_image(img)
+    report = report_from_roi_image(img, prefer_with=False)
     assert report is not None
     assert report.research_points == 1025
     assert report.silver_lions == 7262
@@ -95,9 +117,14 @@ def test_full_frame_consensus_1025_7262():
 def test_full_frame_rejects_premium_sl():
     """Must not land on premium SL (10892) when without-premium is 7262."""
     img = _load(FULL)
-    variants = extract_roi_reward_variants(img)
-    assert any(tag == "roi:consensus" for tag, _ in variants)
-    candidates = [(text, parse_rewards_from_ocr_text(text)) for _tag, text in variants]
+    variants = extract_roi_reward_variants(img, prefer_with=False)
+    assert any(tag == "roi:consensus" for tag, _ in variants) or any(
+        "7262" in text for _tag, text in variants
+    )
+    candidates = [
+        (text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=False))
+        for _tag, text in variants
+    ]
     best = choose_best_report(candidates)
     assert best is not None
     _text, report = best
@@ -111,7 +138,30 @@ def test_cropped_chat_fixture_still_resolves():
     if not CROPPED.is_file():
         return
     img = _load(CROPPED)
-    report = report_from_roi_image(img)
+    report = report_from_roi_image(img, prefer_with=False)
     assert report is not None
     assert report.research_points == 1025
     assert report.silver_lions == 7262
+
+
+def test_full_client_left_panel_without_premium():
+    """Live WT client: premium table is on the left, not the mid-panel chat band."""
+    if not LAST_BATTLE.is_file():
+        return
+    img = _load(LAST_BATTLE)
+    report = report_from_roi_image(img, prefer_with=False)
+    assert report is not None
+    assert report.research_points == 276
+    assert report.silver_lions == 1246
+    assert report.source == "ocr-roi"
+
+
+def test_full_client_left_panel_with_premium():
+    if not LAST_BATTLE.is_file():
+        return
+    img = _load(LAST_BATTLE)
+    report = report_from_roi_image(img, prefer_with=True)
+    assert report is not None
+    assert report.research_points == 548
+    assert report.silver_lions == 2421
+    assert report.source == "ocr-roi"

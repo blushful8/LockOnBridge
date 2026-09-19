@@ -1,4 +1,4 @@
-﻿# UTF-8
+# UTF-8
 #
 # PyInstaller version resource for uninstall.exe
 VSVersionInfo(
@@ -20,12 +20,12 @@ VSVersionInfo(
           [
             StringStruct("CompanyName", "LockOn"),
             StringStruct("FileDescription", "LockOn Bridge Uninstaller"),
-            StringStruct("FileVersion", "0.4.5"),
+            StringStruct("FileVersion", "0.4.7"),
             StringStruct("InternalName", "uninstall"),
             StringStruct("LegalCopyright", "Copyright (c) LockOn contributors"),
             StringStruct("OriginalFilename", "uninstall.exe"),
             StringStruct("ProductName", "LockOn Bridge"),
-            StringStruct("ProductVersion", "0.4.5"),
+            StringStruct("ProductVersion", "0.4.7"),
           ],
         )
       ]

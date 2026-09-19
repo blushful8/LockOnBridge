@@ -46,11 +46,14 @@ OFF = "#6b7280"
 DANGER = "#b91c1c"
 DANGER_BG = "#3f1515"
 
-# Keep enough room for toggle, languages, port, primary actions and More menu.
-MIN_WINDOW_W = 500
-MIN_WINDOW_H = 640
-DEFAULT_WINDOW_W = 520
-DEFAULT_WINDOW_H = 680
+# Keep enough room for toggle, languages, port, primary actions, More menu,
+# and the optional phone-access banner (UK strings wrap taller).
+MIN_WINDOW_W = 520
+MIN_WINDOW_H = 720
+DEFAULT_WINDOW_W = 540
+DEFAULT_WINDOW_H = 780
+# Extra chrome so the last button is never flush against the bottom edge.
+_WINDOW_CHROME_PAD = 28
 
 
 def _asset_path(name: str) -> Path | None:
@@ -131,6 +134,8 @@ class BridgeApp:
 
         self.root.after(400, self._refresh_phone_access_ui)
         self.root.after(5_000, self._poll_phone_access_loop)
+        # Second fit after fonts/DPI finish measuring wrapped labels.
+        self.root.after(200, lambda: self._apply_window_size(initial=False))
 
         if start_hidden and self.settings.enabled:
             self.root.withdraw()
@@ -146,23 +151,78 @@ class BridgeApp:
         sync_tk_scaling(self.root)
         self._apply_window_size(initial=False)
 
-    def _apply_window_size(self, *, initial: bool) -> None:
-        """Enforce a usable minimum so controls are never clipped."""
-        self.root.minsize(MIN_WINDOW_W, MIN_WINDOW_H)
+    def _content_req_size(self) -> tuple[int, int]:
+        """Required width/height for all packed root children (post-layout)."""
         self.root.update_idletasks()
-        if initial:
-            self.root.geometry(f"{DEFAULT_WINDOW_W}x{DEFAULT_WINDOW_H}")
-            return
+        width = 0
+        height = 0
+        for child in self.root.winfo_children():
+            try:
+                width = max(width, int(child.winfo_reqwidth()))
+                height += int(child.winfo_reqheight())
+                info = child.pack_info()
+            except tk.TclError:
+                continue
+            padx = info.get("padx", 0)
+            pady = info.get("pady", 0)
+            if isinstance(padx, (tuple, list)):
+                width += int(padx[0]) + int(padx[1])
+            else:
+                width += int(padx) * 2
+            if isinstance(pady, (tuple, list)):
+                height += int(pady[0]) + int(pady[1])
+            else:
+                height += int(pady) * 2
+        # Fallback when children are not mapped yet.
+        if width <= 1:
+            width = DEFAULT_WINDOW_W
+        if height <= 1:
+            height = DEFAULT_WINDOW_H
+        return width, height + _WINDOW_CHROME_PAD
+
+    def _apply_window_size(self, *, initial: bool) -> None:
+        """
+        Size the window so every control fits.
+
+        Fixed geometry alone fails on HiDPI / after the phone banner appears —
+        measure packed content and grow (within the screen work area).
+        """
+        self.root.update_idletasks()
+        req_w, req_h = self._content_req_size()
+        need_w = max(MIN_WINDOW_W, req_w, DEFAULT_WINDOW_W if initial else 0)
+        need_h = max(MIN_WINDOW_H, req_h, DEFAULT_WINDOW_H if initial else 0)
+
+        try:
+            screen_w = int(self.root.winfo_screenwidth())
+            screen_h = int(self.root.winfo_screenheight())
+        except tk.TclError:
+            screen_w, screen_h = 1920, 1080
+        # Leave room for taskbar / window chrome.
+        max_w = max(MIN_WINDOW_W, screen_w - 48)
+        max_h = max(MIN_WINDOW_H, screen_h - 96)
+        final_w = min(need_w, max_w)
+        final_h = min(need_h, max_h)
+
+        self.root.minsize(min(MIN_WINDOW_W, final_w), min(MIN_WINDOW_H, final_h))
         try:
             cur_w = int(self.root.winfo_width())
             cur_h = int(self.root.winfo_height())
         except tk.TclError:
+            cur_w, cur_h = 1, 1
+
+        if initial or cur_w < 50 or cur_h < 50:
+            self.root.geometry(f"{final_w}x{final_h}")
             return
-        # Unmapped / bogus sizes come back as 1×1.
-        if cur_w < MIN_WINDOW_W or cur_h < MIN_WINDOW_H:
-            self.root.geometry(
-                f"{max(cur_w, MIN_WINDOW_W)}x{max(cur_h, MIN_WINDOW_H)}"
-            )
+        # Grow when content needs more room; never shrink below the fitted size
+        # if the user already enlarged the window.
+        target_w = max(cur_w, final_w) if cur_w >= MIN_WINDOW_W else final_w
+        target_h = max(cur_h, final_h) if cur_h >= MIN_WINDOW_H else final_h
+        # But if content grew past the current client area, always expand.
+        if cur_w < final_w or cur_h < final_h:
+            target_w = max(cur_w, final_w)
+            target_h = max(cur_h, final_h)
+        if target_w != cur_w or target_h != cur_h:
+            self.root.geometry(f"{target_w}x{target_h}")
 
     def _apply_window_icon(self) -> None:
         ico = _asset_path("lockon_bridge.ico")
@@ -620,6 +680,7 @@ class BridgeApp:
                 pass
             self.phone_url_label.configure(text="")
             self.status_label.configure(fg=MUTED)
+            self.root.after_idle(lambda: self._apply_window_size(initial=False))
             return
 
         ok = self._phone_access_ok(port)
@@ -650,6 +711,7 @@ class BridgeApp:
                 text=t.phone_test_hint.format(url=url),
                 fg="#fca5a5",
             )
+        self.root.after_idle(lambda: self._apply_window_size(initial=False))
 
     def _poll_phone_access_loop(self) -> None:
         if self._closing:

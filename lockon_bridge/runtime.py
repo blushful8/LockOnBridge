@@ -9,10 +9,11 @@ from typing import Optional
 
 from .capture import ocr_screen_capture
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
+from .paths import log_dir
 from .phase import read_phase
 from .report_store import ReportStore
 from .server import serve
-from .paths import log_dir
+from .settle import SettleConfig, SettleTracker
 
 log = logging.getLogger("lockon_bridge")
 
@@ -26,11 +27,13 @@ class RuntimeConfig:
     port: int = 8112
     game_host: str = "127.0.0.1"
     game_port: int = 8111
-    # Results UI often animates in after hangar flip — sample quickly while it is still open.
-    frames: int = 14
-    frame_gap: float = 0.85
-    # Wait for the rewards tab (not just the K/D scoreboard) after hangar flip.
-    capture_delay_sec: float = 2.2
+    # Sample long enough for the RP/SL count-up animation to finish.
+    frames: int = 20
+    frame_gap: float = 0.75
+    # Wait for the rewards tab after hangar flip; count-up often needs a few more seconds.
+    capture_delay_sec: float = 4.0
+    # Consecutive near-identical OCR pairs required before publish (never publish frame 1 alone).
+    settle_stable_frames: int = 2
     # Hangar/battle phase poll — only while War Thunder is running.
     poll_sec: float = 1.5
 
@@ -122,13 +125,20 @@ class BridgeRuntime:
     def _capture_burst(self) -> None:
         cfg = self.config
         log.info(
-            "battle ended — waiting %.1fs then capturing %s frame(s)",
+            "battle ended — waiting %.1fs then capturing up to %s frame(s) "
+            "(publish only after %s stable reads)",
             cfg.capture_delay_sec,
             cfg.frames,
+            cfg.settle_stable_frames,
         )
         if cfg.capture_delay_sec > 0:
             self._stop.wait(cfg.capture_delay_sec)
+
+        tracker = SettleTracker(
+            cfg=SettleConfig(stable_required=max(2, cfg.settle_stable_frames)),
+        )
         last_preview = ""
+
         for index in range(cfg.frames):
             if self._stop.is_set():
                 return
@@ -183,21 +193,56 @@ class BridgeRuntime:
                             report.confidence,
                             _MIN_CONFIDENT_REPORT,
                         )
-                    elif self.store.publish(report):
-                        log.info(
-                            "frame %s/%s: RP=%s SL=%s conf=%.2f",
-                            index + 1,
-                            cfg.frames,
-                            report.research_points,
-                            report.silver_lions,
-                            report.confidence,
-                        )
-                        return
                     else:
-                        log.info("frame %s/%s: duplicate, skip", index + 1, cfg.frames)
+                        settled = tracker.observe(report)
+                        if settled is None:
+                            log.info(
+                                "frame %s/%s: RP=%s SL=%s conf=%.2f "
+                                "(waiting settle %s/%s)",
+                                index + 1,
+                                cfg.frames,
+                                report.research_points,
+                                report.silver_lions,
+                                report.confidence,
+                                tracker.stable_count,
+                                tracker.cfg.stable_required,
+                            )
+                        else:
+                            if self.store.publish(settled):
+                                log.info(
+                                    "frame %s/%s: settled RP=%s SL=%s conf=%.2f",
+                                    index + 1,
+                                    cfg.frames,
+                                    settled.research_points,
+                                    settled.silver_lions,
+                                    settled.confidence,
+                                )
+                            else:
+                                log.info(
+                                    "frame %s/%s: settled duplicate RP=%s SL=%s",
+                                    index + 1,
+                                    cfg.frames,
+                                    settled.research_points,
+                                    settled.silver_lions,
+                                )
+                            return
             except Exception as exc:  # noqa: BLE001
                 log.warning("frame %s/%s failed: %s", index + 1, cfg.frames, exc)
             self._stop.wait(cfg.frame_gap)
+
+        fallback = tracker.finalize()
+        if fallback is not None and fallback.confidence >= _MIN_CONFIDENT_REPORT:
+            if self.store.publish(fallback):
+                log.info(
+                    "burst ended — published best available RP=%s SL=%s "
+                    "(stable=%s/%s) | last_ocr=%s",
+                    fallback.research_points,
+                    fallback.silver_lions,
+                    tracker.stable_count,
+                    tracker.cfg.stable_required,
+                    last_preview or "(none)",
+                )
+                return
         log.info(
             "burst finished without a confident report | last_ocr=%s",
             last_preview or "(none)",
