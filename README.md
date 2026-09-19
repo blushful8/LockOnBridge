@@ -31,8 +31,10 @@ If you are fine editing rewards manually in LockOn, you can skip this entirely.
 1. Download **`LockOnBridge.zip`** from [Releases](https://github.com/blushful8/LockOnBridge/releases).
 2. Extract → run **`LockOnBridge.exe`**.
 3. Set **War Thunder language**, turn **Bridge enabled** **ON**.
-4. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP; port `8112`).
-5. If Windows asks for admin permission for a firewall rule — accept it. Without inbound TCP **8112**, the phone stays at `0` RP/SL even when OCR worked.
+4. When asked **Allow phone access?** → **Yes**, then **Yes** on the Windows prompt (once). No PowerShell.
+5. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP; port `8112`).
+
+If you skipped the phone-access prompt: **More ▾ → Allow phone access…**
 
 That is the full path for most players. On first enable, Bridge may ask to install **Windows OCR packs** (Microsoft). For Ukrainian (and a few other cases) it may also offer free offline **Tesseract** via winget — one Yes/No, no manual GitHub hunting.
 

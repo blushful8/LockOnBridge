@@ -371,6 +371,7 @@ class BridgeApp:
         self.ocr_backend_var.set(backend_label)
         more_menu.add_cascade(label=t.ocr_backend, menu=ocr_sub)
         more_menu.add_command(label=t.open_logs, command=self._open_logs)
+        more_menu.add_command(label=t.firewall_menu, command=self._allow_phone_access)
         more_menu.add_command(label=t.check_updates, command=self._check_updates)
         more_menu.add_separator()
         more_menu.add_command(label=t.uninstall, command=self._uninstall)
@@ -537,20 +538,44 @@ class BridgeApp:
     def _start_enabled(self, *, persist: bool) -> None:
         port = self._read_port()
         self.settings = update_settings(enabled=True, port=port)
-        prepare_enabled_runtime(port=port)
+        # Install/autostart first; firewall elevation only after a clear Yes/No.
+        prepare_enabled_runtime(port=port, allow_firewall_elevate=False)
         self._set_ui_enabled(True)
-        if not firewall_rule_present(port):
-            self.status_var.set(self.strings.status_firewall_needed.format(port=port))
-            try:
-                messagebox.showwarning(PRODUCT_NAME, self.strings.firewall_warning.format(port=port))
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            self.status_var.set(self.strings.status_enabled_waiting)
+        self.status_var.set(self.strings.status_enabled_waiting)
         self.agent.start(self.settings)
         self._ensure_tray()
+        self.root.after(200, lambda: self._ensure_phone_access(interactive=True))
         # Offer official Microsoft OCR packs once (or when still missing).
         self.root.after(400, lambda: self._maybe_prompt_ocr_packs(force=False))
+
+    def _allow_phone_access(self) -> None:
+        self._ensure_phone_access(interactive=True, force_prompt=True)
+
+    def _ensure_phone_access(self, *, interactive: bool, force_prompt: bool = False) -> None:
+        port = self._read_port()
+        if firewall_rule_present(port):
+            if force_prompt:
+                messagebox.showinfo(
+                    PRODUCT_NAME,
+                    self.strings.firewall_ok.format(port=port),
+                )
+            return
+        if not interactive:
+            return
+        t = self.strings
+        if not messagebox.askyesno(
+            t.firewall_prompt_title,
+            t.firewall_prompt_body.format(port=port),
+        ):
+            self.status_var.set(t.status_firewall_needed)
+            return
+        ok = ensure_firewall_rule(port, allow_elevate=True)
+        if ok:
+            self.status_var.set(t.status_enabled_waiting)
+            messagebox.showinfo(PRODUCT_NAME, t.firewall_ok.format(port=port))
+        else:
+            self.status_var.set(t.status_firewall_needed)
+            messagebox.showwarning(PRODUCT_NAME, t.firewall_denied)
 
     def _ocr_packs_clicked(self) -> None:
         self._maybe_prompt_ocr_packs(force=True)
@@ -666,7 +691,7 @@ class BridgeApp:
             return
         self.settings = update_settings(port=port)
         if self.settings.enabled:
-            ensure_firewall_rule(port)
+            self._ensure_phone_access(interactive=True)
             self.agent.apply_settings(self.settings)
             self.agent.stop(join=True)
             self.agent.start(self.settings)

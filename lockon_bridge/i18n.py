@@ -38,6 +38,11 @@ class Strings:
     status_enabled_waiting: str
     status_firewall_needed: str
     firewall_warning: str
+    firewall_prompt_title: str
+    firewall_prompt_body: str
+    firewall_menu: str
+    firewall_ok: str
+    firewall_denied: str
     status_idle: str
     status_active: str
     status_stopping: str
@@ -128,12 +133,24 @@ EN = Strings(
     badge_active="ACTIVE",
     status_disabled="Disabled — no autostart, no background work",
     status_enabled_waiting="Enabled — waiting for War Thunder",
-    status_firewall_needed="Enabled — allow firewall for port {port} (admin)",
+    status_firewall_needed="Enabled — phone access not allowed yet",
     firewall_warning=(
-        "Windows blocked the firewall rule for port {port}.\n\n"
-        "Without inbound TCP {port}, LockOn on the phone will keep showing 0 RP / 0 SL "
-        "even when OCR on the PC works.\n\n"
-        "Re-enable Bridge and accept the admin (UAC) prompt, or allow TCP {port} manually."
+        "Phone access was not allowed.\n\n"
+        "Without it, LockOn on your phone stays at 0 RP / 0 SL even when OCR works.\n\n"
+        "Open More ▾ → Allow phone access and click Yes on the Windows prompt."
+    ),
+    firewall_prompt_title="Allow phone access?",
+    firewall_prompt_body=(
+        "So LockOn on your phone can receive RP/SL after a match, "
+        "Windows needs permission once (port {port}).\n\n"
+        "Click Yes on the next Windows prompt — nothing to type, no PowerShell.\n\n"
+        "Allow now?"
+    ),
+    firewall_menu="Allow phone access…",
+    firewall_ok="Phone access allowed. Keep the same PC IP and port {port} in LockOn.",
+    firewall_denied=(
+        "Phone access was not allowed.\n\n"
+        "You can try again anytime: More ▾ → Allow phone access."
     ),
     status_idle="Idle — checks every {seconds:.0f}s",
     status_active="War Thunder — Bridge active",
@@ -249,12 +266,24 @@ UK = Strings(
     badge_active="АКТИВНИЙ",
     status_disabled="Вимкнено — немає автозапуску й фонової роботи",
     status_enabled_waiting="Увімкнено — очікування War Thunder",
-    status_firewall_needed="Увімкнено — дозвольте firewall для порту {port} (адмін)",
+    status_firewall_needed="Увімкнено — доступ з телефона ще не дозволено",
     firewall_warning=(
-        "Windows заблокував правило firewall для порту {port}.\n\n"
-        "Без вхідного TCP {port} LockOn на телефоні лишатиме 0 RP / 0 SL, "
-        "навіть якщо OCR на ПК зчитав нагороди.\n\n"
-        "Увімкніть Bridge знову й підтвердіть UAC, або дозвольте TCP {port} вручну."
+        "Доступ з телефона не дозволено.\n\n"
+        "Без цього LockOn на телефоні лишатиме 0 RP / 0 SL, навіть якщо OCR на ПК працює.\n\n"
+        "More ▾ → Дозволити доступ з телефона → Так у вікні Windows."
+    ),
+    firewall_prompt_title="Дозволити доступ з телефона?",
+    firewall_prompt_body=(
+        "Щоб LockOn на телефоні отримував RP/SL після бою, "
+        "Windows один раз потребує дозволу (порт {port}).\n\n"
+        "У наступному вікні Windows натисніть «Так» — нічого вводити не треба.\n\n"
+        "Дозволити зараз?"
+    ),
+    firewall_menu="Дозволити доступ з телефона…",
+    firewall_ok="Доступ з телефона дозволено. У LockOn — той самий IP ПК і порт {port}.",
+    firewall_denied=(
+        "Доступ з телефона не дозволено.\n\n"
+        "Можна спробувати знову: More ▾ → Дозволити доступ з телефона."
     ),
     status_idle="Очікування — перевірка кожні {seconds:.0f} с",
     status_active="War Thunder — Bridge активний",

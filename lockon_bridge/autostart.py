@@ -283,9 +283,18 @@ def remove_uninstall_entry() -> None:
         log.warning("remove_uninstall_entry failed: %s", exc)
 
 
-def ensure_firewall_rule(port: int) -> None:
+def ensure_firewall_rule(port: int, *, allow_elevate: bool = True) -> bool:
+    """
+    Ensure inbound TCP allow for Bridge.
+
+    Returns True when the rule is present afterwards.
+    Silent netsh first; optional one-shot UAC elevation (normal user path).
+    """
     name = f"LockOn Bridge {int(port)}"
-    # Remove old rule(s) then add — all hidden.
+    if firewall_rule_present(port):
+        return True
+
+    # Remove stale same-name rules then add — all hidden.
     _run_hidden(
         [
             "netsh",
@@ -306,21 +315,22 @@ def ensure_firewall_rule(port: int) -> None:
         "action=allow",
         "protocol=TCP",
         f"localport={int(port)}",
-        # Private+public: phone Wi-Fi is often classified Public on Windows.
         "profile=any",
     ]
     result = _run_hidden(["netsh", *add_args])
-    if result.returncode == 0:
+    if result.returncode == 0 and firewall_rule_present(port):
         log.info("Firewall allow TCP %s (%s)", port, name)
-        return
+        return True
 
     log.warning(
         "netsh firewall add failed (rc=%s): %s",
         result.returncode,
         (result.stderr or result.stdout or "")[:300],
     )
-    # Non-elevated PowerShell usually fails the same way — try UAC elevation once.
-    # Phone → PC :8112 needs an inbound allow; without it the app records 0 RP/SL.
+    if not allow_elevate:
+        return firewall_rule_present(port)
+
+    # Normal-user path: one Windows UAC prompt (Yes = allow phone to reach Bridge).
     arg_line = " ".join(add_args)
     elevated = _run_ps(
         f"""
@@ -330,15 +340,15 @@ if ($null -eq $p) {{ exit 1 }}
 exit $p.ExitCode
 """
     )
-    if elevated.returncode == 0:
+    ok = elevated.returncode == 0 and firewall_rule_present(port)
+    if ok:
         log.info("Firewall allow TCP %s (%s) via elevation", port, name)
     else:
         log.warning(
-            "Elevated firewall add failed (rc=%s) — allow TCP %s inbound manually "
-            "or the phone will not receive OCR rewards",
+            "Elevated firewall add failed (rc=%s) — phone may not receive OCR rewards",
             elevated.returncode,
-            port,
         )
+    return ok
 
 
 def firewall_rule_present(port: int = 8112) -> bool:
@@ -403,16 +413,16 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             continue
 
 
-def prepare_enabled_runtime(*, port: int) -> None:
+def prepare_enabled_runtime(*, port: int, allow_firewall_elevate: bool = False) -> None:
     """
     One-shot setup when Bridge is turned ON / starts enabled.
-    Keeps PowerShell usage minimal and fully hidden.
+    Firewall elevation is opt-in from the UI (clear prompt before UAC).
     """
     stop_other_bridge_processes()
     ensure_install_copy()
     register_autostart()
     register_uninstall_entry()
-    ensure_firewall_rule(port)
+    ensure_firewall_rule(port, allow_elevate=allow_firewall_elevate)
 
 
 def full_uninstall() -> None:
