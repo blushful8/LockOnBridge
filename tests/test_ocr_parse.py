@@ -86,6 +86,32 @@ def test_parses_without_row_before_activity_noise():
     assert report.silver_lions == 15902
 
 
+def test_parses_ua_results_screen_with_cyrillic_z_premium():
+    """Real UA screen: «Без З npeMiyM0M 2927 1708 23574 15902» → without 1708/15902."""
+    text = (
+        "Ваше місце в команді: 3 Місія провалена "
+        "Без З npeMiyM0M 2 927' 1 708 23 574 15 902' "
+        "Всього 1 708 15 902"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1708
+    assert report.silver_lions == 15902
+    assert report.outcome == "defeat"
+
+
+def test_rejects_swapped_premium_junk_sixty():
+    """en-US OCR lost with-RP and glued «60» from «бойових» → must not return 15902/60."""
+    text = (
+        "MiciR npoBaneHa Ee3 npeMiyxa 3 npeMiyM0M 1 708 23 574 15 902' "
+        "60hOBhX 3aBnaHHA 604 1 708' 15 902' 1 708'"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1708
+    assert report.silver_lions == 15902
+
+
 def test_parses_column_major_premium_table():
     """UA results: labels then RP column then SL column (2108/1128/11221/7804)."""
     text = (

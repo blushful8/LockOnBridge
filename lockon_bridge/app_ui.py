@@ -781,10 +781,19 @@ class BridgeApp:
             t.test_ocr_ok.format(
                 rp=report.research_points,
                 sl=report.silver_lions,
-                outcome=report.outcome,
+                outcome=self._localize_outcome(report.outcome),
                 conf=report.confidence,
             ),
         )
+
+    def _localize_outcome(self, outcome: str) -> str:
+        t = self.strings
+        key = (outcome or "").strip().lower()
+        if key == "victory":
+            return t.outcome_victory
+        if key == "defeat":
+            return t.outcome_defeat
+        return t.outcome_undecided
 
     def _replay_last_ocr(self) -> None:
         from .ocr_parse import parse_rewards_from_ocr_text

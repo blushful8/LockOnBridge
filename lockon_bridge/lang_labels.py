@@ -103,7 +103,7 @@ WITH_PREMIUM_PHRASES: tuple[str, ...] = (
     r"プレミアム\s*あり",
     r"有\s*高级账号",
     r"有\s*高級帳號",
-    r"[3zс]\s*npe?[mn]i?[yуu0о]?m\w*",
+    r"[3zсЗ]\s*npe?[mn]i?[yуu0о]?m\w*",
 )
 
 WITHOUT_PREMIUM_PHRASES: tuple[str, ...] = (
@@ -131,8 +131,11 @@ WITHOUT_PREMIUM_PHRASES: tuple[str, ...] = (
     # Hybrid: Cyrillic «без» + Latinized «npeMiYM…» (common when Win OCR pack ≠ UI lang)
     r"без\s*npe?[mn]i?[yуu0о]?m\w*",
     r"без\s*npex?[iyu]\w*",
-    # OCR often turns «Без преміума» into «5B npeMiyxa» / «SB npeMiYMa»
+    # «Без» then OCR inserts «З» before the premium word
+    r"без\s*[3zзс]\s*npe?[mn]i?[yуu0о]?m\w*",
+    # OCR often turns «Без преміума» into «5B npeMiyxa» / «SB npeMiYMa» / «Ee3 npeMiyxa»
     r"[s5]\s*[bв]\s*npe?[mn]i?[yуux]\w*",
+    r"[eе]{1,2}[zs3]\s*npe?[mn]i?[yуux]\w*",
 )
 
 VICTORY_PHRASES: tuple[str, ...] = (

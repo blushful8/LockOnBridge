@@ -40,7 +40,8 @@ class BattleReport:
 
 
 _TOTAL = re.compile(
-    r"\btotal\b|итого|разом|підсумок|итог\w*|reward\s*total|всего|bcboro|vsego|"
+    r"\btotal\b|итого|разом|підсумок|итог\w*|reward\s*total|"
+    r"всего|всього|bcboro|vsego|bcsoro|"
     r"gesamt|somme|totale|suma|合計|합계|总计|總計",
     re.IGNORECASE,
 )
@@ -186,6 +187,28 @@ def _pair_from_label_columns(text: str) -> tuple[int | None, int | None]:
     return rp, sl
 
 
+def _sanitize_premium_amounts(amounts: list[int]) -> list[int]:
+    """Drop trailing OCR junk (e.g. «60» from «бойових» → 60hOBhX)."""
+    cleaned = list(amounts)
+    while len(cleaned) >= 3 and cleaned[-1] < 200 and cleaned[-1] < cleaned[0]:
+        cleaned.pop()
+    return cleaned
+
+
+def _plausible_reward_pair(rp: int | None, sl: int | None) -> bool:
+    if rp is None or sl is None:
+        return False
+    if rp < _MIN_REWARD or sl < _MIN_REWARD:
+        return False
+    # Real SL is almost always greater than RP; tiny SL with large RP is OCR junk.
+    if sl < rp:
+        return False
+    ratio = sl / max(1, rp)
+    if ratio > 40:
+        return False
+    return True
+
+
 def _without_pair_from_premium_amounts(amounts: list[int]) -> tuple[int | None, int | None]:
     """
     Resolve *without premium* (RP, SL) from the post-battle comparison table.
@@ -194,16 +217,34 @@ def _without_pair_from_premium_amounts(amounts: list[int]) -> tuple[int | None, 
       column-major: with_rp, without_rp, with_sl, without_sl
       row-major:    with_rp, with_sl, without_rp, without_sl
     Classic row after the without label alone: without_rp, without_sl.
+    Sometimes with_rp is missing: without_rp, with_sl, without_sl.
     """
+    amounts = _sanitize_premium_amounts(amounts)
     if len(amounts) >= 4:
         with_rp, without_rp, third, fourth = amounts[0], amounts[1], amounts[2], amounts[3]
         # Both RPs then both SLs (UA screenshot: 2108 1128 11221 7804).
         if max(with_rp, without_rp) < min(third, fourth):
-            return without_rp, fourth
+            pair = without_rp, fourth
+            if _plausible_reward_pair(*pair):
+                return pair
         # With-row then without-row.
-        return third, fourth
+        pair = third, fourth
+        if _plausible_reward_pair(*pair):
+            return pair
+        # Fall through: try first three as incomplete column/row.
+        amounts = amounts[:3]
+    if len(amounts) == 3:
+        a, b, c = amounts[0], amounts[1], amounts[2]
+        # without_rp, with_sl, without_sl (with_rp lost by OCR).
+        if a < b and c < b and c > a and _plausible_reward_pair(a, c):
+            return a, c
+        # with_rp, with_sl, without_rp — incomplete; not enough for SL.
+        return None, None
     if len(amounts) >= 2:
-        return amounts[0], amounts[1]
+        pair = amounts[0], amounts[1]
+        if _plausible_reward_pair(*pair):
+            return pair
+        return None, None
     if len(amounts) == 1:
         return amounts[0], None
     return None, None
@@ -211,17 +252,24 @@ def _without_pair_from_premium_amounts(amounts: list[int]) -> tuple[int | None, 
 
 def _pair_after_without_label(amounts: list[int]) -> tuple[int | None, int | None]:
     """Amounts sitting after a without-premium label (not the 4-cell with/without grid)."""
+    amounts = _sanitize_premium_amounts(amounts)
     if len(amounts) >= 4:
         a, b, c, d = amounts[0], amounts[1], amounts[2], amounts[3]
         # Column grid still placed after both labels: with_rp, without_rp, with_sl, without_sl.
-        if max(a, b) < min(c, d):
+        if max(a, b) < min(c, d) and _plausible_reward_pair(b, d):
             return b, d
         # Otherwise first pair is the without-premium row; later digits are detail noise
         # (activity times like «2:58 604» must not become RP/SL).
-        if b > a:
+        if _plausible_reward_pair(a, b):
             return a, b
-        return c, d
-    if len(amounts) >= 2 and amounts[1] > amounts[0]:
+        if _plausible_reward_pair(c, d):
+            return c, d
+        return None, None
+    if len(amounts) == 3:
+        a, b, c = amounts[0], amounts[1], amounts[2]
+        if a < b and c < b and c > a and _plausible_reward_pair(a, c):
+            return a, c
+    if len(amounts) >= 2 and _plausible_reward_pair(amounts[0], amounts[1]):
         return amounts[0], amounts[1]
     if len(amounts) == 1:
         return amounts[0], None
@@ -337,7 +385,7 @@ def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
 
     if WITHOUT_PREMIUM.search(cleaned) or WITH_PREMIUM.search(cleaned):
         prem_rp, prem_sl = _pair_from_premium_columns(cleaned)
-        if prem_rp is not None or prem_sl is not None:
+        if _plausible_reward_pair(prem_rp, prem_sl):
             premium_hit = True
             rp, sl = prem_rp, prem_sl
 
@@ -371,11 +419,19 @@ def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
         rp = rp if rp is not None else tot_rp
         sl = sl if sl is not None else tot_sl
 
-    # Require a plausible pair — never publish RP=1 / SL=0 junk.
-    if rp is None or sl is None:
-        return None
-    if rp < _MIN_REWARD or sl < _MIN_REWARD:
-        return None
+    # Require a plausible pair — never publish RP=1 / SL=0 junk or swapped columns.
+    if not _plausible_reward_pair(rp, sl):
+        # Premium path may have claimed a bad pair; fall back to totals.
+        if premium_hit:
+            tot_rp, tot_sl = _pair_from_total_block(cleaned)
+            if _plausible_reward_pair(tot_rp, tot_sl):
+                rp, sl = tot_rp, tot_sl
+                premium_hit = False
+            else:
+                return None
+        else:
+            return None
+    assert rp is not None and sl is not None
 
     outcome = "undecided"
     if VICTORY.search(cleaned):

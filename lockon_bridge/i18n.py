@@ -82,6 +82,9 @@ class Strings:
     ocr_packs_done: str
     ocr_packs_failed: str
     ocr_packs_nothing: str
+    outcome_victory: str
+    outcome_defeat: str
+    outcome_undecided: str
     menu_more: str
 
 
@@ -223,6 +226,9 @@ EN = Strings(
     ocr_packs_done="OCR packs installed.\n\n{detail}",
     ocr_packs_failed="Could not install OCR packs.\n\n{detail}",
     ocr_packs_nothing="Nothing to install — required packs are present.",
+    outcome_victory="victory",
+    outcome_defeat="defeat",
+    outcome_undecided="undecided",
     menu_more="More ▾",
 )
 
@@ -366,6 +372,9 @@ UK = Strings(
     ocr_packs_done="Пакети OCR встановлено.\n\n{detail}",
     ocr_packs_failed="Не вдалося встановити пакети OCR.\n\n{detail}",
     ocr_packs_nothing="Нічого встановлювати — потрібні пакети вже є.",
+    outcome_victory="перемога",
+    outcome_defeat="поразка",
+    outcome_undecided="невідомо",
     menu_more="Ще ▾",
 )
 
