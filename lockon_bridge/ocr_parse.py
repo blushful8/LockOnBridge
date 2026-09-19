@@ -215,30 +215,38 @@ def _without_pair_from_premium_amounts(amounts: list[int]) -> tuple[int | None, 
 
     OCR often emits labels first, then cells either:
       column-major: with_rp, without_rp, with_sl, without_sl
+      column-major SL-swapped: with_rp, without_rp, without_sl, with_sl
       row-major:    with_rp, with_sl, without_rp, without_sl
     Classic row after the without label alone: without_rp, without_sl.
     Sometimes with_rp is missing: without_rp, with_sl, without_sl.
+
+    Without-premium values are the smaller of each RP pair and each SL pair.
     """
     amounts = _sanitize_premium_amounts(amounts)
     if len(amounts) >= 4:
-        with_rp, without_rp, third, fourth = amounts[0], amounts[1], amounts[2], amounts[3]
-        # Both RPs then both SLs (UA screenshot: 2108 1128 11221 7804).
-        if max(with_rp, without_rp) < min(third, fourth):
-            pair = without_rp, fourth
+        a, b, c, d = amounts[0], amounts[1], amounts[2], amounts[3]
+        # Both RPs then both SLs (order of with/without inside each pair may swap).
+        if max(a, b) < min(c, d):
+            pair = min(a, b), min(c, d)
             if _plausible_reward_pair(*pair):
                 return pair
         # With-row then without-row.
-        pair = third, fourth
+        pair = c, d
         if _plausible_reward_pair(*pair):
             return pair
-        # Fall through: try first three as incomplete column/row.
+        # Without-row then with-row.
+        pair = a, b
+        if _plausible_reward_pair(*pair) and min(a, b) <= min(c, d):
+            return pair
         amounts = amounts[:3]
     if len(amounts) == 3:
         a, b, c = amounts[0], amounts[1], amounts[2]
         # without_rp, with_sl, without_sl (with_rp lost by OCR).
         if a < b and c < b and c > a and _plausible_reward_pair(a, c):
             return a, c
-        # with_rp, with_sl, without_rp — incomplete; not enough for SL.
+        # with_rp, without_rp, without_sl (with_sl delayed/missing).
+        if max(a, b) < c and _plausible_reward_pair(min(a, b), c):
+            return min(a, b), c
         return None, None
     if len(amounts) >= 2:
         pair = amounts[0], amounts[1]
@@ -255,11 +263,11 @@ def _pair_after_without_label(amounts: list[int]) -> tuple[int | None, int | Non
     amounts = _sanitize_premium_amounts(amounts)
     if len(amounts) >= 4:
         a, b, c, d = amounts[0], amounts[1], amounts[2], amounts[3]
-        # Column grid still placed after both labels: with_rp, without_rp, with_sl, without_sl.
-        if max(a, b) < min(c, d) and _plausible_reward_pair(b, d):
-            return b, d
-        # Otherwise first pair is the without-premium row; later digits are detail noise
-        # (activity times like «2:58 604» must not become RP/SL).
+        # Column grid: take the smaller RP and smaller SL (without premium).
+        if max(a, b) < min(c, d):
+            pair = min(a, b), min(c, d)
+            if _plausible_reward_pair(*pair):
+                return pair
         if _plausible_reward_pair(a, b):
             return a, b
         if _plausible_reward_pair(c, d):
@@ -269,6 +277,8 @@ def _pair_after_without_label(amounts: list[int]) -> tuple[int | None, int | Non
         a, b, c = amounts[0], amounts[1], amounts[2]
         if a < b and c < b and c > a and _plausible_reward_pair(a, c):
             return a, c
+        if max(a, b) < c and _plausible_reward_pair(min(a, b), c):
+            return min(a, b), c
     if len(amounts) >= 2 and _plausible_reward_pair(amounts[0], amounts[1]):
         return amounts[0], amounts[1]
     if len(amounts) == 1:

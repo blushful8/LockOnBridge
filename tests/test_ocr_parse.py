@@ -112,6 +112,19 @@ def test_rejects_swapped_premium_junk_sixty():
     assert report.silver_lions == 15902
 
 
+def test_parses_sl_columns_swapped_by_ocr():
+    """RU OCR: RP column then SL column with with/without SL order flipped."""
+    text = (
+        "Місія провалена Ваше місце в команді: 3 "
+        "З npeMiyM0M 2 927' 1 708 15 902' 23 574 "
+        "Всього 1 708 15 902"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1708
+    assert report.silver_lions == 15902
+
+
 def test_parses_column_major_premium_table():
     """UA results: labels then RP column then SL column (2108/1128/11221/7804)."""
     text = (
