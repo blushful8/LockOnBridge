@@ -215,9 +215,13 @@ def tesseract_ocr_variants(png: bytes, wt_ui_language: str) -> list[tuple[str, s
 
     pytesseract.pytesseract.tesseract_cmd = str(exe)
     lang = get_wt_language(wt_ui_language)
-    # Prefer local tessdata dir when we downloaded packs there.
+    # Prefer LocalAppData tessdata when we downloaded packs there. Ensure eng is
+    # present too — exclusive --tessdata-dir cannot see system eng otherwise.
     local = tessdata_dir()
-    config = f'--tessdata-dir "{local}"' if any(local.glob("*.traineddata")) else ""
+    ensure_core_tessdata()
+    use_local = any(local.glob("*.traineddata"))
+    # pytesseract passes config tokens split on spaces; do not quote the path.
+    config = f"--tessdata-dir {local}" if use_local else ""
 
     image = Image.open(BytesIO(png))
     # Mild preprocess similar to Windows path.
@@ -237,11 +241,23 @@ def tesseract_ocr_variants(png: bytes, wt_ui_language: str) -> list[tuple[str, s
         try:
             text = pytesseract.image_to_string(image, lang=combo, config=config) or ""
         except Exception as exc:  # noqa: BLE001
-            log.debug("tesseract %s failed: %s", combo, exc)
+            log.info("tesseract %s failed: %s", combo, exc)
             continue
         stripped = text.strip()
         if stripped:
             variants.append((f"tesseract:{combo}", stripped))
+    if use_local and not variants:
+        # Fallback: system tessdata (often eng-only) rather than silent empty.
+        log.info("tesseract produced no text with local tessdata — retrying system packs")
+        for combo in combos:
+            try:
+                text = pytesseract.image_to_string(image, lang=combo) or ""
+            except Exception as exc:  # noqa: BLE001
+                log.info("tesseract system %s failed: %s", combo, exc)
+                continue
+            stripped = text.strip()
+            if stripped:
+                variants.append((f"tesseract:{combo}", stripped))
     return variants
 
 

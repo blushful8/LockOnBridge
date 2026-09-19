@@ -59,6 +59,31 @@ def test_parses_total_pair():
     assert report.silver_lions == 7500
 
 
+def test_parses_column_major_premium_table():
+    """UA results: labels then RP column then SL column (2108/1128/11221/7804)."""
+    text = (
+        "Місія провалена Ваше місце в команді: 5 "
+        "З преміумом Без преміуму 2 108 1 128 11 221 7 804 "
+        "Всього 1 128 7 804"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1128
+    assert report.silver_lions == 7804
+    assert report.outcome == "defeat"
+
+
+def test_parses_mangled_column_major_from_real_ocr():
+    text = (
+        "Ваше в 5 днагорода за участь в Micii: , 3 npeMiYM0M без npeMiYHa "
+        "2 108' 1128' 11 221' 7804 знищено Всього 1 128' 7 804'"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1128
+    assert report.silver_lions == 7804
+
+
 def test_parses_latinized_ukrainian_premium_columns():
     text = (
         "Bepciq 2.59.0.13 Micifl npoBaneHa APGAHi 60i, "

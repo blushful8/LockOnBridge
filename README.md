@@ -32,8 +32,11 @@ If you are fine editing rewards manually in LockOn, you can skip this entirely.
 2. Extract → run **`LockOnBridge.exe`**.
 3. Set **War Thunder language**, turn **Bridge enabled** **ON**.
 4. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP; port `8112`).
+5. If Windows asks for admin permission for a firewall rule — accept it. Without inbound TCP **8112**, the phone stays at `0` RP/SL even when OCR worked.
 
 That is the full path for most players. On first enable, Bridge may ask to install **Windows OCR packs** (Microsoft). For Ukrainian (and a few other cases) it may also offer free offline **Tesseract** via winget — one Yes/No, no manual GitHub hunting.
+
+> **Ukrainian UI:** Windows has no `uk` OCR language pack. Bridge uses Tesseract `ukr` (plus Russian/English Windows OCR as fallback) and parses Latinized mangled text when needed.
 
 > Prefer the **ZIP** build. Single-file PyInstaller executables (especially with UPX) are often false-positive’d by Windows Defender. This release is an **onedir** package **without UPX**.
 

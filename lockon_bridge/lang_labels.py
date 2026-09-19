@@ -128,6 +128,9 @@ WITHOUT_PREMIUM_PHRASES: tuple[str, ...] = (
     r"无\s*高级账号",
     r"無\s*高級帳號",
     r"be[zs3]\s*npe?[mn]i?[yуu0о]?m\w*",
+    # Hybrid: Cyrillic «без» + Latinized «npeMiYM…» (common when Win OCR pack ≠ UI lang)
+    r"без\s*npe?[mn]i?[yуu0о]?m\w*",
+    r"без\s*npex?[iyu]\w*",
 )
 
 VICTORY_PHRASES: tuple[str, ...] = (

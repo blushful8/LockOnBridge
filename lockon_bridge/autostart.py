@@ -296,31 +296,65 @@ def ensure_firewall_rule(port: int) -> None:
             f"name={name}",
         ]
     )
+    add_args = [
+        "advfirewall",
+        "firewall",
+        "add",
+        "rule",
+        f"name={name}",
+        "dir=in",
+        "action=allow",
+        "protocol=TCP",
+        f"localport={int(port)}",
+        # Private+public: phone Wi-Fi is often classified Public on Windows.
+        "profile=any",
+    ]
+    result = _run_hidden(["netsh", *add_args])
+    if result.returncode == 0:
+        log.info("Firewall allow TCP %s (%s)", port, name)
+        return
+
+    log.warning(
+        "netsh firewall add failed (rc=%s): %s",
+        result.returncode,
+        (result.stderr or result.stdout or "")[:300],
+    )
+    # Non-elevated PowerShell usually fails the same way — try UAC elevation once.
+    # Phone → PC :8112 needs an inbound allow; without it the app records 0 RP/SL.
+    arg_line = " ".join(add_args)
+    elevated = _run_ps(
+        f"""
+$p = Start-Process -FilePath netsh -ArgumentList '{_q(arg_line)}' `
+  -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+if ($null -eq $p) {{ exit 1 }}
+exit $p.ExitCode
+"""
+    )
+    if elevated.returncode == 0:
+        log.info("Firewall allow TCP %s (%s) via elevation", port, name)
+    else:
+        log.warning(
+            "Elevated firewall add failed (rc=%s) — allow TCP %s inbound manually "
+            "or the phone will not receive OCR rewards",
+            elevated.returncode,
+            port,
+        )
+
+
+def firewall_rule_present(port: int = 8112) -> bool:
+    name = f"LockOn Bridge {int(port)}"
     result = _run_hidden(
         [
             "netsh",
             "advfirewall",
             "firewall",
-            "add",
+            "show",
             "rule",
             f"name={name}",
-            "dir=in",
-            "action=allow",
-            "protocol=TCP",
-            f"localport={int(port)}",
-            "profile=private",
         ]
     )
-    if result.returncode != 0:
-        # Fallback to PowerShell (still hidden) if netsh is restricted.
-        script = f"""
-$ruleName = '{_q(name)}'
-Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
-  Remove-NetFirewallRule -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP `
-  -LocalPort {int(port)} -Action Allow -Profile Private -ErrorAction SilentlyContinue | Out-Null
-"""
-        _run_ps(script)
+    out = (result.stdout or "") + (result.stderr or "")
+    return result.returncode == 0 and "No rules match" not in out and name.lower() in out.lower()
 
 
 def remove_firewall_rule(port: int = 8112) -> None:

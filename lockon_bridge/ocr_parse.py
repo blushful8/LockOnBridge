@@ -186,6 +186,29 @@ def _pair_from_label_columns(text: str) -> tuple[int | None, int | None]:
     return rp, sl
 
 
+def _without_pair_from_premium_amounts(amounts: list[int]) -> tuple[int | None, int | None]:
+    """
+    Resolve *without premium* (RP, SL) from the post-battle comparison table.
+
+    OCR often emits labels first, then cells either:
+      column-major: with_rp, without_rp, with_sl, without_sl
+      row-major:    with_rp, with_sl, without_rp, without_sl
+    Classic row after the without label alone: without_rp, without_sl.
+    """
+    if len(amounts) >= 4:
+        with_rp, without_rp, third, fourth = amounts[0], amounts[1], amounts[2], amounts[3]
+        # Both RPs then both SLs (UA screenshot: 2108 1128 11221 7804).
+        if max(with_rp, without_rp) < min(third, fourth):
+            return without_rp, fourth
+        # With-row then without-row.
+        return third, fourth
+    if len(amounts) >= 2:
+        return amounts[0], amounts[1]
+    if len(amounts) == 1:
+        return amounts[0], None
+    return None, None
+
+
 def _pair_from_premium_columns(text: str) -> tuple[int | None, int | None]:
     flat = re.sub(r"\s+", " ", text)
 
@@ -193,26 +216,33 @@ def _pair_from_premium_columns(text: str) -> tuple[int | None, int | None]:
     if without:
         tail = flat[without.end() :]
         next_with = WITH_PREMIUM.search(tail)
-        chunk = tail[: next_with.start()] if next_with else tail[:120]
+        chunk = tail[: next_with.start()] if next_with else tail[:160]
         amounts = _amounts_in(chunk)
-        if len(amounts) >= 2:
-            return amounts[0], amounts[1]
-        if len(amounts) == 1:
-            return amounts[0], None
+        # Labels often appear *before* all four cells: "with … without … A B C D".
+        if len(amounts) < 4:
+            with_before = WITH_PREMIUM.search(flat[: without.start() + 1])
+            if with_before:
+                between = flat[with_before.end() : without.start()]
+                # Empty/short between → cells sit after both labels.
+                if len(_amounts_in(between)) == 0:
+                    amounts = _amounts_in(flat[without.end() : without.end() + 160])
+        pair = _without_pair_from_premium_amounts(amounts)
+        if pair[0] is not None or pair[1] is not None:
+            return pair
 
     with_m = WITH_PREMIUM.search(flat)
     if with_m:
         after_with = flat[with_m.end() :]
         bare = _BARE_PREMIUM_WORD.search(after_with)
         if bare:
-            amounts = _amounts_in(after_with[bare.end() : bare.end() + 80])
-            if len(amounts) >= 2:
-                return amounts[0], amounts[1]
-            if len(amounts) == 1:
-                return amounts[0], None
-        amounts = _amounts_in(after_with[:80])
-        if len(amounts) >= 2:
-            return amounts[0], amounts[1]
+            amounts = _amounts_in(after_with[bare.end() : bare.end() + 160])
+            pair = _without_pair_from_premium_amounts(amounts)
+            if pair[0] is not None or pair[1] is not None:
+                return pair
+        amounts = _amounts_in(after_with[:160])
+        pair = _without_pair_from_premium_amounts(amounts)
+        if pair[0] is not None or pair[1] is not None:
+            return pair
 
     return None, None
 
@@ -346,6 +376,12 @@ def choose_best_report(candidates: list[tuple[str, BattleReport | None]]) -> tup
         score = report.confidence
         # Prefer both currencies well above the floor.
         score += min(report.research_points, report.silver_lions) / 100_000.0
+        # Penalize OCR glue (e.g. 78049 instead of 7804) via implausible SL/RP ratio.
+        ratio = report.silver_lions / max(1, report.research_points)
+        if 1.2 <= ratio <= 30:
+            score += 0.08
+        elif ratio > 50 or ratio < 0.4:
+            score -= 0.2
         scored.append((score, text, report))
     if not scored:
         return None

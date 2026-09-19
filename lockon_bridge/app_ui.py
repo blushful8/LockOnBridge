@@ -14,6 +14,7 @@ from .agent import AgentStatus, BridgeAgent
 from .autostart import (
     ensure_firewall_rule,
     ensure_install_copy,
+    firewall_rule_present,
     full_uninstall,
     prepare_enabled_runtime,
     register_uninstall_entry,
@@ -538,7 +539,14 @@ class BridgeApp:
         self.settings = update_settings(enabled=True, port=port)
         prepare_enabled_runtime(port=port)
         self._set_ui_enabled(True)
-        self.status_var.set(self.strings.status_enabled_waiting)
+        if not firewall_rule_present(port):
+            self.status_var.set(self.strings.status_firewall_needed.format(port=port))
+            try:
+                messagebox.showwarning(PRODUCT_NAME, self.strings.firewall_warning.format(port=port))
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            self.status_var.set(self.strings.status_enabled_waiting)
         self.agent.start(self.settings)
         self._ensure_tray()
         # Offer official Microsoft OCR packs once (or when still missing).
