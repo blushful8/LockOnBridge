@@ -209,7 +209,31 @@ def _without_pair_from_premium_amounts(amounts: list[int]) -> tuple[int | None, 
     return None, None
 
 
+def _pair_after_without_label(amounts: list[int]) -> tuple[int | None, int | None]:
+    """Amounts sitting after a without-premium label (not the 4-cell with/without grid)."""
+    if len(amounts) >= 4:
+        a, b, c, d = amounts[0], amounts[1], amounts[2], amounts[3]
+        # Column grid still placed after both labels: with_rp, without_rp, with_sl, without_sl.
+        if max(a, b) < min(c, d):
+            return b, d
+        # Otherwise first pair is the without-premium row; later digits are detail noise
+        # (activity times like «2:58 604» must not become RP/SL).
+        if b > a:
+            return a, b
+        return c, d
+    if len(amounts) >= 2 and amounts[1] > amounts[0]:
+        return amounts[0], amounts[1]
+    if len(amounts) == 1:
+        return amounts[0], None
+    return None, None
+
+
 def _pair_from_premium_columns(text: str) -> tuple[int | None, int | None]:
+    """
+    Prefer *without premium* RP/SL (earned without account boost).
+
+    Full-window OCR text is kept for future features; this helper only extracts that pair.
+    """
     flat = re.sub(r"\s+", " ", text)
 
     without = WITHOUT_PREMIUM.search(flat)
@@ -218,31 +242,44 @@ def _pair_from_premium_columns(text: str) -> tuple[int | None, int | None]:
         next_with = WITH_PREMIUM.search(tail)
         chunk = tail[: next_with.start()] if next_with else tail[:160]
         amounts = _amounts_in(chunk)
-        # Labels often appear *before* all four cells: "with … without … A B C D".
-        if len(amounts) < 4:
+        if len(amounts) < 2:
             with_before = WITH_PREMIUM.search(flat[: without.start() + 1])
             if with_before:
                 between = flat[with_before.end() : without.start()]
-                # Empty/short between → cells sit after both labels.
                 if len(_amounts_in(between)) == 0:
                     amounts = _amounts_in(flat[without.end() : without.end() + 160])
-        pair = _without_pair_from_premium_amounts(amounts)
-        if pair[0] is not None or pair[1] is not None:
+        pair = _pair_after_without_label(amounts)
+        if pair[0] is not None and pair[1] is not None:
             return pair
 
     with_m = WITH_PREMIUM.search(flat)
     if with_m:
         after_with = flat[with_m.end() :]
+        # Second header «npeMiYMa» (truncated without-premium) → amounts after it.
         bare = _BARE_PREMIUM_WORD.search(after_with)
         if bare:
-            amounts = _amounts_in(after_with[bare.end() : bare.end() + 160])
+            amounts = _amounts_in(after_with[bare.end() : bare.end() + 100])
+            if len(amounts) >= 2:
+                return amounts[0], amounts[1]
+        # Four-cell block only — never the first two cells (those are with-premium).
+        amounts = _amounts_in(after_with[:200])
+        if len(amounts) >= 4:
             pair = _without_pair_from_premium_amounts(amounts)
-            if pair[0] is not None or pair[1] is not None:
+            if pair[0] is not None and pair[1] is not None:
                 return pair
-        amounts = _amounts_in(after_with[:160])
-        pair = _without_pair_from_premium_amounts(amounts)
-        if pair[0] is not None or pair[1] is not None:
-            return pair
+        loose = re.search(
+            r"(?:5\s*[bв]|be[zs3]|без)\s*npe?\w*.{0,12}?"
+            r"((?:\d{1,3}(?:[\s.,'\u00A0]\d{3})+|\d{3,}))"
+            r".{0,12}?"
+            r"((?:\d{1,3}(?:[\s.,'\u00A0]\d{3})+|\d{3,}))",
+            flat,
+            re.IGNORECASE,
+        )
+        if loose:
+            rp = _to_int(loose.group(1))
+            sl = _to_int(loose.group(2))
+            if rp is not None and sl is not None and rp >= _MIN_REWARD and sl >= _MIN_REWARD:
+                return rp, sl
 
     return None, None
 

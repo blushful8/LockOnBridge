@@ -135,22 +135,25 @@ EN = Strings(
     status_enabled_waiting="Enabled — waiting for War Thunder",
     status_firewall_needed="Enabled — phone access not allowed yet",
     firewall_warning=(
-        "Phone access was not allowed.\n\n"
-        "Without it, LockOn on your phone stays at 0 RP / 0 SL even when OCR works.\n\n"
-        "Open More ▾ → Allow phone access and click Yes on the Windows prompt."
+        "Phone access was not allowed on this PC.\n\n"
+        "Without it, LockOn on the phone stays at 0 RP / 0 SL even when OCR works.\n\n"
+        "On THIS computer: More ▾ → Allow phone access → Yes, then Yes on the Windows (UAC) window.\n"
+        "Nothing appears on the phone."
     ),
-    firewall_prompt_title="Allow phone access?",
+    firewall_prompt_title="Allow phone access? (on this PC)",
     firewall_prompt_body=(
-        "So LockOn on your phone can receive RP/SL after a match, "
-        "Windows needs permission once (port {port}).\n\n"
-        "Click Yes on the next Windows prompt — nothing to type, no PowerShell.\n\n"
+        "So the phone can reach this PC, Windows on THIS computer needs permission once "
+        "(firewall, port {port}).\n\n"
+        "Next: a Windows security window appears HERE — click Yes.\n"
+        "There is no prompt on the phone.\n\n"
         "Allow now?"
     ),
     firewall_menu="Allow phone access…",
-    firewall_ok="Phone access allowed. Keep the same PC IP and port {port} in LockOn.",
+    firewall_ok="Phone access allowed on this PC. In LockOn use this PC's IP and port {port}.",
     firewall_denied=(
-        "Phone access was not allowed.\n\n"
-        "You can try again anytime: More ▾ → Allow phone access."
+        "Windows permission was not granted on this PC (UAC cancelled or blocked).\n\n"
+        "Try again on THIS computer: More ▾ → Allow phone access → Yes on the Windows window.\n"
+        "Nothing will appear on the phone."
     ),
     status_idle="Idle — checks every {seconds:.0f}s",
     status_active="War Thunder — Bridge active",
@@ -268,22 +271,27 @@ UK = Strings(
     status_enabled_waiting="Увімкнено — очікування War Thunder",
     status_firewall_needed="Увімкнено — доступ з телефона ще не дозволено",
     firewall_warning=(
-        "Доступ з телефона не дозволено.\n\n"
-        "Без цього LockOn на телефоні лишатиме 0 RP / 0 SL, навіть якщо OCR на ПК працює.\n\n"
-        "More ▾ → Дозволити доступ з телефона → Так у вікні Windows."
+        "Доступ з телефона не дозволено на цьому ПК.\n\n"
+        "Без цього LockOn на телефоні лишатиме 0 RP / 0 SL, навіть якщо OCR працює.\n\n"
+        "На ЦЬОМУ комп’ютері: More ▾ → Дозволити доступ з телефона → «Так», "
+        "потім «Так» у вікні Windows (UAC).\n"
+        "На телефоні запиту не буде."
     ),
-    firewall_prompt_title="Дозволити доступ з телефона?",
+    firewall_prompt_title="Дозволити доступ з телефона? (на цьому ПК)",
     firewall_prompt_body=(
-        "Щоб LockOn на телефоні отримував RP/SL після бою, "
-        "Windows один раз потребує дозволу (порт {port}).\n\n"
-        "У наступному вікні Windows натисніть «Так» — нічого вводити не треба.\n\n"
+        "Щоб телефон дістався цього ПК, Windows на ЦЬОМУ комп’ютері один раз "
+        "потребує дозволу (брандмауер, порт {port}).\n\n"
+        "Далі з’явиться вікно безпеки Windows ТУТ — натисніть «Так».\n"
+        "На телефоні нічого не з’явиться.\n\n"
         "Дозволити зараз?"
     ),
     firewall_menu="Дозволити доступ з телефона…",
-    firewall_ok="Доступ з телефона дозволено. У LockOn — той самий IP ПК і порт {port}.",
+    firewall_ok="Доступ з телефона дозволено на цьому ПК. У LockOn — IP цього ПК і порт {port}.",
     firewall_denied=(
-        "Доступ з телефона не дозволено.\n\n"
-        "Можна спробувати знову: More ▾ → Дозволити доступ з телефона."
+        "Дозвіл Windows на цьому ПК не надано (скасовано UAC або заблоковано).\n\n"
+        "Спробуйте знову на ЦЬОМУ комп’ютері: More ▾ → Дозволити доступ з телефона "
+        "→ «Так» у вікні Windows.\n"
+        "На телефоні запиту не буде."
     ),
     status_idle="Очікування — перевірка кожні {seconds:.0f} с",
     status_active="War Thunder — Bridge активний",

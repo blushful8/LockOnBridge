@@ -131,6 +131,8 @@ WITHOUT_PREMIUM_PHRASES: tuple[str, ...] = (
     # Hybrid: Cyrillic «без» + Latinized «npeMiYM…» (common when Win OCR pack ≠ UI lang)
     r"без\s*npe?[mn]i?[yуu0о]?m\w*",
     r"без\s*npex?[iyu]\w*",
+    # OCR often turns «Без преміума» into «5B npeMiyxa» / «SB npeMiYMa»
+    r"[s5]\s*[bв]\s*npe?[mn]i?[yуux]\w*",
 )
 
 VICTORY_PHRASES: tuple[str, ...] = (

@@ -59,6 +59,33 @@ def test_parses_total_pair():
     assert report.silver_lions == 7500
 
 
+def test_parses_mangled_5b_without_premium_row():
+    """Real OCR: «Без преміума» → «5B npeMiyxa»; must not take with-premium 2927/23574."""
+    text = (
+        "Haropona 3a yuacTb B Micii: *34% , Baue Micue B KOMaHAi: 3 "
+        "3 npeMiYMOM 2 927' 23 574' 3HhUeHO "
+        "5B npeMiyxa 1 708 15 902' nponycTMT Bcboro 1 708 15 902'"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1708
+    assert report.silver_lions == 15902
+
+
+def test_parses_without_row_before_activity_noise():
+    """Full-window OCR: without totals then activity times/detail columns (was 58604/1708)."""
+    text = (
+        "Haropona 3a yuacTb B Micii: *34% , Baue Micue B KOMaHAi: 3 "
+        "3 npeMiYMOM 2 927' 23 574' 3HhUeHO nosiTp9Hhx uinei "
+        "5B npeMiyxa 1 708 15 902' nponycTMT 6 8 3 6 41 2:58 604 1 708 "
+        "11:36 13:02 1 288' 1064' 1 637' 416 15 902' 1 708"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1708
+    assert report.silver_lions == 15902
+
+
 def test_parses_column_major_premium_table():
     """UA results: labels then RP column then SL column (2108/1128/11221/7804)."""
     text = (

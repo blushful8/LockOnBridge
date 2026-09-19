@@ -16,26 +16,57 @@ def _report_path():
 
 
 class ReportStore:
+    """
+    Single source of truth for the latest OCR report.
+
+    Memory and last_report.json must stay in sync — the phone reads HTTP which
+    used to drift from disk when a prior in-memory value outlived a newer file.
+    """
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._latest: Optional[BattleReport] = None
         self._seen_hashes: set[str] = set()
-        self._load_disk()
+        self._load_disk_unlocked()
 
-    def _load_disk(self) -> None:
+    def _load_disk_unlocked(self) -> None:
         path = _report_path()
         if not path.is_file():
             return
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             report = _report_from_json(raw)
-            if report is not None:
-                self._latest = report
-                self._seen_hashes.add(report.raw_hash)
+            if report is None:
+                return
+            self._latest = report
+            self._seen_hashes.add(report.raw_hash)
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             log.debug("Could not load last_report.json: %s", exc)
 
-    def _save_disk(self, report: BattleReport) -> None:
+    def _refresh_from_disk_unlocked(self) -> None:
+        """Prefer disk when it has a newer capturedAt than memory (or memory empty)."""
+        path = _report_path()
+        if not path.is_file():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            report = _report_from_json(raw)
+            if report is None:
+                return
+            current = self._latest
+            if current is None or report.captured_at_epoch_millis > current.captured_at_epoch_millis:
+                self._latest = report
+                self._seen_hashes.add(report.raw_hash)
+                if current is not None and current.raw_hash != report.raw_hash:
+                    log.info(
+                        "ReportStore: loaded newer disk report RP=%s SL=%s",
+                        report.research_points,
+                        report.silver_lions,
+                    )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return
+
+    def _save_disk_unlocked(self, report: BattleReport) -> None:
         path = _report_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,19 +78,30 @@ class ReportStore:
             log.warning("Could not save last_report.json: %s", exc)
 
     def publish(self, report: BattleReport) -> bool:
-        """Returns True when the report is new (not a duplicate hash)."""
+        """Keep the newest report. Returns True when HTTP clients should see a change."""
         with self._lock:
-            if report.raw_hash in self._seen_hashes:
-                return False
+            self._refresh_from_disk_unlocked()
+            current = self._latest
+            if current is not None:
+                if report.raw_hash == current.raw_hash:
+                    return False
+                if report.captured_at_epoch_millis < current.captured_at_epoch_millis:
+                    log.info(
+                        "ReportStore: ignore older OCR RP=%s SL=%s (have newer)",
+                        report.research_points,
+                        report.silver_lions,
+                    )
+                    return False
             self._seen_hashes.add(report.raw_hash)
             if len(self._seen_hashes) > 64:
                 self._seen_hashes = set(list(self._seen_hashes)[-32:])
             self._latest = report
-            self._save_disk(report)
+            self._save_disk_unlocked(report)
             return True
 
     def latest(self) -> Optional[BattleReport]:
         with self._lock:
+            self._refresh_from_disk_unlocked()
             return self._latest
 
 

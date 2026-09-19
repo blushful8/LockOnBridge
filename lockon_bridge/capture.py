@@ -130,18 +130,25 @@ async def _recognize_png_variants(data: bytes) -> list[tuple[str, str]]:
 
 
 def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
+    """
+    Grab nearly the full primary monitor.
+
+    Keep the whole results window for future parsing (kills, activity, etc.);
+    reward extraction currently uses only RP/SL from that text.
+    """
     with mss.MSS() as sct:
         monitor = sct.monitors[1]
         shot = sct.grab(monitor)
         image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
     width, height = image.size
+    # Tiny margins only — avoid taskbar clock / desktop icons when possible.
     image = image.crop(
         (
-            int(width * 0.06),
-            int(height * 0.05),
-            int(width * 0.94),
-            int(height * 0.90),
+            int(width * 0.01),
+            int(height * 0.01),
+            int(width * 0.99),
+            int(height * 0.97),
         )
     )
 
