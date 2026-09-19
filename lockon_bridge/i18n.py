@@ -64,6 +64,7 @@ class Strings:
     update_restarting: str
     test_ocr: str
     test_ocr_busy: str
+    test_ocr_countdown: str
     test_ocr_ok: str
     test_ocr_fail: str
     test_ocr_error: str
@@ -182,6 +183,7 @@ EN = Strings(
     update_restarting="Update downloaded. LockOn Bridge will restart.",
     test_ocr="Test OCR now",
     test_ocr_busy="Reading screen…",
+    test_ocr_countdown="Switch to WT results — capture in {n}…",
     test_ocr_ok=(
         "Parsed rewards:\n"
         "Research Points: {rp}\n"
@@ -191,7 +193,11 @@ EN = Strings(
     ),
     test_ocr_fail=(
         "No RP/SL found on screen.\n\n"
-        "Open a War Thunder results screenshot full-screen, then try again.\n\n"
+        "You need the post-battle RESULTS screen (with / without premium totals),\n"
+        "not the hangar or main menu.\n\n"
+        "1) Open that screen in War Thunder (or a full-screen screenshot of it)\n"
+        "2) Click «Test OCR» — Bridge hides and waits 5 seconds\n"
+        "3) Stay on the results screen until the dialog appears\n\n"
         "OCR preview:\n{preview}"
     ),
     test_ocr_error="OCR failed:\n{error}",
@@ -320,6 +326,7 @@ UK = Strings(
     update_restarting="Оновлення завантажено. LockOn Bridge перезапуститься.",
     test_ocr="Перевірити OCR",
     test_ocr_busy="Читаю екран…",
+    test_ocr_countdown="Перемкнись на результати WT — знімок через {n}…",
     test_ocr_ok=(
         "Розпізнано нагороди:\n"
         "Очки досліджень: {rp}\n"
@@ -329,7 +336,11 @@ UK = Strings(
     ),
     test_ocr_fail=(
         "RP/SL на екрані не знайдено.\n\n"
-        "Відкрийте повноекранний скрін результатів і спробуйте ще раз.\n\n"
+        "Потрібен екран РЕЗУЛЬТАТІВ після бою (з / без преміуму),\n"
+        "а не ангар чи головне меню.\n\n"
+        "1) Відкрий цей екран у War Thunder (або повноекранний скрін)\n"
+        "2) Натисни «Перевірити OCR» — Bridge сховається на 5 с\n"
+        "3) Залишайся на екрані результатів до появи вікна\n\n"
         "Фрагмент OCR:\n{preview}"
     ),
     test_ocr_error="Помилка OCR:\n{error}",

@@ -728,21 +728,42 @@ class BridgeApp:
         if getattr(self, "_ocr_busy", False):
             return
         self._ocr_busy = True
-        self.status_var.set(self.strings.test_ocr_busy)
-
-        def work() -> None:
+        countdown = 5
+        # Fully hide Bridge so its own UI is never OCR'd.
+        try:
+            self.root.withdraw()
+        except tk.TclError:
             try:
-                from .selftest import ocr_once
+                self.root.iconify()
+            except tk.TclError:
+                pass
 
-                text, report, _dump = ocr_once(save_dump=True)
-                self.root.after(0, lambda: self._show_ocr_result(text, report, None))
-            except Exception as exc:  # noqa: BLE001
-                self.root.after(0, lambda: self._show_ocr_result("", None, str(exc)))
+        def tick(left: int) -> None:
+            if left > 0:
+                # Status is hidden with the window; still advance the timer.
+                self.root.after(1000, lambda: tick(left - 1))
+                return
 
-        threading.Thread(target=work, name="ocr-test", daemon=True).start()
+            def work() -> None:
+                try:
+                    from .selftest import ocr_once
+
+                    text, report, _dump = ocr_once(save_dump=True)
+                    self.root.after(0, lambda: self._show_ocr_result(text, report, None))
+                except Exception as exc:  # noqa: BLE001
+                    self.root.after(0, lambda: self._show_ocr_result("", None, str(exc)))
+
+            threading.Thread(target=work, name="ocr-test", daemon=True).start()
+
+        tick(countdown)
 
     def _show_ocr_result(self, text: str, report, error: str | None) -> None:
         self._ocr_busy = False
+        try:
+            self.root.deiconify()
+            self.root.lift()
+        except tk.TclError:
+            pass
         t = self.strings
         if error:
             messagebox.showerror(PRODUCT_NAME, t.test_ocr_error.format(error=error))

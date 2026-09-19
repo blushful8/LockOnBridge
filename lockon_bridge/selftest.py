@@ -206,11 +206,11 @@ def make_test_report(
 
 
 def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path | None]:
-    from .capture import grab_primary_monitor_png, ocr_png_variants
+    from .capture import grab_for_ocr_png, ocr_png_variants
     from .settings import load_settings
 
     settings = load_settings()
-    png = grab_primary_monitor_png()
+    png = grab_for_ocr_png()
     variants = ocr_png_variants(
         png,
         wt_ui_language=settings.wt_ui_language or settings.language or "uk",

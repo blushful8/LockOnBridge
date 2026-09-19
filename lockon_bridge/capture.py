@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import logging
+from ctypes import wintypes
 from io import BytesIO
 
 import mss
@@ -10,6 +13,12 @@ from winrt.windows.graphics.imaging import BitmapDecoder
 from winrt.windows.media.ocr import OcrEngine
 from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
 
+from .process_watch import war_thunder_pids
+
+log = logging.getLogger("lockon_bridge.capture")
+
+user32 = ctypes.windll.user32
+dwmapi = ctypes.windll.dwmapi
 
 # Prefer packs that match common WT UI languages; still try every installed pack.
 _PREFERRED_TAGS = (
@@ -33,6 +42,9 @@ _PREFERRED_TAGS = (
     "zh-Hans",
     "zh-Hant",
 )
+
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+_DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
 
 def list_installed_ocr_languages() -> list[tuple[str, str]]:
@@ -129,29 +141,71 @@ async def _recognize_png_variants(data: bytes) -> list[tuple[str, str]]:
     return variants
 
 
-def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
-    """
-    Grab nearly the full primary monitor.
-
-    Keep the whole results window for future parsing (kills, activity, etc.);
-    reward extraction currently uses only RP/SL from that text.
-    """
-    with mss.MSS() as sct:
-        monitor = sct.monitors[1]
-        shot = sct.grab(monitor)
-        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-
-    width, height = image.size
-    # Tiny margins only — avoid taskbar clock / desktop icons when possible.
-    image = image.crop(
-        (
-            int(width * 0.01),
-            int(height * 0.01),
-            int(width * 0.99),
-            int(height * 0.97),
+def _window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """Return (left, top, right, bottom) in screen pixels, preferring DWM frame bounds."""
+    rect = wintypes.RECT()
+    try:
+        ok = dwmapi.DwmGetWindowAttribute(
+            wintypes.HWND(hwnd),
+            _DWMWA_EXTENDED_FRAME_BOUNDS,
+            ctypes.byref(rect),
+            ctypes.sizeof(rect),
         )
-    )
+        if ok == 0 and rect.right > rect.left and rect.bottom > rect.top:
+            return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+    except Exception:  # noqa: BLE001
+        pass
+    if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+        return None
+    if rect.right <= rect.left or rect.bottom <= rect.top:
+        return None
+    return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
+
+def find_war_thunder_hwnd() -> int | None:
+    """Largest visible top-level window owned by aces.exe (War Thunder client)."""
+    pids = set(war_thunder_pids())
+    if not pids:
+        return None
+
+    best: tuple[int, int] | None = None  # (area, hwnd)
+
+    @_WNDENUMPROC
+    def _enum(hwnd: int, _lparam: int) -> bool:
+        nonlocal best
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if int(pid.value) not in pids:
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = (buf.value or "").strip().lower()
+        if not title:
+            return True
+        # Prefer the real game window; skip launcher/helper titles when possible.
+        if "launcher" in title and "war thunder" not in title and "warthunder" not in title:
+            return True
+        bounds = _window_rect(int(hwnd))
+        if bounds is None:
+            return True
+        left, top, right, bottom = bounds
+        area = max(0, right - left) * max(0, bottom - top)
+        if area < 400 * 300:
+            return True
+        if best is None or area > best[0]:
+            best = (area, int(hwnd))
+        return True
+
+    user32.EnumWindows(_enum, 0)
+    return None if best is None else best[1]
+
+
+def _png_from_image(image: Image.Image, max_width: int = 1920) -> bytes:
     if image.width < 1280:
         ratio = 1280 / float(image.width)
         image = image.resize(
@@ -171,6 +225,79 @@ def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
     buf = BytesIO()
     image.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def grab_region_png(
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    *,
+    max_width: int = 1920,
+) -> bytes:
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    with mss.MSS() as sct:
+        shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
+        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    return _png_from_image(image, max_width=max_width)
+
+
+def grab_war_thunder_png(max_width: int = 1920) -> bytes | None:
+    """Capture the War Thunder client window when it is running and visible."""
+    hwnd = find_war_thunder_hwnd()
+    if hwnd is None:
+        return None
+    bounds = _window_rect(hwnd)
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
+    try:
+        # Bring WT forward so exclusive/fullscreen content is what mss sees.
+        user32.ShowWindow(wintypes.HWND(hwnd), 9)  # SW_RESTORE
+        user32.SetForegroundWindow(wintypes.HWND(hwnd))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return grab_region_png(left, top, right, bottom, max_width=max_width)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("WT window grab failed: %s", exc)
+        return None
+
+
+def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
+    """
+    Grab nearly the full primary monitor.
+
+    Prefer this only when the WT window cannot be found. Keep the whole results
+    area for future parsing; reward extraction currently uses only RP/SL.
+    """
+    with mss.MSS() as sct:
+        monitor = sct.monitors[1]
+        shot = sct.grab(monitor)
+        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+    width, height = image.size
+    # Tiny margins only — avoid taskbar clock / desktop icons when possible.
+    image = image.crop(
+        (
+            int(width * 0.01),
+            int(height * 0.01),
+            int(width * 0.99),
+            int(height * 0.97),
+        )
+    )
+    return _png_from_image(image, max_width=max_width)
+
+
+def grab_for_ocr_png(max_width: int = 1920) -> bytes:
+    """Prefer the War Thunder window; fall back to the primary monitor."""
+    wt = grab_war_thunder_png(max_width=max_width)
+    if wt is not None:
+        log.info("OCR capture: War Thunder window")
+        return wt
+    log.info("OCR capture: primary monitor (WT window not found)")
+    return grab_primary_monitor_png(max_width=max_width)
 
 
 def ocr_png_variants_windows(png: bytes) -> list[tuple[str, str]]:
@@ -198,7 +325,7 @@ def ocr_screen_variants(
     from .settings import load_settings
 
     settings = load_settings()
-    png = grab_primary_monitor_png()
+    png = grab_for_ocr_png()
     return ocr_png_variants(
         png,
         wt_ui_language=wt_ui_language or settings.wt_ui_language or settings.language,
