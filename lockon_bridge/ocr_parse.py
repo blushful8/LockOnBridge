@@ -1,7 +1,10 @@
 """
 War Thunder post-battle OCR → without-premium RP / SL.
 
-Capture is full-window; mapping is label-driven, not layout/pixel ROIs.
+Primary path: scale-safe digit ROIs (``roi_layout`` / ``roi_rewards``) on the WT
+client frame — without-premium cells + «Всього» row, cross-checked.
+
+Fallback: full-panel OCR text with label-driven mapping (not absolute pixels).
 
 Canonical priority (see parse_rewards_from_ocr_text):
   1. Premium table → *without* column (4-cell with/without grid)
@@ -671,6 +674,33 @@ def choose_best_report(candidates: list[tuple[str, BattleReport | None]]) -> tup
         if report is None:
             continue
         score = float(report.confidence)
+        # Geometric ROI consensus beats flat full-frame heuristics.
+        lower = text.lower()
+        dual_roi = "без преміума" in lower and "всього" in lower
+        if dual_roi:
+            score += 0.35
+            report = BattleReport(
+                captured_at_epoch_millis=report.captured_at_epoch_millis,
+                research_points=report.research_points,
+                silver_lions=report.silver_lions,
+                outcome=report.outcome,
+                raw_hash=report.raw_hash,
+                confidence=max(report.confidence, 0.92),
+                source="ocr-roi" if report.source == "ocr" else report.source,
+                id=report.id,
+            )
+        elif text.lstrip().startswith("Всього") or text.lstrip().startswith("Без"):
+            score += 0.18
+            report = BattleReport(
+                captured_at_epoch_millis=report.captured_at_epoch_millis,
+                research_points=report.research_points,
+                silver_lions=report.silver_lions,
+                outcome=report.outcome,
+                raw_hash=report.raw_hash,
+                confidence=max(report.confidence, 0.85),
+                source="ocr-roi" if report.source == "ocr" else report.source,
+                id=report.id,
+            )
         rp, sl = report.research_points, report.silver_lions
         amounts = set(_amounts_in(text, min_value=1))
         # Prefer clean SL when OCR also emitted a glued sibling (2912 and 29128).
