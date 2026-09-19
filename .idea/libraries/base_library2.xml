@@ -1,9 +1,0 @@
-<component name="libraryTable">
-  <library name="base_library2">
-    <CLASSES>
-      <root url="jar://$PROJECT_DIR$/dist/LockOnBridge/_internal/base_library.zip!/" />
-    </CLASSES>
-    <JAVADOC />
-    <SOURCES />
-  </library>
-</component>
