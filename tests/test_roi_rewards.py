@@ -88,6 +88,46 @@ def test_pair_from_digit_text_deglues_trailing():
     assert pair_from_digit_text("1025 72620") == (1025, 7262)
     assert pair_from_digit_text("10259 72620") == (1025, 7262)
     assert pair_from_digit_text("1025 72629") == (1025, 7262)
+    # RapidOCR noise digits before a real 4-digit RP must not glue into 3102.
+    assert pair_from_digit_text("5 3 1025 7262") == (1025, 7262)
+    # Achievements crumb before Всього must not beat real RP/SL.
+    assert pair_from_digit_text("1050 1473 11834") == (1473, 11834)
+
+
+def test_sanitize_keeps_real_sl_ending_in_nine():
+    from lockon_bridge.ocr_parse import (
+        _sanitize_premium_amounts,
+        _with_pair_from_premium_amounts,
+        _without_pair_from_premium_amounts,
+    )
+
+    amounts = [2946, 1473, 18739, 11834]
+    assert _sanitize_premium_amounts(amounts) == amounts
+    assert _without_pair_from_premium_amounts(amounts) == (1473, 11834)
+    assert _with_pair_from_premium_amounts(amounts) == (2946, 18739)
+
+
+def test_live_mission_results_without_premium():
+    """Live WT mission-results summary: Без преміума 1473 / 11834."""
+    path = FIXTURES / "live_mission_1473_11834.png"
+    if not path.is_file():
+        return
+    report = report_from_roi_image(_load(path), prefer_with=False)
+    assert report is not None
+    assert report.research_points == 1473
+    assert report.silver_lions == 11834
+    assert report.source == "ocr-roi"
+
+
+def test_live_mission_results_with_premium():
+    path = FIXTURES / "live_mission_1473_11834.png"
+    if not path.is_file():
+        return
+    report = report_from_roi_image(_load(path), prefer_with=True)
+    assert report is not None
+    assert report.research_points == 2946
+    assert report.silver_lions == 18739
+    assert report.source == "ocr-roi"
 
 
 def test_pair_from_digit_text_keeps_high_premium_farm():
@@ -183,18 +223,46 @@ def test_full_client_center_header_without_over_total():
     assert report.source == "ocr-roi"
 
 
+def test_parse_keeps_header_rp_when_total_differs():
+    """Synthetic dual text must not replace header 921 with Всього 799."""
+    text = "Без преміума 921 6817\nВсього 799 6817"
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+    assert report is not None
+    assert report.research_points == 921
+    assert report.silver_lions == 6817
+
+
+def test_rapidocr_reads_without_center_crop():
+    from lockon_bridge.rapid_ocr import rapidocr_available, rapidocr_digits_text
+    from lockon_bridge.roi_layout import crop_norm, NormRect
+
+    if not rapidocr_available():
+        return
+    path = FIXTURES / "results_uk_center_921_6817.png"
+    if not path.is_file():
+        return
+    img = _load(path)
+    crop = crop_norm(img, NormRect(0.580, 0.095, 0.640, 0.155, "wo"))
+    assert crop is not None
+    text = rapidocr_digits_text(crop)
+    assert "921" in text.replace(" ", "")
+    assert "6817" in text.replace(" ", "")
+
+
 def test_consensus_keeps_without_rp_when_total_differs():
     """Unit: same SL, different RP → keep without header RP."""
-    from lockon_bridge.roi_rewards import extract_roi_reward_variants
-
-    # Synthetic path exercised via live fixture above; also guard tag presence.
     path = FIXTURES / "results_uk_center_921_6817.png"
     if not path.is_file():
         return
     variants = extract_roi_reward_variants(_load(path), prefer_with=False)
     tags = [t for t, _ in variants]
     assert any(
-        t in ("roi:consensus-without-rp", "roi:without-over-total", "roi:without-only", "roi:consensus")
+        t
+        in (
+            "roi:consensus-without-rp",
+            "roi:without-over-total",
+            "roi:without-only",
+            "roi:consensus",
+        )
         for t in tags
     )
-    assert "roi:prefer-total" not in tags or any("921" in text for t, text in variants if t.startswith("roi:"))

@@ -71,8 +71,10 @@ _TOTAL = re.compile(
 # Exactly one thousands group, and only when the left part is 1–2 digits
 # (``1 788``, ``12 446``, ``4 608``). Never treat ``672 336`` (two RP cells) as 672336.
 # ``(?<!\d)`` blocks icon-ghost glue: ``4219 276`` must not become ``9276``.
+# ``(?!\d)`` after the thousands triad blocks ``3 1025`` → ``3102`` (noise digit
+# + real 4-digit RP). True spaced thousands (``1 025``) still match.
 _AMOUNT = re.compile(
-    r"([+\-]?\s*(?:(?<!\d)(?!0[.,])\d{1,2}(?:[\s.,'\u00A0]\d{3})|\d+))"
+    r"([+\-]?\s*(?:(?<!\d)(?!0[.,])\d{1,2}(?:[\s.,'\u00A0]\d{3})(?!\d)|\d+))"
 )
 _RATIO_AMOUNT = re.compile(r"^[+\-]?\s*0[.,]\d+$")
 _BARE_PREMIUM_WORD = re.compile(
@@ -145,11 +147,46 @@ def _to_int(raw: str) -> int | None:
 
 
 def _amounts_in(text: str, *, min_value: int = _MIN_REWARD) -> list[int]:
+    """
+    Parse reward-like integers from OCR text.
+
+    Also recovers ``2 4219`` → ``2421`` (digit split + trailing ghost 9/0) which
+    the thousands regex no longer eats once ``(?!\\d)`` guards real 4-digit cells.
+    """
     values: list[int] = []
+    tokens: list[tuple[int, int, int]] = []  # value, start, end
     for match in _AMOUNT.finditer(text):
         value = _to_int(match.group(1))
-        if value is not None and value >= min_value:
+        if value is None:
+            continue
+        tokens.append((value, match.start(), match.end()))
+        if value >= min_value:
             values.append(value)
+
+    # ``548 2 4219`` → replace 4219 with 2421 (prefix digit + first three + ghost 9/0).
+    for index, (value, start, end) in enumerate(tokens):
+        if value > 9 or index + 1 >= len(tokens):
+            continue
+        nxt, n_start, _n_end = tokens[index + 1]
+        if not (1000 <= nxt <= 9999):
+            continue
+        gap = text[end:n_start]
+        if gap.strip():
+            continue
+        ghost = nxt % 10
+        # Only trailing-9 icon ghosts (``2 4219`` → 2421). Trailing 0 on round
+        # amounts (``4 2300``) must NOT become 4230 — 2300 is real ``2 300``.
+        if ghost != 9:
+            continue
+        if nxt % 100 == 0:
+            continue
+        glued = value * 1000 + nxt // 10
+        if glued < min_value:
+            continue
+        if nxt in values:
+            values[values.index(nxt)] = glued
+        elif glued not in values:
+            values.append(glued)
     return values
 
 
@@ -312,12 +349,14 @@ def _pair_from_label_columns(text: str) -> tuple[int | None, int | None]:
 
 def _sanitize_premium_amounts(amounts: list[int]) -> list[int]:
     """Drop trailing OCR junk and icon-ghost digits on 5-digit tokens."""
+    present = set(amounts)
     cleaned: list[int] = []
     for value in amounts:
-        # Icon next to SL often appends a trailing 9 (14709 → 1470, 24219 → 2421).
+        # Icon next to SL often appends a trailing 9 (14709 → 1470) — only trim
+        # when the shorter token is also present. Real SL like 18739 stays intact.
         if 10_000 <= value <= 99_999 and value % 10 == 9:
             trimmed = value // 10
-            if 200 <= trimmed <= 45_000:
+            if trimmed in present and 200 <= trimmed <= 45_000:
                 value = trimmed
         cleaned.append(value)
     while len(cleaned) >= 3 and cleaned[-1] < 200 and cleaned[-1] < cleaned[0]:
@@ -575,7 +614,8 @@ def parse_rewards_from_ocr_text(
 
     [prefer_premium_rewards]:
       True  → with-premium column (premium account earnings)
-      False → without-premium column / «Всього»
+      False → without-premium header column (never free-research «Всього» RP
+              when the premium table already yielded a pair)
       None  → read Bridge settings.has_premium_account
     """
     if looks_like_desktop_noise(text):
@@ -604,8 +644,8 @@ def parse_rewards_from_ocr_text(
             premium_hit = True
             rp, sl = prem_rp, prem_sl
 
-    # --- 2. «Всього» / Total — authoritative for *without* premium; skip override when
-    # preferring with-premium so we do not replace 10892 with 7262.
+    # --- 2. «Всього» / Total — fill gaps only. Never replace a usable premium-table
+    # header pair (free research / partial «Всього» RP is a common false bank).
     tot_rp, tot_sl = _pair_from_total_block(cleaned)
     if _plausible_reward_pair(tot_rp, tot_sl):
         if prefer_premium_rewards and premium_hit:
@@ -615,10 +655,18 @@ def parse_rewards_from_ocr_text(
             premium_hit = True
         elif rp is not None and sl is not None and (rp, sl) != (tot_rp, tot_sl):
             assert tot_rp is not None and tot_sl is not None
-            if tot_sl >= int(sl * 0.95):
+            # Same RP → allow cleaner total SL. Different RP → keep header.
+            if tot_rp == rp and tot_sl >= int(sl * 0.95):
+                sl = tot_sl
+            elif (
+                not prefer_premium_rewards
+                and not WITHOUT_PREMIUM.search(cleaned)
+                and _plausible_reward_pair(tot_rp, tot_sl)
+            ):
+                # «преміум» OCR noise without a real «Без преміума» column —
+                # combat crumbs (2388/3109) must not beat Всього.
                 rp, sl = tot_rp, tot_sl
-            elif abs(tot_rp - rp) >= 50 and _plausible_reward_pair(tot_rp, sl):
-                rp = tot_rp
+            # else: ignore total RP override (799 vs 921 style bugs)
     else:
         # --- 3. Mods research RP when Total was weak but table RP looks mangled ---
         mods_rp = _mods_research_rp(cleaned)

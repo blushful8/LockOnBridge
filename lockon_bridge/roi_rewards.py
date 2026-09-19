@@ -8,9 +8,10 @@ import re
 from collections import Counter
 from io import BytesIO
 
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image
 
 from .ocr_parse import _amounts_in, _plausible_reward_pair
+from .ocr_preprocess import soft_upscale
 from .roi_layout import is_full_client_frame, iter_reward_digit_rois
 
 log = logging.getLogger("lockon_bridge.roi")
@@ -47,18 +48,7 @@ _WITH_LABEL = re.compile(
 
 
 def _soft_upscale(image: Image.Image, *, min_height: int = 96) -> Image.Image:
-    """Upscale small ROI crops without harsh binarization (keeps blue RP glyphs)."""
-    scale = 1.0
-    if image.height < min_height:
-        scale = min_height / float(image.height)
-    scale = max(scale, 2.0)
-    width = max(1, int(image.width * scale))
-    height = max(1, int(image.height * scale))
-    image = image.resize((width, height), Image.Resampling.LANCZOS)
-    image = ImageOps.autocontrast(image, cutoff=1)
-    image = ImageEnhance.Contrast(image).enhance(1.35)
-    image = ImageEnhance.Sharpness(image).enhance(1.25)
-    return image
+    return soft_upscale(image, min_height=min_height)
 
 
 def _png_bytes(image: Image.Image) -> bytes:
@@ -67,8 +57,24 @@ def _png_bytes(image: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+def windows_roi_text(image: Image.Image) -> str:
+    """Windows.Media.Ocr — soft upscale only."""
+    from .ocr_backends import windows_ocr_variants
+
+    prepared = soft_upscale(image)
+    best = ""
+    best_score = -1
+    for _eng, text in windows_ocr_variants(_png_bytes(prepared)):
+        amounts = _amounts_in(text, min_value=50)
+        score = len(amounts) * 10 + sum(len(str(a)) for a in amounts)
+        if score > best_score:
+            best_score = score
+            best = text
+    return best
+
+
 def tesseract_digits_text(image: Image.Image) -> str:
-    """OCR preferring digits — soft preprocess (no hard binary)."""
+    """Digit OCR via Tesseract — soft upscale, PSM 6/7."""
     from .ocr_backends import ensure_core_tessdata, find_tesseract_exe, tessdata_dir
 
     exe = find_tesseract_exe()
@@ -83,7 +89,7 @@ def tesseract_digits_text(image: Image.Image) -> str:
     ensure_core_tessdata()
     local = tessdata_dir()
     use_local = any(local.glob("*.traineddata"))
-    prepared = _soft_upscale(image)
+    prepared = soft_upscale(image)
     configs = [
         "--psm 6 -c tessedit_char_whitelist=0123456789 ",
         "--psm 7 -c tessedit_char_whitelist=0123456789 ",
@@ -105,26 +111,6 @@ def tesseract_digits_text(image: Image.Image) -> str:
     if not texts:
         return ""
     return max(texts, key=lambda t: (sum(ch.isdigit() for ch in t), len(t)))
-
-
-def windows_roi_text(image: Image.Image) -> str:
-    """Windows.Media.Ocr on a soft-upscaled ROI (best for blue RP digits)."""
-    from .ocr_backends import windows_ocr_variants
-
-    prepared = _soft_upscale(image)
-    variants = windows_ocr_variants(_png_bytes(prepared))
-    if not variants:
-        return ""
-    # Prefer the variant with the most plausible reward digits.
-    best = ""
-    best_score = -1
-    for _tag, text in variants:
-        amounts = _amounts_in(text, min_value=50)
-        score = len(amounts) * 10 + sum(len(str(a)) for a in amounts)
-        if score > best_score:
-            best_score = score
-            best = text
-    return best
 
 
 def _ocr_ghost_trim(value: int) -> int | None:
@@ -197,14 +183,18 @@ def pair_from_digit_text(text: str) -> tuple[int, int] | None:
     best: tuple[int, int] | None = None
     best_score = -1.0
 
-    # Prefer reading order when both raw tokens already form a good pair.
+    # Prefer reading order: first pair, and (only on 3-token lines) the trailing
+    # adjacent pair so ``1050 1473 11834`` keeps real RP/SL not the crumb.
     if len(raw) >= 2:
-        a, b = raw[0], raw[1]
-        for rp, sl in ((a, b), (b, a)):
-            score = _pair_score(rp, sl)
-            if score > best_score:
-                best_score = score
-                best = (rp, sl)
+        ordered: list[tuple[int, int, float]] = [(raw[0], raw[1], 0.0)]
+        if len(raw) == 3:
+            ordered.append((raw[-2], raw[-1], 1.25))
+        for a, b, bonus in ordered:
+            for rp, sl in ((a, b), (b, a)):
+                score = _pair_score(rp, sl) + bonus
+                if score > best_score:
+                    best_score = score
+                    best = (rp, sl)
 
     for i, rp in enumerate(amounts):
         for sl in amounts[i + 1 :]:
@@ -250,19 +240,32 @@ def _vote_pair(pairs: list[tuple[int, int]]) -> tuple[int, int] | None:
 
 
 def _read_roi_pair(crop: Image.Image) -> tuple[str, tuple[int, int] | None]:
-    """Windows OCR first (accurate on blue RP); Tesseract digits as fallback."""
+    """RapidOCR soft first; Win/Tess only if Rapid has no usable pair."""
+    from .rapid_ocr import rapidocr_digits_text
+
+    rapid = rapidocr_digits_text(crop)
+    if rapid:
+        pair = pair_from_digit_text(rapid)
+        if pair is not None and _column_pair_usable(*pair):
+            return rapid, pair
+
     text = windows_roi_text(crop)
-    pair = pair_from_digit_text(text) if text else None
-    if pair is not None and _column_pair_usable(*pair):
-        return text, pair
+    if text:
+        pair = pair_from_digit_text(text)
+        if pair is not None and _column_pair_usable(*pair):
+            return text, pair
+
     digits = tesseract_digits_text(crop)
     if digits:
-        tess_pair = pair_from_digit_text(digits)
-        if tess_pair is not None and _column_pair_usable(*tess_pair):
-            return digits, tess_pair
-    if pair is not None:
-        return text, pair
-    return text or digits, None
+        pair = pair_from_digit_text(digits)
+        if pair is not None and _column_pair_usable(*pair):
+            return digits, pair
+
+    if rapid:
+        return rapid, pair_from_digit_text(rapid)
+    if text:
+        return text, pair_from_digit_text(text)
+    return digits, pair_from_digit_text(digits) if digits else (digits, None)
 
 
 # --- Landmark path (WinRT word boxes) ---
@@ -543,6 +546,9 @@ def extract_roi_reward_variants(
 
     Digits first (fast). Landmark WinRT only if digit votes are weak. Dense ROI
     set is a fallback when the lean set cannot form a usable preferred pair.
+
+    Digit-backed header beats «Всього». Band/landmark-only header never beats a
+    strong total vote (avoids 2946/7399 junk over live 1473/11834).
     """
     if prefer_with is None:
         try:
@@ -553,9 +559,12 @@ def extract_roi_reward_variants(
             prefer_with = False
 
     variants: list[tuple[str, str]] = []
-    with_pairs: list[tuple[int, int]] = []
-    without_pairs: list[tuple[int, int]] = []
-    total_pairs: list[tuple[int, int]] = []
+    with_digit_pairs: list[tuple[int, int]] = []
+    without_digit_pairs: list[tuple[int, int]] = []
+    total_digit_pairs: list[tuple[int, int]] = []
+    with_band_pairs: list[tuple[int, int]] = []
+    without_band_pairs: list[tuple[int, int]] = []
+    total_band_pairs: list[tuple[int, int]] = []
 
     def _ingest_digit_rois(*, use_dense: bool) -> None:
         for tag, crop in iter_reward_digit_rois(image, dense=use_dense):
@@ -567,12 +576,10 @@ def extract_roi_reward_variants(
                 continue
             rp, sl = pair
             if tag.startswith("with") and not tag.startswith("without"):
-                with_pairs.append(pair)
-                with_pairs.append(pair)  # digit ROI outweighs landmark band
+                with_digit_pairs.extend([pair, pair])
                 labeled = f"З преміумом {rp} {sl}"
             elif tag.startswith("without"):
-                without_pairs.append(pair)
-                without_pairs.append(pair)
+                without_digit_pairs.extend([pair, pair])
                 labeled = f"Без преміума {rp} {sl}"
             elif tag.startswith("both"):
                 from .ocr_parse import (
@@ -583,36 +590,48 @@ def extract_roi_reward_variants(
                 amounts = [a for a in _amounts_in(text, min_value=50) if a <= 250_000]
                 w_pair = _with_pair_from_premium_amounts(amounts)
                 wo_pair = _without_pair_from_premium_amounts(amounts)
+                got_cols = False
                 if w_pair[0] is not None and w_pair[1] is not None:
-                    with_pairs.extend([(w_pair[0], w_pair[1])] * 2)
+                    with_digit_pairs.extend([(w_pair[0], w_pair[1])] * 2)
                     variants.append((f"roi:{tag}-with", f"З преміумом {w_pair[0]} {w_pair[1]}"))
+                    got_cols = True
                 if wo_pair[0] is not None and wo_pair[1] is not None:
-                    without_pairs.extend([(wo_pair[0], wo_pair[1])] * 2)
+                    without_digit_pairs.extend([(wo_pair[0], wo_pair[1])] * 2)
                     variants.append(
                         (f"roi:{tag}-without", f"Без преміума {wo_pair[0]} {wo_pair[1]}")
                     )
+                    got_cols = True
+                # Naive left-to-right pair pollutes the preferred column when RapidOCR
+                # emits all four cells (1720 921 10955 6817 → fake 1720/9210).
+                if got_cols:
+                    continue
                 if prefer_with:
-                    with_pairs.append(pair)
+                    with_digit_pairs.append(pair)
                     labeled = f"З преміумом {rp} {sl}"
                 else:
-                    without_pairs.append(pair)
+                    without_digit_pairs.append(pair)
                     labeled = f"Без преміума {rp} {sl}"
             else:
-                total_pairs.append(pair)
-                total_pairs.append(pair)
+                total_digit_pairs.extend([pair, pair])
                 labeled = f"Всього {rp} {sl}"
             variants.append((f"roi:{tag}", labeled))
 
     _ingest_digit_rois(use_dense=dense)
 
-    preferred_early = _vote_pair(with_pairs if prefer_with else without_pairs)
-    need_more = preferred_early is None or not _column_pair_usable(*preferred_early)
-    if need_more and not dense:
-        _ingest_digit_rois(use_dense=True)
-        preferred_early = _vote_pair(with_pairs if prefer_with else without_pairs)
-        need_more = preferred_early is None or not _column_pair_usable(*preferred_early)
+    def _usable(pair: tuple[int, int] | None) -> bool:
+        return pair is not None and _column_pair_usable(*pair)
 
-    if need_more:
+    preferred_digit = _vote_pair(with_digit_pairs if prefer_with else without_digit_pairs)
+    total_early = _vote_pair(total_digit_pairs)
+    # Bankable if header OR total already works — skip dense/landmarks.
+    lean_ok = _usable(preferred_digit) or _usable(total_early)
+    if not lean_ok and not dense:
+        _ingest_digit_rois(use_dense=True)
+        preferred_digit = _vote_pair(with_digit_pairs if prefer_with else without_digit_pairs)
+        total_early = _vote_pair(total_digit_pairs)
+        lean_ok = _usable(preferred_digit) or _usable(total_early)
+
+    if not lean_ok:
         try:
             landmark_variants = pairs_from_landmarks(image)
             variants.extend(landmark_variants)
@@ -621,17 +640,31 @@ def extract_roi_reward_variants(
                 if pair is None:
                     continue
                 if "without" in tag:
-                    without_pairs.append(pair)
+                    without_band_pairs.append(pair)
                 elif "with" in tag and "without" not in tag:
-                    with_pairs.append(pair)
+                    with_band_pairs.append(pair)
                 else:
-                    total_pairs.append(pair)
+                    total_band_pairs.append(pair)
         except Exception as exc:  # noqa: BLE001
             log.warning("landmark ROI failed: %s", exc)
 
-    with_vote = _vote_pair(with_pairs)
-    without_vote = _vote_pair(without_pairs)
-    total = _vote_pair(total_pairs)
+    with_digit_vote = _vote_pair(with_digit_pairs)
+    # If a «without» crop actually read the with column, drop those twins.
+    if with_digit_vote is not None:
+        without_digit_pairs = [p for p in without_digit_pairs if p != with_digit_vote]
+        without_band_pairs = [p for p in without_band_pairs if p != with_digit_vote]
+    without_digit_vote = _vote_pair(without_digit_pairs)
+    total_digit_vote = _vote_pair(total_digit_pairs)
+    with_band_vote = _vote_pair(with_band_pairs)
+    without_band_vote = _vote_pair(without_band_pairs)
+    total_band_vote = _vote_pair(total_band_pairs)
+
+    # Prefer digit ROI votes; band/landmark only fills gaps.
+    with_vote = with_digit_vote or with_band_vote
+    without_vote = without_digit_vote or without_band_vote
+    total = total_digit_vote or total_band_vote
+    digit_pref = with_digit_vote if prefer_with else without_digit_vote
+    preferred_digit_ok = digit_pref is not None and _column_pair_usable(*digit_pref)
     preferred = with_vote if prefer_with else without_vote
     other = without_vote if prefer_with else with_vote
 
@@ -642,35 +675,43 @@ def extract_roi_reward_variants(
             rp, sl = preferred
             variants.insert(0, ("roi:consensus", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
         elif pref_ok and preferred[0] == total[0]:
-            # Same RP, trust total SL when usable (digit ROI often cleaner).
             rp = preferred[0]
             sl = total[1] if tot_ok else preferred[1]
             variants.insert(0, ("roi:consensus-total-sl", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
-        elif pref_ok and tot_ok and preferred[1] == total[1]:
-            # Same SL, different RP: header «Без преміума» is battle RP;
-            # «Всього» RP is often free research — keep preferred.
+        elif pref_ok and tot_ok and preferred[1] == total[1] and preferred_digit_ok:
+            # Same SL, different RP: digit-backed header beats free-research Всього RP.
             rp, sl = preferred
             variants.insert(
                 0,
                 ("roi:consensus-without-rp", f"Без преміума {rp} {sl}\nВсього {total[0]} {sl}"),
             )
-        elif pref_ok:
-            # Usable without column always beats Всього when values disagree.
+        elif pref_ok and preferred_digit_ok:
             rp, sl = preferred
             variants.insert(0, ("roi:without-over-total", f"Без преміума {rp} {sl}"))
         elif tot_ok:
-            # Without-column OCR junk (chat crops) — fall back to Всього.
+            # Band-only / weak header must not beat a solid Всього (live 1473/11834).
             rp, sl = total
             variants.insert(0, ("roi:prefer-total", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
+        elif pref_ok:
+            rp, sl = preferred
+            variants.insert(0, ("roi:without-over-total", f"Без преміума {rp} {sl}"))
     elif preferred:
-        rp, sl = preferred
-        label = "З преміумом" if prefer_with else "Без преміума"
-        tag = "roi:with-only" if prefer_with else "roi:without-only"
-        variants.insert(0, (tag, f"{label} {rp} {sl}"))
-        if other and other != preferred:
-            o_rp, o_sl = other
-            o_label = "Без преміума" if prefer_with else "З преміумом"
-            variants.insert(1, ("roi:other-column", f"{o_label} {o_rp} {o_sl}"))
+        # Digit-backed preferred alone, or band when no total.
+        if prefer_with or preferred_digit_ok or total is None:
+            rp, sl = preferred
+            label = "З преміумом" if prefer_with else "Без преміума"
+            tag = "roi:with-only" if prefer_with else "roi:without-only"
+            variants.insert(0, (tag, f"{label} {rp} {sl}"))
+            if other and other != preferred:
+                o_rp, o_sl = other
+                o_label = "Без преміума" if prefer_with else "З преміумом"
+                variants.insert(1, ("roi:other-column", f"{o_label} {o_rp} {o_sl}"))
+        elif total and _column_pair_usable(*total):
+            rp, sl = total
+            variants.insert(0, ("roi:prefer-total", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
+        else:
+            rp, sl = preferred
+            variants.insert(0, ("roi:without-only", f"Без преміума {rp} {sl}"))
     elif total and not prefer_with:
         rp, sl = total
         variants.insert(0, ("roi:total-only", f"Всього {rp} {sl}"))
@@ -685,7 +726,12 @@ def extract_roi_reward_variants(
 
 
 def report_from_roi_image(image: Image.Image, *, prefer_with: bool | None = None):
-    """High-confidence report when ROI / landmark pairs resolve."""
+    """
+    High-confidence report when ROI / landmark pairs resolve.
+
+    Hard rule: bank the preferred premium **header** column first.
+    «Всього» / total-row tags are only used when no usable header pair exists.
+    """
     from .ocr_parse import parse_rewards_from_ocr_text
 
     if prefer_with is None:
@@ -697,53 +743,89 @@ def report_from_roi_image(image: Image.Image, *, prefer_with: bool | None = None
             prefer_with = False
 
     variants = extract_roi_reward_variants(image, prefer_with=prefer_with)
+
+    total_tags = {
+        "roi:prefer-total",
+        "roi:total-only",
+        "roi:landmark-total",
+        "roi:band-total",
+    }
+
+    def _try_tag(tag: str, text: str):
+        if prefer_with and tag in (
+            "roi:landmark-without",
+            "roi:band-without",
+            "roi:without-only",
+            "roi:without-over-total",
+        ):
+            if any(
+                t in ("roi:with-only", "roi:landmark-with", "roi:band-with")
+                or t.startswith("roi:consensus")
+                for t, _ in variants
+            ):
+                return None
+        if not prefer_with and tag in (
+            "roi:landmark-with",
+            "roi:band-with",
+            "roi:with-only",
+        ):
+            if any(
+                t in (
+                    "roi:without-only",
+                    "roi:without-over-total",
+                    "roi:landmark-without",
+                    "roi:band-without",
+                )
+                or t.startswith("roi:consensus")
+                for t, _ in variants
+            ):
+                return None
+        report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer_with)
+        if report is None:
+            return None
+        # Landmark/band junk (e.g. 7262/7262) must not bank ahead of prefer-total.
+        if not _column_pair_usable(report.research_points, report.silver_lions):
+            return None
+        if tag.startswith("roi:consensus"):
+            report.confidence = max(report.confidence, 0.94)
+        elif tag.startswith("roi:landmark") or tag.startswith("roi:band"):
+            report.confidence = max(report.confidence, 0.90)
+        elif tag in ("roi:with-only", "roi:without-only", "roi:without-over-total"):
+            report.confidence = max(report.confidence, 0.92)
+        elif tag in ("roi:prefer-total", "roi:total-only"):
+            report.confidence = max(report.confidence, 0.90)
+        else:
+            report.confidence = max(report.confidence, 0.82)
+        report.source = "ocr-roi"
+        return report
+
+    # Pass 1: consensus / clean header columns only (skip raw band until after).
+    strong_header = {
+        "roi:without-over-total",
+        "roi:without-only",
+        "roi:with-only",
+        "roi:landmark-without",
+        "roi:landmark-with",
+    }
     for tag, text in variants:
         if not tag.startswith("roi:"):
             continue
-        if tag.startswith("roi:consensus") or tag in (
-            "roi:prefer-total",
-            "roi:without-over-total",
-            "roi:total-only",
-            "roi:without-only",
-            "roi:with-only",
-            "roi:landmark-total",
-            "roi:landmark-without",
-            "roi:landmark-with",
-            "roi:band-total",
-            "roi:band-without",
-            "roi:band-with",
-        ):
-            # Skip the non-preferred column landmark when we already know preference.
-            if prefer_with and tag in ("roi:landmark-without", "roi:band-without", "roi:without-only"):
-                # Still allow if no with variant exists later — handled by loop order
-                # (with-only / band-with inserted first when prefer_with).
-                if any(
-                    t in ("roi:with-only", "roi:landmark-with", "roi:band-with")
-                    or t.startswith("roi:consensus")
-                    for t, _ in variants
-                ):
-                    continue
-            if not prefer_with and tag in ("roi:landmark-with", "roi:band-with", "roi:with-only"):
-                if any(
-                    t in ("roi:without-only", "roi:landmark-without", "roi:band-without")
-                    or t.startswith("roi:consensus")
-                    or t == "roi:total-only"
-                    for t, _ in variants
-                ):
-                    continue
-            report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer_with)
-            if report is None:
-                continue
-            if tag.startswith("roi:consensus"):
-                report.confidence = max(report.confidence, 0.94)
-            elif tag.startswith("roi:landmark") or tag.startswith("roi:band"):
-                report.confidence = max(report.confidence, 0.90)
-            elif tag in ("roi:with-only", "roi:without-only", "roi:without-over-total"):
-                report.confidence = max(report.confidence, 0.92)
-            elif tag == "roi:prefer-total":
-                report.confidence = max(report.confidence, 0.88)
-            else:
-                report.confidence = max(report.confidence, 0.82)
-            report.source = "ocr-roi"
-            return report
+        if tag.startswith("roi:consensus") or tag in strong_header:
+            report = _try_tag(tag, text)
+            if report is not None:
+                return report
+
+    # Pass 2: total / prefer-total (chat crops when header OCR is junk).
+    for tag, text in variants:
+        if tag in total_tags:
+            report = _try_tag(tag, text)
+            if report is not None:
+                return report
+
+    # Pass 3: last-resort band landmarks (only if usable).
+    for tag, text in variants:
+        if tag in ("roi:band-without", "roi:band-with"):
+            report = _try_tag(tag, text)
+            if report is not None:
+                return report
     return None

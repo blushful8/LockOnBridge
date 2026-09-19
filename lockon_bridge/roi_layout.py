@@ -5,12 +5,11 @@ Rectangles are fractions of the WT client frame (or a mild ultrawide letterbox).
 Absolute pixels are never hard-coded. Landmark word boxes (WinRT) further absorb
 FullHD / 2K / 4K / UI-scale drift.
 
-Two layouts are covered:
-  • Full WT client — **left** rewards panel (~0.22–0.37 × 0.09–0.16), seen on
-    some air hangar result overlays.
-  • Full WT client — **center** header under «Мої результати»
-    (~0.51–0.64 × 0.09–0.16): З/Без преміумом sit above the kill list.
-  • Chat-cropped / scaled panels: mid-band ROIs (~0.42–0.55 × 0.12–0.23).
+Layouts covered:
+  • Full WT client — **left summary** under «Ваше місце» (~0.18–0.42 × 0.14–0.28)
+  • Full WT client — older **left** strip (~0.22–0.37 × 0.09–0.16)
+  • Full WT client — **center** header under «Мої результати» (~0.51–0.64 × 0.09–0.16)
+  • Chat-cropped / scaled panels: mid-band ROIs (~0.42–0.55 × 0.12–0.23)
 """
 
 from __future__ import annotations
@@ -43,8 +42,11 @@ class NormRect:
 # Only letterbox extreme ultrawide (≥≈21:9). 16:9 / 16:10 / chat screenshots stay as-is.
 _ULTRAWIDE_ASPECT = 1.95
 
-# With-premium column — left panel + center header (full client).
+# With-premium column — summary box first, then legacy left + center header.
 WITH_DIGIT_ROIS: tuple[NormRect, ...] = (
+    # Mission-results summary (З преміумом) — live 2560×1600 / FullHD.
+    NormRect(0.200, 0.150, 0.320, 0.265, "with-digits-summary"),
+    NormRect(0.190, 0.140, 0.330, 0.275, "with-digits-summary-wide"),
     NormRect(0.220, 0.095, 0.295, 0.160, "with-digits"),
     NormRect(0.215, 0.090, 0.300, 0.165, "with-digits-wide"),
     NormRect(0.225, 0.100, 0.290, 0.155, "with-digits-tight"),
@@ -53,12 +55,13 @@ WITH_DIGIT_ROIS: tuple[NormRect, ...] = (
     NormRect(0.510, 0.090, 0.580, 0.160, "with-digits-center-wide"),
 )
 
-# Without-premium column — left / center (full client) + mid-panel (chat crops).
+# Without-premium column — summary / left / center / chat mid-panel.
 WITHOUT_DIGIT_ROIS: tuple[NormRect, ...] = (
+    NormRect(0.330, 0.150, 0.435, 0.265, "without-digits-summary"),
+    NormRect(0.320, 0.140, 0.445, 0.275, "without-digits-summary-wide"),
     NormRect(0.295, 0.095, 0.370, 0.160, "without-digits"),
     NormRect(0.290, 0.090, 0.380, 0.165, "without-digits-wide"),
     NormRect(0.300, 0.100, 0.365, 0.155, "without-digits-tight"),
-    # Center header «Без преміума» (right of З преміумом).
     NormRect(0.580, 0.095, 0.640, 0.155, "without-digits-center"),
     NormRect(0.575, 0.090, 0.645, 0.160, "without-digits-center-wide"),
     # Chat-cropped / older mid-panel calibration (results_uk_full_*).
@@ -68,8 +71,10 @@ WITHOUT_DIGIT_ROIS: tuple[NormRect, ...] = (
     NormRect(0.420, 0.120, 0.530, 0.230, "without-digits-mid-shift"),
 )
 
-# Both premium columns together (fallback when single-column OCR is empty).
+# Both premium columns — summary 4-cell is the most reliable full-client fallback.
 BOTH_DIGIT_ROIS: tuple[NormRect, ...] = (
+    NormRect(0.180, 0.140, 0.420, 0.280, "both-digits-summary"),
+    NormRect(0.170, 0.130, 0.430, 0.290, "both-digits-summary-wide"),
     NormRect(0.220, 0.095, 0.370, 0.165, "both-digits"),
     NormRect(0.210, 0.085, 0.385, 0.175, "both-digits-wide"),
     NormRect(0.500, 0.090, 0.645, 0.160, "both-digits-center"),
@@ -82,6 +87,8 @@ TOTAL_DIGIT_ROIS: tuple[NormRect, ...] = (
     NormRect(0.48, 0.430, 0.66, 0.495, "total-digits-wide"),
     NormRect(0.52, 0.445, 0.63, 0.480, "total-digits-tight"),
     NormRect(0.49, 0.425, 0.65, 0.500, "total-digits-shift"),
+    # Slightly higher band for taller UI scale / 16:10.
+    NormRect(0.48, 0.400, 0.66, 0.470, "total-digits-high"),
 )
 
 
@@ -138,48 +145,49 @@ def iter_reward_digit_rois(
     dense: bool = False,
 ) -> list[tuple[str, Image.Image]]:
     """
-    With / without / both / totals digit crops from a WT client frame.
+    Digit crops for reward OCR.
 
-    ``dense=False`` (default): only the primary ROIs needed for a confident vote —
-    much faster than OCR'ing every wide/tight/shift duplicate every frame.
+    Lean (default): as few crops as possible —
+      full client → summary 4-cell + one «Всього» row
+      chat crop   → mid without + one total
+    Dense: full ROI catalogue only when lean cannot bank a pair.
     """
     full = is_full_client_frame(image)
     rects: list[NormRect] = []
 
-    def _pick(pool: tuple[NormRect, ...], *, prefer_substrings: tuple[str, ...]) -> list[NormRect]:
-        if dense:
-            return list(pool)
+    def _first(pool: tuple[NormRect, ...], *needles: str) -> list[NormRect]:
         chosen: list[NormRect] = []
-        for needle in prefer_substrings:
+        for needle in needles:
             for rect in pool:
                 if needle in rect.tag and rect not in chosen:
                     chosen.append(rect)
                     break
         return chosen
 
-    if full:
-        rects.extend(
-            _pick(
-                WITH_DIGIT_ROIS,
-                prefer_substrings=("with-digits-center", "with-digits"),
-            )
-        )
-        without_pool = tuple(r for r in WITHOUT_DIGIT_ROIS if "-mid" not in r.tag)
-        rects.extend(
-            _pick(
-                without_pool,
-                prefer_substrings=("without-digits-center", "without-digits"),
-            )
-        )
-        both_pool = tuple(r for r in BOTH_DIGIT_ROIS if "-mid" not in r.tag)
-        rects.extend(_pick(both_pool, prefer_substrings=("both-digits-center", "both-digits")))
+    if dense:
+        if full:
+            rects.extend(r for r in WITH_DIGIT_ROIS)
+            rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" not in r.tag)
+            rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" not in r.tag)
+        else:
+            rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag)
+            rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" in r.tag)
+        rects.extend(TOTAL_DIGIT_ROIS)
+    elif full:
+        # One 4-cell summary (column-split) + one total — covers live mission results.
+        rects.extend(_first(BOTH_DIGIT_ROIS, "both-digits-summary"))
+        rects.extend(_first(TOTAL_DIGIT_ROIS, "total-digits", "total-digits-wide"))
     else:
-        rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag)
-        rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" in r.tag)
-    rects.extend(_pick(TOTAL_DIGIT_ROIS, prefer_substrings=("total-digits-wide", "total-digits")))
+        rects.extend(_first(tuple(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag), "without-digits-mid-wide", "without-digits-mid"))
+        rects.extend(_first(BOTH_DIGIT_ROIS, "both-digits-mid"))
+        rects.extend(_first(TOTAL_DIGIT_ROIS, "total-digits-wide", "total-digits"))
 
     out: list[tuple[str, Image.Image]] = []
+    seen: set[str] = set()
     for rect in rects:
+        if rect.tag in seen:
+            continue
+        seen.add(rect.tag)
         crop = crop_norm(image, rect)
         if crop is not None:
             out.append((rect.tag, crop))

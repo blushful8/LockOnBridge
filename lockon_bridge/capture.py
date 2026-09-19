@@ -169,10 +169,11 @@ def find_war_thunder_hwnd() -> int | None:
         return None
 
     best: tuple[int, int] | None = None  # (area, hwnd)
+    minimized: int | None = None
 
     @_WNDENUMPROC
     def _enum(hwnd: int, _lparam: int) -> bool:
-        nonlocal best
+        nonlocal best, minimized
         if not user32.IsWindowVisible(hwnd):
             return True
         pid = wintypes.DWORD()
@@ -195,14 +196,19 @@ def find_war_thunder_hwnd() -> int | None:
             return True
         left, top, right, bottom = bounds
         area = max(0, right - left) * max(0, bottom - top)
+        # Minimized windows sit at (-32000,-32000) with a tiny shell rect.
         if area < 400 * 300:
+            if "war thunder" in title or "warthunder" in title:
+                minimized = int(hwnd)
             return True
         if best is None or area > best[0]:
             best = (area, int(hwnd))
         return True
 
     user32.EnumWindows(_enum, 0)
-    return None if best is None else best[1]
+    if best is not None:
+        return best[1]
+    return minimized
 
 
 def _png_from_image(image: Image.Image, max_width: int = 1920) -> bytes:
@@ -271,17 +277,20 @@ def _grab_wt_client_image() -> Image.Image | None:
     hwnd = find_war_thunder_hwnd()
     if hwnd is None:
         return None
-    bounds = _window_rect(hwnd)
-    if bounds is None:
-        return None
-    left, top, right, bottom = bounds
     try:
         user32.ShowWindow(wintypes.HWND(hwnd), 9)  # SW_RESTORE
         user32.SetForegroundWindow(wintypes.HWND(hwnd))
     except Exception:  # noqa: BLE001
         pass
+    # Re-read bounds after restore (minimized → normal desktop rect).
+    bounds = _window_rect(hwnd)
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
     width = max(1, right - left)
     height = max(1, bottom - top)
+    if width < 400 or height < 300:
+        return None
     try:
         with mss.MSS() as sct:
             shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
