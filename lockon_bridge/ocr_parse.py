@@ -1,3 +1,20 @@
+"""
+War Thunder post-battle OCR → without-premium RP / SL.
+
+Capture is full-window; mapping is label-driven, not layout/pixel ROIs.
+
+Canonical priority (see parse_rewards_from_ocr_text):
+  1. Premium table → *without* column (4-cell with/without grid)
+  2. «Всього» / Total row (SL then RP, optional vehicle / free RP)
+  3. Modification-research RP with Total SL when table cells are mangled
+  4. Explicit RP / SL labels
+  5. Victory / participation boost line (last resort)
+
+Amount tokens allow at most **one** thousands separator (``1 788``, ``12 446``).
+Never glue ``13 672 336`` into a single integer. Team place
+(``місце в команді: N``) is stripped before the premium grid.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -48,9 +65,10 @@ _TOTAL = re.compile(
     r"gesamt|somme|totale|suma|合計|합계|总计|總計",
     re.IGNORECASE,
 )
-# Thousands separators (EU `1.088` / `1 088`) — never treat ratio OCR `0.954` as 954.
+# Exactly one thousands group, and only when the left part is 1–2 digits
+# (``1 788``, ``12 446``, ``4 608``). Never treat ``672 336`` (two RP cells) as 672336.
 _AMOUNT = re.compile(
-    r"([+\-]?\s*(?:(?!0[.,])\d{1,3}(?:[\s.,'\u00A0]\d{3})+|\d+))"
+    r"([+\-]?\s*(?:(?!0[.,])\d{1,2}(?:[\s.,'\u00A0]\d{3})|\d+))"
 )
 _RATIO_AMOUNT = re.compile(r"^[+\-]?\s*0[.,]\d+$")
 _BARE_PREMIUM_WORD = re.compile(
@@ -68,6 +86,11 @@ _TOTAL_RESEARCH = re.compile(
     re.IGNORECASE,
 )
 _PERCENT = re.compile(r"\+\s*\d+\s*%")
+# «Ваше місце в команді: 13» sits in front of the RP/SL grid — drop the place digit.
+_TEAM_PLACE = re.compile(
+    r"(?:micue|місце|место|place).{0,40}?\d{1,2}\b",
+    re.IGNORECASE,
+)
 
 _DESKTOP_NOISE = re.compile(
     r"(?:telegram|nvidia\s*app|malware\s*protection|epic\s*games|"
@@ -84,6 +107,8 @@ _WT_HINT = re.compile(
 
 # Ignore tiny / version-like numbers. Real match rewards are almost always ≥ this.
 _MIN_REWARD = 50
+# «Всього» SL can be well under 3k on short arcade matches (e.g. 2 912).
+_MIN_TOTAL_SL = 800
 
 
 def looks_like_desktop_noise(text: str) -> bool:
@@ -92,6 +117,13 @@ def looks_like_desktop_noise(text: str) -> bool:
     noise = len(_DESKTOP_NOISE.findall(text))
     hints = len(_WT_HINT.findall(text))
     return noise >= 2 and hints == 0
+
+
+def _normalize_results_text(text: str) -> str:
+    """Keep newlines (label columns), collapse spaces, drop team-place before the grid."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[^\S\n]+", " ", text)
+    return _TEAM_PLACE.sub(" ", text)
 
 
 def _to_int(raw: str) -> int | None:
@@ -118,19 +150,24 @@ def _amounts_in(text: str, *, min_value: int = _MIN_REWARD) -> list[int]:
 
 
 def _amount_near_label(text: str, label: re.Pattern[str]) -> int | None:
-    """Prefer the amount immediately before the label on the same line; else after it."""
+    """Amount next to a currency label — prefer immediate neighbour on the same line."""
     for line in text.splitlines():
         match = label.search(line)
         if not match:
             continue
         before = list(_AMOUNT.finditer(line[: match.start()]))
-        if before:
+        after = _AMOUNT.search(line[match.end() :])
+        # ``+2,100 Research Points`` — value sits immediately before the label.
+        if before and match.start() - before[-1].end() <= 3:
             value = _to_int(before[-1].group(1))
             if value is not None and value >= _MIN_REWARD:
                 return value
-        after = _AMOUNT.search(line[match.end() :])
         if after:
             value = _to_int(after.group(1))
+            if value is not None and value >= _MIN_REWARD:
+                return value
+        if before:
+            value = _to_int(before[-1].group(1))
             if value is not None and value >= _MIN_REWARD:
                 return value
     for match in label.finditer(text):
@@ -142,7 +179,7 @@ def _amount_near_label(text: str, label: re.Pattern[str]) -> int | None:
                 return value
         window_before = text[max(0, match.start() - 64) : match.start()]
         ams = list(_AMOUNT.finditer(window_before))
-        if ams:
+        if ams and match.start() - ams[-1].end() <= 3:
             value = _to_int(ams[-1].group(1))
             if value is not None and value >= _MIN_REWARD:
                 return value
@@ -150,17 +187,96 @@ def _amount_near_label(text: str, label: re.Pattern[str]) -> int | None:
 
 
 def _pair_from_total_block(text: str) -> tuple[int | None, int | None]:
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    for index, line in enumerate(lines):
-        if not _TOTAL.search(line):
-            continue
-        chunk = "\n".join(lines[index : index + 4])
-        amounts = _amounts_in(chunk)
-        if len(amounts) >= 2:
-            return amounts[0], amounts[1]
-        if len(amounts) == 1:
-            return amounts[0], None
+    """
+    «Всього» / Total row is the authoritative *without premium* pair on UA/RU results.
+
+    Typical OCR tail after the detail rows:
+      … achievements_sl, total_sl, total_rp, vehicle_rp, free_rp
+    e.g. 1779 1783 12446 1788 1909 1276  → 1788 / 12446
+
+    Returns (rp, sl, score) quality via internal scoring; callers use the pair only.
+    """
+    flat = re.sub(r"\s+", " ", text)
+    windows: list[str] = []
+    for match in _TOTAL.finditer(flat):
+        windows.append(flat[match.start() : match.start() + 420])
+    mods = re.search(
+        r"(?:nocninxeH\w*\s*M0A|модифікац\w*|модификац\w*|M0A14\w*|bc[eo]ro\s*nocnin)",
+        flat,
+        re.IGNORECASE,
+    )
+    if mods:
+        windows.append(flat[max(0, mods.start() - 120) : mods.start() + 200])
+    if not windows:
+        return None, None
+
+    scored: list[tuple[int, int, int]] = []
+    for window in windows:
+        amounts = _amounts_in(window)
+        for index in range(len(amounts) - 1):
+            a, b = amounts[index], amounts[index + 1]
+            # Prefer SL then RP (lions column read before research column).
+            if a >= _MIN_TOTAL_SL and b >= _MIN_REWARD and a > b * 2 and _plausible_reward_pair(b, a):
+                rp, sl = b, a
+                score = 4
+                if index + 2 < len(amounts):
+                    nxt = amounts[index + 2]
+                    # Vehicle research is only a little above mods/total RP — not the
+                    # next combat SL line (e.g. 2388 air-kills then 3109 fatal).
+                    vehicle_cap = rp + min(500, max(200, rp // 5))
+                    if rp <= nxt <= vehicle_cap:
+                        score += 3  # vehicle research RP follows totals
+                        if index + 3 < len(amounts) and amounts[index + 3] < rp:
+                            score += 1  # free RP after vehicle research
+                if index > 0 and _MIN_REWARD <= amounts[index - 1] < sl:
+                    score += 1  # achievements / participation SL before total
+                # Classic debrief: participation SL + achievements SL immediately before Всього.
+                if index >= 2:
+                    prev2, prev1 = amounts[index - 2], amounts[index - 1]
+                    if (
+                        400 <= prev2 <= 5_000
+                        and 400 <= prev1 <= 5_000
+                        and prev2 < sl
+                        and prev1 < sl
+                    ):
+                        score += 2
+                scored.append((score, rp, sl))
+            # RP then SL — only when Total label window is short/classic.
+            elif (
+                b >= _MIN_TOTAL_SL
+                and a >= _MIN_REWARD
+                and b > a * 2
+                and _plausible_reward_pair(a, b)
+                and len(amounts) <= 4
+            ):
+                scored.append((2, a, b))
+
+    if scored:
+        scored.sort(key=lambda item: (item[0], item[2]), reverse=True)
+        best_score, rp, sl = scored[0]
+        # Require a confident totals hit before overriding premium cells.
+        if best_score >= 5 or (best_score >= 2 and len(scored) == 1):
+            return rp, sl
     return None, None
+
+
+def _mods_research_rp(text: str) -> int | None:
+    """Without-premium RP equals «Дослідження модифікацій» on the results screen."""
+    flat = re.sub(r"\s+", " ", text)
+    match = re.search(
+        r"(?:дослідження\s*модифікац\w*|исследование\s*модификац\w*|"
+        r"nocninxeH\w*\s*M0A\w*|M0A14\w*\s*nocnin|"
+        r"modification\s*research)",
+        flat,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    before = _amounts_in(flat[max(0, match.start() - 48) : match.start()])
+    if before:
+        return before[-1]
+    after = _amounts_in(flat[match.end() : match.end() + 48])
+    return after[0] if after else None
 
 
 def _pair_from_label_columns(text: str) -> tuple[int | None, int | None]:
@@ -202,6 +318,9 @@ def _plausible_reward_pair(rp: int | None, sl: int | None) -> bool:
     if rp is None or sl is None:
         return False
     if rp < _MIN_REWARD or sl < _MIN_REWARD:
+        return False
+    # Reject OCR glue from FPS / timestamps / hash fragments.
+    if rp > 50_000 or sl > 200_000:
         return False
     # Real SL is almost always greater than RP; tiny SL with large RP is OCR junk.
     if sl < rp:
@@ -303,12 +422,16 @@ def _pair_from_premium_columns(text: str) -> tuple[int | None, int | None]:
         next_with = WITH_PREMIUM.search(tail)
         chunk = tail[: next_with.start()] if next_with else tail[:160]
         amounts = _amounts_in(chunk)
+        if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
+            amounts = amounts[1:]
         if len(amounts) < 2:
             with_before = WITH_PREMIUM.search(flat[: without.start() + 1])
             if with_before:
                 between = flat[with_before.end() : without.start()]
                 if len(_amounts_in(between)) == 0:
                     amounts = _amounts_in(flat[without.end() : without.end() + 160])
+                    if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
+                        amounts = amounts[1:]
         pair = _pair_after_without_label(amounts)
         if pair[0] is not None and pair[1] is not None:
             return pair
@@ -320,10 +443,14 @@ def _pair_from_premium_columns(text: str) -> tuple[int | None, int | None]:
         bare = _BARE_PREMIUM_WORD.search(after_with)
         if bare:
             amounts = _amounts_in(after_with[bare.end() : bare.end() + 100])
+            if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
+                amounts = amounts[1:]
             if len(amounts) >= 2:
                 return amounts[0], amounts[1]
         # Four-cell block only — never the first two cells (those are with-premium).
         amounts = _amounts_in(after_with[:200])
+        if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
+            amounts = amounts[1:]
         if len(amounts) >= 4:
             pair = _without_pair_from_premium_amounts(amounts)
             if pair[0] is not None and pair[1] is not None:
@@ -388,20 +515,54 @@ def _research_from_total_line(text: str) -> int | None:
 
 
 def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
+    """
+    Map full-window OCR text to without-premium RP/SL using the canonical priority
+    documented in the module docstring.
+    """
     if looks_like_desktop_noise(text):
         return None
 
-    cleaned = text.replace("\r", "\n")
+    cleaned = _normalize_results_text(text)
     rp = sl = None
     premium_hit = False
     reward_hit = False
 
+    # --- 1. Premium comparison table (without column) ---
     if WITHOUT_PREMIUM.search(cleaned) or WITH_PREMIUM.search(cleaned):
         prem_rp, prem_sl = _pair_from_premium_columns(cleaned)
         if _plausible_reward_pair(prem_rp, prem_sl):
             premium_hit = True
             rp, sl = prem_rp, prem_sl
 
+    # --- 2. «Всього» / Total (authoritative without-premium when confident) ---
+    tot_rp, tot_sl = _pair_from_total_block(cleaned)
+    if _plausible_reward_pair(tot_rp, tot_sl):
+        if not premium_hit:
+            rp, sl = tot_rp, tot_sl
+            premium_hit = True
+        elif rp is not None and sl is not None and (rp, sl) != (tot_rp, tot_sl):
+            assert tot_rp is not None and tot_sl is not None
+            # If Всього SL is at least ~as large as the table's without-SL, trust the row.
+            # Otherwise only repair RP (mods/Всього) and keep table SL.
+            if tot_sl >= int(sl * 0.95):
+                rp, sl = tot_rp, tot_sl
+            elif abs(tot_rp - rp) >= 50 and _plausible_reward_pair(tot_rp, sl):
+                rp = tot_rp
+    else:
+        # --- 3. Mods research RP when Total was weak but table RP looks mangled ---
+        mods_rp = _mods_research_rp(cleaned)
+        if (
+            premium_hit
+            and mods_rp is not None
+            and rp is not None
+            and sl is not None
+            and abs(mods_rp - rp) >= 50
+            and mods_rp < sl
+            and _plausible_reward_pair(mods_rp, sl)
+        ):
+            rp = mods_rp
+
+    # --- 4–5. Labels / boost line (fill gaps only) ---
     if rp is None or sl is None:
         reward_rp, reward_sl = _pair_from_reward_boost_line(cleaned)
         if reward_rp is not None or reward_sl is not None:
@@ -431,6 +592,10 @@ def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
         tot_rp, tot_sl = _pair_from_total_block(cleaned)
         rp = rp if rp is not None else tot_rp
         sl = sl if sl is not None else tot_sl
+
+    # Deglue OCR (29128 → 2912) when the shorter token is also present.
+    if rp is not None and sl is not None:
+        rp, sl = _prefer_deglued_pair(cleaned, rp, sl)
 
     # Require a plausible pair — never publish RP=1 / SL=0 junk or swapped columns.
     if not _plausible_reward_pair(rp, sl):
@@ -473,26 +638,123 @@ def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
     )
 
 
+def _prefer_deglued_pair(text: str, rp: int, sl: int) -> tuple[int, int]:
+    """If OCR appended a digit (2912→29128), prefer the shorter amount also in the text."""
+    amounts = set(_amounts_in(text, min_value=1))
+    # Only rewrite when the long value is *not* an exact token but the short one is.
+    if sl not in amounts:
+        for candidate in (sl // 10, sl // 100):
+            if (
+                candidate >= _MIN_TOTAL_SL
+                and candidate in amounts
+                and _plausible_reward_pair(rp, candidate)
+                and sl == candidate * 10 + (sl % 10)
+            ):
+                return rp, candidate
+    if rp not in amounts:
+        for candidate in (rp // 10, rp // 100):
+            if (
+                candidate >= _MIN_REWARD
+                and candidate in amounts
+                and _plausible_reward_pair(candidate, sl)
+                and rp == candidate * 10 + (rp % 10)
+            ):
+                return candidate, sl
+    return rp, sl
+
+
+
 def choose_best_report(candidates: list[tuple[str, BattleReport | None]]) -> tuple[str, BattleReport] | None:
     """Pick the strongest parse among per-engine OCR texts. Never merges texts."""
     scored: list[tuple[float, str, BattleReport]] = []
     for text, report in candidates:
         if report is None:
             continue
-        score = report.confidence
-        # Prefer both currencies well above the floor.
-        score += min(report.research_points, report.silver_lions) / 100_000.0
-        # Penalize OCR glue (e.g. 78049 instead of 7804) via implausible SL/RP ratio.
-        ratio = report.silver_lions / max(1, report.research_points)
-        if 1.2 <= ratio <= 30:
-            score += 0.08
+        score = float(report.confidence)
+        rp, sl = report.research_points, report.silver_lions
+        amounts = set(_amounts_in(text, min_value=1))
+        # Prefer clean SL when OCR also emitted a glued sibling (2912 and 29128).
+        if sl in amounts and (sl // 10) in amounts and _plausible_reward_pair(rp, sl // 10):
+            sl = sl // 10
+        if rp in amounts and (rp // 10) in amounts and _plausible_reward_pair(rp // 10, sl):
+            rp = rp // 10
+        # Prefer classic without-premium arcade shape over partial combat lines.
+        ratio = sl / max(1, rp)
+        if 4.0 <= ratio <= 20.0:
+            score += 0.22
+        elif 2.5 <= ratio < 4.0:
+            score += 0.05
         elif ratio > 50 or ratio < 0.4:
             score -= 0.2
+        if 1_500 <= sl <= 40_000:
+            score += 0.1
+        elif sl > 50_000:
+            score -= 0.15
+        if 200 <= rp <= 4_500:
+            score += 0.08
+        elif rp >= 5_000:
+            # Combat SL lines often land here when misread as RP.
+            score -= 0.12
+        if _TOTAL.search(text) or WITHOUT_PREMIUM.search(text) or WITH_PREMIUM.search(text):
+            score += 0.12
+        # Prefer without-premium SL when a with/without pair (~1.25–1.85×) is visible.
+        large = [a for a in _amounts_in(text) if 5_000 <= a <= 50_000]
+        best_pair: tuple[int, int] | None = None
+        best_dist = 9.0
+        for index, first in enumerate(large):
+            for second in large[index + 1 :]:
+                lo_i, hi_i = (first, second) if first <= second else (second, first)
+                # Skip combat crumbs; without/with SL are almost always ≥ 8k.
+                if lo_i < 8_000 or hi_i > 45_000:
+                    continue
+                pair_ratio = hi_i / max(1, lo_i)
+                if 1.25 <= pair_ratio <= 1.85 and abs(pair_ratio - 1.5) < best_dist:
+                    best_dist = abs(pair_ratio - 1.5)
+                    best_pair = (lo_i, hi_i)
+        if best_pair is not None:
+            lo, hi = best_pair
+            if abs(sl - lo) <= max(200, int(lo * 0.04)):
+                score += 0.2
+            elif abs(sl - hi) <= max(200, int(hi * 0.04)):
+                score -= 0.15
+        if rp in amounts and sl in amounts:
+            score += 0.25
+        if sl not in amounts and (sl // 10) in amounts:
+            score -= 0.45
+        elif rp not in amounts and (rp // 10) in amounts:
+            score -= 0.35
+        if WITHOUT_PREMIUM.search(text) and WITH_PREMIUM.search(text):
+            score += 0.1
+        # Rebuild report if we deglued for scoring so the published pair matches.
+        if (rp, sl) != (report.research_points, report.silver_lions):
+            report = BattleReport(
+                captured_at_epoch_millis=report.captured_at_epoch_millis,
+                research_points=rp,
+                silver_lions=sl,
+                outcome=report.outcome,
+                raw_hash=report.raw_hash,
+                confidence=report.confidence,
+                source=report.source,
+                id=report.id,
+            )
         scored.append((score, text, report))
     if not scored:
         return None
     scored.sort(key=lambda item: item[0], reverse=True)
     _score, text, report = scored[0]
+    # Among near-ties with the same SL, prefer the lower RP (mods vs vehicle research).
+    for cand_score, cand_text, cand_report in scored[1:]:
+        if _score - cand_score > 0.05:
+            break
+        if abs(cand_report.silver_lions - report.silver_lions) <= max(
+            80, int(report.silver_lions * 0.03)
+        ):
+            if (
+                cand_report.research_points < report.research_points
+                and cand_report.research_points >= int(report.research_points * 0.85)
+            ):
+                text, report = cand_text, cand_report
+                _score = cand_score
     return text, report
 
 

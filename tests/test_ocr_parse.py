@@ -125,6 +125,69 @@ def test_parses_sl_columns_swapped_by_ocr():
     assert report.silver_lions == 15902
 
 
+def test_parses_short_arcade_without_premium_grid():
+    """Real UA screen: place 13 then 672/336/4608/2912 → without 336/2912 (not 4608/29128)."""
+    text = (
+        "MiciR npoBaneHa ApaAHi 60i "
+        "3 npeMiyM0M Sea npexiyxa Baue Micue B KOMaHAi: 13 "
+        "672 336 4 608 2 912 "
+        "nocqrHeHHA Bcsoro 748 2 912 336 336 336 "
+        "nocninxeHHR M0A14$iKauii"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 336
+    assert report.silver_lions == 2912
+
+
+def test_amount_tokenizer_does_not_glue_three_groups():
+    from lockon_bridge.ocr_parse import _amounts_in
+
+    # Left part may be 1–2 digits + thousands; three RP-sized cells stay separate.
+    assert _amounts_in("672 336 4 608 2 912") == [672, 336, 4608, 2912]
+    assert _amounts_in("1 788 12 446") == [1788, 12446]
+
+
+def test_team_place_stripped_before_premium_grid():
+    text = (
+        "3 npeMiyM0M Sea npexiyxa Baue Micue B KOMaHAi: 13 "
+        "672 336 4 608 2 912"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 336
+    assert report.silver_lions == 2912
+
+
+def test_vsego_ignores_combat_sl_pair_as_totals():
+    """Air-kills SL + fatal SL must not beat the real Всього pair."""
+    text = (
+        "Bawe Micue B KOMaHAi: 3 3 npeMiyM0M 3064 18 926 "
+        "3HnueH0 2 388 3 109 критичні 389 "
+        "Всього 1 779 1 783 12 446 1 909 1 276"
+    )
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.research_points == 1909
+    assert report.silver_lions == 12446
+
+
+def test_choose_best_prefers_full_totals_over_partial():
+    partial = "3HnueH0 noBiTpRHX 5 143 2 388 3 109"
+    full = (
+        "Sea npexiyxa 1 788 12 446 Всього 1 779 1 783 12 446 1 788 1 909 1 276"
+    )
+    best = choose_best_report(
+        [
+            (partial, parse_rewards_from_ocr_text(partial)),
+            (full, parse_rewards_from_ocr_text(full)),
+        ]
+    )
+    assert best is not None
+    assert best[1].research_points == 1788
+    assert best[1].silver_lions == 12446
+
+
 def test_parses_column_major_premium_table():
     """UA results: labels then RP column then SL column (2108/1128/11221/7804)."""
     text = (

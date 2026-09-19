@@ -136,6 +136,10 @@ WITHOUT_PREMIUM_PHRASES: tuple[str, ...] = (
     # OCR often turns «Без преміума» into «5B npeMiyxa» / «SB npeMiYMa» / «Ee3 npeMiyxa»
     r"[s5]\s*[bв]\s*npe?[mn]i?[yуux]\w*",
     r"[eе]{1,2}[zs3]\s*npe?[mn]i?[yуux]\w*",
+    # «Sea npexiyxa» / «Без npa…» (Win OCR invents spaces / drops letters)
+    r"sea\s*npe[xх]?[iyu]\w*",
+    r"без\s*npa\w*",
+    r"bez\s*npa\w*",
 )
 
 VICTORY_PHRASES: tuple[str, ...] = (
