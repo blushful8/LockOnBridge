@@ -141,6 +141,9 @@ def apply_update_and_restart(downloaded: Path) -> None:
     update_log = str(log_dir / "update.log").replace("'", "''")
 
     if downloaded.suffix.lower() == ".zip":
+        # Windows often keeps a handle on the install folder (Defender, Explorer,
+        # Search Indexer, leftover DLL maps). Renaming ``app`` → ``app.bak`` then
+        # fails for ~30s of retries. Prefer in-place robocopy; try rename once.
         script = f"""
 $ErrorActionPreference = 'Stop'
 $log = '{update_log}'
@@ -148,13 +151,19 @@ function Write-UpdLog([string]$msg) {{
   $line = ('{{0:yyyy-MM-dd HH:mm:ss}} {{1}}' -f (Get-Date), $msg)
   Add-Content -LiteralPath $log -Value $line -Encoding UTF8
 }}
-function Stop-LockOnBridgeProcesses([int]$exceptPid) {{
-  Get-Process -Name 'LockOnBridge' -ErrorAction SilentlyContinue |
-    Where-Object {{ $_.Id -ne $exceptPid }} |
-    ForEach-Object {{
-      Write-UpdLog ("stop pid " + $_.Id)
-      Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-    }}
+function Stop-LockOnBridgeProcesses {{
+  param([string]$InstallDir)
+  Get-Process -ErrorAction SilentlyContinue | Where-Object {{
+    try {{
+      $p = $_.Path
+      if (-not $p) {{ return $false }}
+      if ($_.ProcessName -eq 'LockOnBridge') {{ return $true }}
+      return ($p -like ($InstallDir + '*'))
+    }} catch {{ return $false }}
+  }} | ForEach-Object {{
+    Write-UpdLog ("stop pid " + $_.Id + " " + $_.ProcessName)
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+  }}
 }}
 try {{
   Write-UpdLog 'update helper start'
@@ -166,9 +175,9 @@ try {{
     if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
     Start-Sleep -Milliseconds 500
   }}
-  Start-Sleep -Milliseconds 1500
-  Stop-LockOnBridgeProcesses -exceptPid 0
   Start-Sleep -Milliseconds 800
+  Stop-LockOnBridgeProcesses -InstallDir $installDir
+  Start-Sleep -Milliseconds 500
 
   Write-UpdLog ("extract " + $zip)
   $staging = Join-Path $env:TEMP ("lockon_bridge_upd_" + $pidToWait)
@@ -184,41 +193,41 @@ try {{
   $parent = Split-Path -Parent $installDir
   New-Item -ItemType Directory -Force -Path $parent | Out-Null
   $newDir = $installDir + '.new'
-  $backup = $installDir + '.bak'
   if (Test-Path -LiteralPath $newDir) {{
     Remove-Item -LiteralPath $newDir -Recurse -Force -ErrorAction SilentlyContinue
   }}
-  if (Test-Path -LiteralPath $backup) {{
-    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-  }}
   Copy-Item -LiteralPath $bundle -Destination $newDir -Recurse -Force
 
-  if (Test-Path -LiteralPath $installDir) {{
+  if (-not (Test-Path -LiteralPath $installDir)) {{
+    Rename-Item -LiteralPath $newDir -NewName (Split-Path -Leaf $installDir) -ErrorAction Stop
+    Write-UpdLog 'fresh install dir created'
+  }} else {{
+    # One quick rename attempt (atomic swap). If the folder is locked, skip the
+    # noisy retry loop and overwrite in place — that always works for our files.
     $renamed = $false
-    for ($i = 0; $i -lt 50; $i++) {{
-      try {{
-        Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $backup) -ErrorAction Stop
-        $renamed = $true
-        Write-UpdLog ("renamed install -> bak on try " + ($i + 1))
-        break
-      }} catch {{
-        Write-UpdLog ("rename retry " + ($i + 1) + ": " + $_.Exception.Message)
-        Start-Sleep -Milliseconds 600
-        Stop-LockOnBridgeProcesses -exceptPid 0
+    try {{
+      $backup = $installDir + '.bak'
+      if (Test-Path -LiteralPath $backup) {{
+        Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
       }}
+      Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $backup) -ErrorAction Stop
+      Rename-Item -LiteralPath $newDir -NewName (Split-Path -Leaf $installDir) -ErrorAction Stop
+      $renamed = $true
+      Write-UpdLog 'renamed install -> bak (atomic swap)'
+      Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+    }} catch {{
+      Write-UpdLog ("rename skipped (folder in use): " + $_.Exception.Message)
     }}
     if (-not $renamed) {{
-      Write-UpdLog 'fallback robocopy in-place'
-      $rc = 0
-      & robocopy $newDir $installDir /E /IS /IT /R:25 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+      Write-UpdLog 'updating in place via robocopy'
+      Stop-LockOnBridgeProcesses -InstallDir $installDir
+      Start-Sleep -Milliseconds 400
+      & robocopy $newDir $installDir /E /IS /IT /R:8 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
       $rc = $LASTEXITCODE
       if ($rc -ge 8) {{ throw ("robocopy failed with code " + $rc) }}
+      Write-UpdLog ("robocopy ok (exit " + $rc + ")")
       Remove-Item -LiteralPath $newDir -Recurse -Force -ErrorAction SilentlyContinue
-    }} else {{
-      Rename-Item -LiteralPath $newDir -NewName (Split-Path -Leaf $installDir) -ErrorAction Stop
     }}
-  }} else {{
-    Rename-Item -LiteralPath $newDir -NewName (Split-Path -Leaf $installDir) -ErrorAction Stop
   }}
 
   if (-not (Test-Path -LiteralPath $launch)) {{ throw ("launch missing after copy: " + $launch) }}
@@ -226,8 +235,7 @@ try {{
   Start-Process -FilePath $launch -WorkingDirectory $installDir
   Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $newDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath ($installDir + '.new') -Recurse -Force -ErrorAction SilentlyContinue
   Write-UpdLog 'update helper done'
 }} catch {{
   Write-UpdLog ("FAIL: " + $_.Exception.Message)
@@ -261,17 +269,20 @@ try {{
     if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
     Start-Sleep -Milliseconds 500
   }}
-  Start-Sleep -Milliseconds 1500
-  Get-Process -Name 'LockOnBridge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Milliseconds 800
+  Get-Process -Name 'LockOnBridge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 500
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
   $copied = $false
-  for ($i = 0; $i -lt 40; $i++) {{
+  for ($i = 0; $i -lt 12; $i++) {{
     try {{
       Copy-Item -LiteralPath $srcExe -Destination (Join-Path $installDir 'LockOnBridge.exe') -Force -ErrorAction Stop
       $copied = $true
       break
     }} catch {{
+      if ($i -eq 0 -or $i -eq 11) {{
+        Write-UpdLog ("exe copy retry " + ($i + 1) + ": " + $_.Exception.Message)
+      }}
       Start-Sleep -Milliseconds 500
       Get-Process -Name 'LockOnBridge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }}
