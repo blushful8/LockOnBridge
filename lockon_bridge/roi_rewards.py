@@ -106,57 +106,92 @@ def windows_roi_text(image: Image.Image) -> str:
     return best
 
 
+def _ocr_ghost_trim(value: int) -> int | None:
+    """
+    Optional OCR trailing-digit trim. Never mutates real high rewards in place.
+
+    Safe cases only:
+      • trailing 9 on a 5-digit token (10259 → 1025) — rare for real rewards
+      • trailing 0 on a *non-round* 5-digit token (72620 → 7262), but NOT
+        15000 / 20000 / 10000 (real thousand amounts farmers hit with premium)
+
+    6+ digit values (100000+ SL) are never trimmed.
+    """
+    if not (10_000 <= value <= 99_999):
+        return None
+    trimmed = value // 10
+    if not (200 <= trimmed <= 45_000):
+        return None
+    if value % 10 == 9:
+        return trimmed
+    if value % 10 == 0 and value % 100 != 0:
+        # 72620 → 7262; keep 15000 / 28000 / etc.
+        return trimmed
+    return None
+
+
 def pair_from_digit_text(text: str) -> tuple[int, int] | None:
     """Two reward amounts from an ROI reading (RP then SL)."""
-    amounts = _amounts_in(text, min_value=50)
-    cleaned: list[int] = []
-    for value in amounts:
-        # Deglue trailing OCR digit BEFORE the size filter (72620 → 7262, 10259 → 1025).
-        if value >= 10_000:
-            trimmed = value // 10
-            if 200 <= trimmed <= 45_000 and value < 500_000:
-                # Prefer deglue when the extra digit is a lone trailing OCR ghost.
-                if value >= 50_000 or value % 10 in (0, 9):
-                    cleaned.append(trimmed)
-                    continue
-                if 10_000 <= value < 50_000 and trimmed >= 1_000:
-                    cleaned.append(trimmed)
-                    continue
-        if value >= 50_000:
-            continue
-        cleaned.append(value)
-    amounts = cleaned or [a for a in amounts if a < 50_000]
-    if len(amounts) < 2:
-        # Rebuild split SL like "7 262" already merged by _amounts_in; lone pair fail.
+    # Keep real premium-farm SL (100k+) / high RP; only drop absurd OCR monsters.
+    raw = [a for a in _amounts_in(text, min_value=50) if a <= 250_000]
+    if not raw:
         return None
 
-    if len(amounts) >= 2:
-        a, b = amounts[0], amounts[1]
-        if _plausible_reward_pair(a, b) and b > a:
-            return a, b
-        if _plausible_reward_pair(b, a) and a > b:
-            return b, a
+    amounts = list(raw)
+    ghost_of: dict[int, int] = {}
+    for value in raw:
+        trimmed = _ocr_ghost_trim(value)
+        if trimmed is not None and trimmed not in amounts:
+            amounts.append(trimmed)
+            ghost_of[trimmed] = value
+
+    if len(amounts) < 2:
+        return None
+
+    def _pair_score(rp: int, sl: int) -> float:
+        if not _plausible_reward_pair(rp, sl) or sl <= rp:
+            return -1.0
+        ratio = sl / max(1, rp)
+        score = 0.0
+        if 4.0 <= ratio <= 20.0:
+            score += 2.0
+        elif 2.5 <= ratio < 4.0:
+            score += 0.5
+        if 200 <= rp <= 4_500:
+            score += 1.0
+        elif 4_500 < rp <= 50_000:
+            score += 0.6  # high RP with boosters / premium account grind
+        if 800 <= sl <= 45_000:
+            score += 1.0
+        elif 45_000 < sl <= 250_000:
+            score += 0.6  # 100k+ SL is real — do not punish
+        # Prefer ghost-trimmed pair only when BOTH sides came from OCR ghosts
+        # (10259+72620 → 1025+7262), not when only one side trimmed (15000+72620).
+        if rp in ghost_of and sl in ghost_of:
+            score += 1.5
+        elif rp in ghost_of or sl in ghost_of:
+            score -= 0.25
+        return score
 
     best: tuple[int, int] | None = None
     best_score = -1.0
-    for i, rp in enumerate(amounts):
-        for sl in amounts[i + 1 :]:
-            lo, hi = (rp, sl) if rp <= sl else (sl, rp)
-            if not _plausible_reward_pair(lo, hi):
-                continue
-            ratio = hi / max(1, lo)
-            score = 0.0
-            if 4.0 <= ratio <= 20.0:
-                score += 2.0
-            elif 2.5 <= ratio < 4.0:
-                score += 0.5
-            if 200 <= lo <= 4500:
-                score += 1.0
-            if 800 <= hi <= 45000:
-                score += 1.0
+
+    # Prefer reading order when both raw tokens already form a good pair.
+    if len(raw) >= 2:
+        a, b = raw[0], raw[1]
+        for rp, sl in ((a, b), (b, a)):
+            score = _pair_score(rp, sl)
             if score > best_score:
                 best_score = score
-                best = (lo, hi)
+                best = (rp, sl)
+
+    for i, rp in enumerate(amounts):
+        for sl in amounts[i + 1 :]:
+            for cand in ((rp, sl), (sl, rp)):
+                score = _pair_score(*cand)
+                if score > best_score:
+                    best_score = score
+                    best = cand
     return best
 
 
@@ -250,15 +285,9 @@ def _amount_from_word(text: str) -> int | None:
         value = int(digits)
     except ValueError:
         return None
-    if value < 50:
+    if value < 50 or value > 250_000:
         return None
-    # Deglue trailing OCR digit (72620 → 7262, 10259 → 1025) before rejecting size.
-    if value >= 10_000:
-        trimmed = value // 10
-        if 200 <= trimmed <= 45_000 and (value >= 50_000 or value % 10 in (0, 9)):
-            return trimmed
-    if value >= 50_000:
-        return None
+    # Do not auto-trim here — pair_from_digit_text expands OCR ghosts safely.
     return value
 
 

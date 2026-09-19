@@ -68,6 +68,16 @@ def test_pair_from_digit_text_deglues_trailing():
     assert pair_from_digit_text("1025 72629") == (1025, 7262)
 
 
+def test_pair_from_digit_text_keeps_high_premium_farm():
+    """Real 15k RP / 100k+ SL must not be chopped by OCR-ghost deglue."""
+    assert pair_from_digit_text("15000 108920") == (15000, 108920)
+    assert pair_from_digit_text("15000 100000") == (15000, 100000)
+    assert pair_from_digit_text("15 000 126500") == (15000, 126500)
+    assert pair_from_digit_text("15200 126500") == (15200, 126500)
+    # Round thousands ending in 00 stay intact (not treated as 72620-style ghosts).
+    assert pair_from_digit_text("15000 28000") == (15000, 28000)
+
+
 def test_full_frame_consensus_1025_7262():
     img = _load(FULL)
     tags = {tag for tag, _ in iter_reward_digit_rois(img)}
