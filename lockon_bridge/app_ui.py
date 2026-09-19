@@ -19,6 +19,8 @@ from .autostart import (
     prepare_enabled_runtime,
     register_uninstall_entry,
     unregister_autostart,
+    _app_allow_present,
+    _firewall_has_block_on_bridge,
 )
 from .i18n import EN, UK, Strings, strings_for
 from .dpi import enable_windows_dpi_awareness, sync_tk_scaling
@@ -41,6 +43,8 @@ ACCENT = "#c45c26"
 ACCENT_DIM = "#8a3f1a"
 OK = "#3d9a6a"
 OFF = "#6b7280"
+DANGER = "#b91c1c"
+DANGER_BG = "#3f1515"
 
 # Keep enough room for toggle, languages, port, primary actions and More menu.
 MIN_WINDOW_W = 500
@@ -124,6 +128,9 @@ class BridgeApp:
         else:
             self._set_ui_enabled(False)
             self.status_var.set(self.strings.status_disabled)
+
+        self.root.after(400, self._refresh_phone_access_ui)
+        self.root.after(5_000, self._poll_phone_access_loop)
 
         if start_hidden and self.settings.enabled:
             self.root.withdraw()
@@ -233,7 +240,31 @@ class BridgeApp:
             padx=10,
             pady=3,
         )
-        self.badge.pack(anchor="w", padx=16, pady=(0, 12))
+        self.badge.pack(anchor="w", padx=16, pady=(0, 8))
+
+        self.phone_banner = tk.Label(
+            card,
+            text="",
+            font=("Segoe UI", 9),
+            fg="#fecaca",
+            bg=DANGER_BG,
+            justify="left",
+            wraplength=MIN_WINDOW_W - 90,
+            padx=10,
+            pady=8,
+        )
+        # Packed/unpacked by _refresh_phone_access_ui
+
+        self.phone_url_label = tk.Label(
+            card,
+            text="",
+            font=("Segoe UI", 9),
+            fg=MUTED,
+            bg=PANEL,
+            justify="left",
+            wraplength=MIN_WINDOW_W - 90,
+        )
+        self.phone_url_label.pack(anchor="w", padx=16, pady=(0, 12))
 
         self.tip_label = tk.Label(
             self.root,
@@ -551,24 +582,98 @@ class BridgeApp:
     def _allow_phone_access(self) -> None:
         self._ensure_phone_access(interactive=True, force_prompt=True)
 
-    def _ensure_phone_access(self, *, interactive: bool, force_prompt: bool = False) -> None:
-        port = self._read_port()
-        # Port Allow alone is not enough — Defender Block on the exe still drops :8112.
-        from .autostart import _app_allow_present, _firewall_has_block_on_bridge
-
-        already_ok = (
-            firewall_rule_present(port)
+    def _phone_access_ok(self, port: int | None = None) -> bool:
+        p = int(port if port is not None else self._read_port())
+        return (
+            firewall_rule_present(p)
             and _app_allow_present()
             and not _firewall_has_block_on_bridge()
         )
+
+    @staticmethod
+    def _lan_ipv4() -> str | None:
+        import socket
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.connect(("8.8.8.8", 80))
+            ip = sock.getsockname()[0]
+            sock.close()
+            return ip
+        except OSError:
+            return None
+
+    def _phone_test_url(self) -> str:
+        port = self._read_port()
+        ip = self._lan_ipv4() or "PC_IP"
+        return f"http://{ip}:{port}/v1/health"
+
+    def _refresh_phone_access_ui(self) -> None:
+        t = self.strings
+        enabled = bool(self.enabled_var.get())
+        port = self._read_port()
+        url = self._phone_test_url()
+        if not enabled:
+            try:
+                self.phone_banner.pack_forget()
+            except tk.TclError:
+                pass
+            self.phone_url_label.configure(text="")
+            self.status_label.configure(fg=MUTED)
+            return
+
+        ok = self._phone_access_ok(port)
+        if ok:
+            try:
+                self.phone_banner.pack_forget()
+            except tk.TclError:
+                pass
+            self.phone_url_label.configure(
+                text=t.phone_access_ok.format(url=url),
+                fg=OK,
+            )
+            self.status_label.configure(fg=MUTED)
+        else:
+            self.status_var.set(t.status_firewall_needed)
+            self.status_label.configure(fg="#fca5a5")
+            self.phone_banner.configure(
+                text=t.phone_access_banner.format(port=port),
+                bg=DANGER_BG,
+                fg="#fecaca",
+            )
+            try:
+                self.phone_banner.pack_forget()
+            except tk.TclError:
+                pass
+            self.phone_banner.pack(fill="x", padx=16, pady=(0, 8), before=self.phone_url_label)
+            self.phone_url_label.configure(
+                text=t.phone_test_hint.format(url=url),
+                fg="#fca5a5",
+            )
+
+    def _poll_phone_access_loop(self) -> None:
+        if self._closing:
+            return
+        try:
+            self._refresh_phone_access_ui()
+        except Exception:  # noqa: BLE001
+            pass
+        self.root.after(5_000, self._poll_phone_access_loop)
+
+    def _ensure_phone_access(self, *, interactive: bool, force_prompt: bool = False) -> None:
+        port = self._read_port()
+        # Port Allow alone is not enough — Defender Block on the exe still drops :8112.
+        already_ok = self._phone_access_ok(port)
         if already_ok:
             if force_prompt:
                 messagebox.showinfo(
                     PRODUCT_NAME,
                     self.strings.firewall_ok.format(port=port),
                 )
+            self._refresh_phone_access_ui()
             return
         if not interactive:
+            self._refresh_phone_access_ui()
             return
         t = self.strings
         if not messagebox.askyesno(
@@ -576,6 +681,7 @@ class BridgeApp:
             t.firewall_prompt_body.format(port=port),
         ):
             self.status_var.set(t.status_firewall_needed)
+            self._refresh_phone_access_ui()
             return
         ok = ensure_firewall_rule(port, allow_elevate=True)
         if ok:
@@ -584,6 +690,7 @@ class BridgeApp:
         else:
             self.status_var.set(t.status_firewall_needed)
             messagebox.showwarning(PRODUCT_NAME, t.firewall_denied)
+        self._refresh_phone_access_ui()
 
     def _ocr_packs_clicked(self) -> None:
         self._maybe_prompt_ocr_packs(force=True)
@@ -726,6 +833,7 @@ class BridgeApp:
                     else t.status_disabled
                 )
             self._refresh_badge_for_status(status)
+            self._refresh_phone_access_ui()
 
         try:
             self.root.after(0, apply)

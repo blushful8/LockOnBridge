@@ -37,6 +37,9 @@ class Strings:
     status_disabled: str
     status_enabled_waiting: str
     status_firewall_needed: str
+    phone_access_banner: str
+    phone_access_ok: str
+    phone_test_hint: str
     firewall_warning: str
     firewall_prompt_title: str
     firewall_prompt_body: str
@@ -138,6 +141,15 @@ EN = Strings(
     status_disabled="Disabled — no autostart, no background work",
     status_enabled_waiting="Enabled — waiting for War Thunder",
     status_firewall_needed="Enabled — phone access not allowed yet",
+    phone_access_banner=(
+        "⚠ PHONE CANNOT REACH THIS PC\n"
+        "LockOn History will stay at 0 RP / 0 SL until you fix this.\n\n"
+        "Fix: More ▾ → Allow phone access → Yes (then Yes on Windows UAC).\n"
+        "If Defender blocked LockOnBridge.exe: Protection history → Allow, then try again.\n"
+        "On the phone: same PC IP, Bridge switch ON, port {port}."
+    ),
+    phone_access_ok="Phone access OK — test from phone browser:\n{url}",
+    phone_test_hint="Phone test URL (same Wi‑Fi): {url}",
     firewall_warning=(
         "Phone access was not allowed on this PC.\n\n"
         "Without it, LockOn on the phone stays at 0 RP / 0 SL even when OCR works.\n\n"
@@ -282,6 +294,15 @@ UK = Strings(
     status_disabled="Вимкнено — немає автозапуску й фонової роботи",
     status_enabled_waiting="Увімкнено — очікування War Thunder",
     status_firewall_needed="Увімкнено — доступ з телефона ще не дозволено",
+    phone_access_banner=(
+        "⚠ ТЕЛЕФОН НЕ ДОХОДИТЬ ДО ЦЬОГО ПК\n"
+        "В Історії LockOn лишатимуться 0 RP / 0 SL, доки це не виправите.\n\n"
+        "Виправлення: More ▾ → Дозволити доступ з телефона → Так (потім Так у UAC Windows).\n"
+        "Якщо Defender заблокував LockOnBridge.exe: Журнал захисту → Дозволити, і знову.\n"
+        "На телефоні: той самий IP ПК, перемикач Bridge УВІМК., порт {port}."
+    ),
+    phone_access_ok="Доступ з телефона OK — перевірка з браузера телефона:\n{url}",
+    phone_test_hint="URL для перевірки з телефона (та сама Wi‑Fi): {url}",
     firewall_warning=(
         "Доступ з телефона не дозволено на цьому ПК.\n\n"
         "Без цього LockOn на телефоні лишатиме 0 RP / 0 SL, навіть якщо OCR працює.\n\n"
