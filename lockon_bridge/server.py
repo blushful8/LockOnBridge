@@ -31,6 +31,10 @@ def make_handler(store: ReportStore):
             if path in ("/v1/health", "/health"):
                 self._send(200, {"ok": True, "version": __version__})
                 return
+            if path in ("/v1/reports", "/reports"):
+                reports = store.list_reports()
+                self._send(200, {"reports": [r.to_json() for r in reports]})
+                return
             if path in ("/v1/latest-report", "/latest-report"):
                 report = store.latest()
                 if report is None:

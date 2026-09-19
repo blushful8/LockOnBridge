@@ -26,9 +26,11 @@ class BattleReport:
     raw_hash: str
     confidence: float
     source: str = "ocr"
+    id: str = ""
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload = {
+            "id": self.id,
             "capturedAtEpochMillis": self.captured_at_epoch_millis,
             "researchPoints": self.research_points,
             "silverLions": self.silver_lions,
@@ -37,6 +39,7 @@ class BattleReport:
             "confidence": self.confidence,
             "source": self.source,
         }
+        return payload
 
 
 _TOTAL = re.compile(
