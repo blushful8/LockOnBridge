@@ -553,7 +553,15 @@ class BridgeApp:
 
     def _ensure_phone_access(self, *, interactive: bool, force_prompt: bool = False) -> None:
         port = self._read_port()
-        if firewall_rule_present(port):
+        # Port Allow alone is not enough — Defender Block on the exe still drops :8112.
+        from .autostart import _app_allow_present, _firewall_has_block_on_bridge
+
+        already_ok = (
+            firewall_rule_present(port)
+            and _app_allow_present()
+            and not _firewall_has_block_on_bridge()
+        )
+        if already_ok:
             if force_prompt:
                 messagebox.showinfo(
                     PRODUCT_NAME,

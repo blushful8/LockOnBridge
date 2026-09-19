@@ -206,10 +206,11 @@ def find_war_thunder_hwnd() -> int | None:
 
 
 def _png_from_image(image: Image.Image, max_width: int = 1920) -> bytes:
-    if image.width < 1280:
-        ratio = 1280 / float(image.width)
+    # Prefer a readable width for small Cyrillic reward digits — upscale narrow crops.
+    if image.width < 1400:
+        ratio = 1400 / float(image.width)
         image = image.resize(
-            (1280, max(1, int(image.height * ratio))),
+            (1400, max(1, int(image.height * ratio))),
             Image.Resampling.LANCZOS,
         )
     elif image.width > max_width:
@@ -220,11 +221,49 @@ def _png_from_image(image: Image.Image, max_width: int = 1920) -> bytes:
         )
 
     image = ImageOps.autocontrast(image, cutoff=1)
-    image = ImageEnhance.Contrast(image).enhance(1.25)
+    image = ImageEnhance.Contrast(image).enhance(1.35)
+    image = ImageEnhance.Sharpness(image).enhance(1.2)
 
     buf = BytesIO()
     image.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def _crop_results_rois(image: Image.Image) -> list[tuple[str, Image.Image]]:
+    """
+    Focus OCR on the post-battle rewards panel, not the whole HUD.
+
+    WT results: left/center table with Без преміума / Всього; bottom bar has FPS/CPU
+    noise that confuses Tesseract when the full window is scanned.
+    """
+    width, height = image.size
+    if width < 100 or height < 100:
+        return [("full", image)]
+
+    rois: list[tuple[str, Image.Image]] = []
+    # Main results card — drop top chrome and bottom status strip.
+    primary = image.crop(
+        (
+            int(width * 0.03),
+            int(height * 0.07),
+            int(width * 0.78),
+            int(height * 0.86),
+        )
+    )
+    rois.append(("panel", primary))
+
+    # Tighter band around without-premium / total RP·SL columns.
+    band = image.crop(
+        (
+            int(width * 0.06),
+            int(height * 0.26),
+            int(width * 0.70),
+            int(height * 0.70),
+        )
+    )
+    if band.width >= 200 and band.height >= 120:
+        rois.append(("totals", band))
+    return rois
 
 
 def grab_region_png(
@@ -240,7 +279,29 @@ def grab_region_png(
     with mss.MSS() as sct:
         shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
         image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    return _png_from_image(image, max_width=max_width)
+    # Prefer the rewards panel crop for a single-PNG dump / primary OCR frame.
+    rois = _crop_results_rois(image)
+    return _png_from_image(rois[0][1], max_width=max_width)
+
+
+def grab_region_png_variants(
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    *,
+    max_width: int = 1920,
+) -> list[tuple[str, bytes]]:
+    """Return [(roi_tag, png_bytes), ...] for multi-crop OCR."""
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    with mss.MSS() as sct:
+        shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
+        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    out: list[tuple[str, bytes]] = []
+    for tag, crop in _crop_results_rois(image):
+        out.append((tag, _png_from_image(crop, max_width=max_width)))
+    return out
 
 
 def grab_war_thunder_png(max_width: int = 1920) -> bytes | None:
@@ -262,6 +323,26 @@ def grab_war_thunder_png(max_width: int = 1920) -> bytes | None:
         return grab_region_png(left, top, right, bottom, max_width=max_width)
     except Exception as exc:  # noqa: BLE001
         log.debug("WT window grab failed: %s", exc)
+        return None
+
+
+def grab_war_thunder_png_variants(max_width: int = 1920) -> list[tuple[str, bytes]] | None:
+    hwnd = find_war_thunder_hwnd()
+    if hwnd is None:
+        return None
+    bounds = _window_rect(hwnd)
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
+    try:
+        user32.ShowWindow(wintypes.HWND(hwnd), 9)
+        user32.SetForegroundWindow(wintypes.HWND(hwnd))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return grab_region_png_variants(left, top, right, bottom, max_width=max_width)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("WT window multi-crop failed: %s", exc)
         return None
 
 
@@ -287,17 +368,28 @@ def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
             int(height * 0.97),
         )
     )
-    return _png_from_image(image, max_width=max_width)
+    rois = _crop_results_rois(image)
+    return _png_from_image(rois[0][1], max_width=max_width)
 
 
 def grab_for_ocr_png(max_width: int = 1920) -> bytes:
     """Prefer the War Thunder window; fall back to the primary monitor."""
     wt = grab_war_thunder_png(max_width=max_width)
     if wt is not None:
-        log.info("OCR capture: War Thunder window")
+        log.info("OCR capture: War Thunder window (results panel)")
         return wt
     log.info("OCR capture: primary monitor (WT window not found)")
     return grab_primary_monitor_png(max_width=max_width)
+
+
+def grab_for_ocr_png_variants(max_width: int = 1920) -> list[tuple[str, bytes]]:
+    """Multi-ROI capture for better reward-digit OCR."""
+    wt = grab_war_thunder_png_variants(max_width=max_width)
+    if wt:
+        log.info("OCR capture: War Thunder window (%s ROI)", len(wt))
+        return wt
+    log.info("OCR capture: primary monitor single ROI (WT window not found)")
+    return [("panel", grab_primary_monitor_png(max_width=max_width))]
 
 
 def ocr_png_variants_windows(png: bytes) -> list[tuple[str, str]]:
@@ -325,12 +417,33 @@ def ocr_screen_variants(
     from .settings import load_settings
 
     settings = load_settings()
-    png = grab_for_ocr_png()
-    return ocr_png_variants(
-        png,
-        wt_ui_language=wt_ui_language or settings.wt_ui_language or settings.language,
-        backend=backend or getattr(settings, "ocr_backend", "auto") or "auto",
-    )
+    lang = wt_ui_language or settings.wt_ui_language or settings.language
+    mode = backend or getattr(settings, "ocr_backend", "auto") or "auto"
+    variants: list[tuple[str, str]] = []
+    for roi_tag, png in grab_for_ocr_png_variants():
+        for eng_tag, text in ocr_png_variants(png, wt_ui_language=lang, backend=mode):
+            variants.append((f"{eng_tag}/{roi_tag}", text))
+    return variants
+
+
+def ocr_screen_capture(
+    *,
+    wt_ui_language: str | None = None,
+    backend: str | None = None,
+) -> tuple[bytes, list[tuple[str, str]]]:
+    """Return (primary_png, variants) so callers can dump the frame that was OCR'd."""
+    from .settings import load_settings
+
+    settings = load_settings()
+    lang = wt_ui_language or settings.wt_ui_language or settings.language
+    mode = backend or getattr(settings, "ocr_backend", "auto") or "auto"
+    crops = grab_for_ocr_png_variants()
+    primary = crops[0][1] if crops else grab_for_ocr_png()
+    variants: list[tuple[str, str]] = []
+    for roi_tag, png in crops:
+        for eng_tag, text in ocr_png_variants(png, wt_ui_language=lang, backend=mode):
+            variants.append((f"{eng_tag}/{roi_tag}", text))
+    return primary, variants
 
 
 def ocr_screen() -> str:

@@ -283,70 +283,220 @@ def remove_uninstall_entry() -> None:
         log.warning("remove_uninstall_entry failed: %s", exc)
 
 
-def ensure_firewall_rule(port: int, *, allow_elevate: bool = True) -> bool:
-    """
-    Ensure inbound TCP allow for Bridge.
+# Defender / SmartScreen often auto-adds Block rules for unsigned LockOnBridge.exe.
+# Those Block-all-TCP rules beat a port Allow and make the phone time out on :8112
+# while War Thunder :8111 still works.
+_BLOCK_RULE_NAMES = (
+    "lockonbridge.exe",
+    "LockOn Bridge - OCR companion for War Thunder",
+    "lockonbridge (1)",
+    "lockonbridge (2)",
+)
+_APP_ALLOW_NAME = "LockOn Bridge App Allow"
 
-    Returns True when the rule is present afterwards.
-    Silent netsh first; optional one-shot UAC elevation (normal user path).
-    """
-    name = f"LockOn Bridge {int(port)}"
-    if firewall_rule_present(port):
-        return True
 
-    # Remove stale same-name rules then add — all hidden.
-    _run_hidden(
+def _bridge_exe_for_firewall() -> Path | None:
+    for candidate in (installed_exe_path(), app_executable()):
+        try:
+            if candidate.is_file():
+                return candidate.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _purge_bridge_block_rules() -> None:
+    for name in _BLOCK_RULE_NAMES:
+        _run_hidden(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                f"name={name}",
+            ]
+        )
+
+
+def _firewall_has_block_on_bridge() -> bool:
+    for name in _BLOCK_RULE_NAMES:
+        result = _run_hidden(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                f"name={name}",
+            ]
+        )
+        out = ((result.stdout or "") + (result.stderr or "")).lower()
+        if result.returncode == 0 and "no rules match" not in out and "block" in out:
+            return True
+    return False
+
+
+def _app_allow_present() -> bool:
+    result = _run_hidden(
         [
             "netsh",
             "advfirewall",
             "firewall",
-            "delete",
+            "show",
             "rule",
-            f"name={name}",
+            f"name={_APP_ALLOW_NAME}",
         ]
     )
-    add_args = [
-        "advfirewall",
-        "firewall",
-        "add",
-        "rule",
-        f"name={name}",
-        "dir=in",
-        "action=allow",
-        "protocol=TCP",
-        f"localport={int(port)}",
-        "profile=any",
-    ]
-    result = _run_hidden(["netsh", *add_args])
-    if result.returncode == 0 and firewall_rule_present(port):
-        log.info("Firewall allow TCP %s (%s)", port, name)
+    out = (result.stdout or "") + (result.stderr or "")
+    return (
+        result.returncode == 0
+        and "No rules match" not in out
+        and _APP_ALLOW_NAME.lower() in out.lower()
+        and "Allow" in out
+    )
+
+
+def ensure_firewall_rule(port: int, *, allow_elevate: bool = True) -> bool:
+    """
+    Ensure the phone can reach Bridge on TCP ``port``.
+
+    Port Allow alone is not enough — Windows Defender often adds a Block rule on
+    LockOnBridge.exe that still drops inbound connections. We purge those Blocks
+    and add both a port Allow and a program Allow.
+    """
+    name = f"LockOn Bridge {int(port)}"
+    if (
+        firewall_rule_present(port)
+        and _app_allow_present()
+        and not _firewall_has_block_on_bridge()
+    ):
         return True
 
-    log.warning(
-        "netsh firewall add failed (rc=%s): %s",
-        result.returncode,
-        (result.stderr or result.stdout or "")[:300],
-    )
-    if not allow_elevate:
-        return firewall_rule_present(port)
+    exe = _bridge_exe_for_firewall()
+    exe_arg = str(exe) if exe is not None else ""
 
-    # Normal-user path: one Windows UAC prompt (Yes = allow phone to reach Bridge).
-    arg_line = " ".join(add_args)
+    def _apply_local() -> bool:
+        _purge_bridge_block_rules()
+        _run_hidden(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                f"name={name}",
+            ]
+        )
+        _run_hidden(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                f"name={_APP_ALLOW_NAME}",
+            ]
+        )
+        port_rc = _run_hidden(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                f"name={name}",
+                "dir=in",
+                "action=allow",
+                "protocol=TCP",
+                f"localport={int(port)}",
+                "profile=any",
+            ]
+        ).returncode
+        app_rc = 0
+        if exe_arg:
+            app_rc = _run_hidden(
+                [
+                    "netsh",
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    f"name={_APP_ALLOW_NAME}",
+                    "dir=in",
+                    "action=allow",
+                    f"program={exe_arg}",
+                    "enable=yes",
+                    "profile=any",
+                    "protocol=TCP",
+                ]
+            ).returncode
+        return (
+            port_rc == 0
+            and firewall_rule_present(port)
+            and (not exe_arg or _app_allow_present())
+            and not _firewall_has_block_on_bridge()
+        )
+
+    if _apply_local():
+        log.info("Firewall allow TCP %s + app (%s)", port, name)
+        return True
+
+    if not allow_elevate:
+        return (
+            firewall_rule_present(port)
+            and _app_allow_present()
+            and not _firewall_has_block_on_bridge()
+        )
+
+    # One UAC prompt: purge Blocks, add port + program Allow, soft Defender exclusion.
+    elevate_script = f"""
+$ErrorActionPreference = 'Continue'
+$names = @({", ".join(repr(n) for n in _BLOCK_RULE_NAMES)})
+foreach ($n in $names) {{
+  netsh advfirewall firewall delete rule name="$n" | Out-Null
+}}
+netsh advfirewall firewall delete rule name='{name}' | Out-Null
+netsh advfirewall firewall delete rule name='{_APP_ALLOW_NAME}' | Out-Null
+netsh advfirewall firewall add rule name='{name}' dir=in action=allow protocol=TCP localport={int(port)} profile=any | Out-Null
+"""
+    if exe_arg:
+        elevate_script += f"""
+netsh advfirewall firewall add rule name='{_APP_ALLOW_NAME}' dir=in action=allow program='{_q(exe_arg)}' enable=yes profile=any protocol=TCP | Out-Null
+try {{
+  Add-MpPreference -ExclusionPath '{_q(str(data_root()))}' -ErrorAction SilentlyContinue
+  Add-MpPreference -ExclusionProcess 'LockOnBridge.exe' -ErrorAction SilentlyContinue
+}} catch {{}}
+"""
+    elevate_script += "exit 0\n"
+
     elevated = _run_ps(
         f"""
-$p = Start-Process -FilePath netsh -ArgumentList '{_q(arg_line)}' `
-  -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+$tmp = Join-Path $env:TEMP ('lockon_fw_' + [guid]::NewGuid().ToString() + '.ps1')
+@'
+{elevate_script}
+'@ | Set-Content -Path $tmp -Encoding UTF8
+$p = Start-Process -FilePath powershell.exe -ArgumentList @(
+  '-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$tmp
+) -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+Remove-Item -Force $tmp -ErrorAction SilentlyContinue
 if ($null -eq $p) {{ exit 1 }}
 exit $p.ExitCode
 """
     )
-    ok = elevated.returncode == 0 and firewall_rule_present(port)
+    ok = (
+        elevated.returncode == 0
+        and firewall_rule_present(port)
+        and (not exe_arg or _app_allow_present())
+        and not _firewall_has_block_on_bridge()
+    )
     if ok:
-        log.info("Firewall allow TCP %s (%s) via elevation", port, name)
+        log.info("Firewall allow TCP %s + app via elevation", port)
     else:
         log.warning(
-            "Elevated firewall add failed (rc=%s) — phone may not receive OCR rewards",
+            "Elevated firewall fix failed (rc=%s) — phone may not reach Bridge :%s",
             elevated.returncode,
+            port,
         )
     return ok
 
@@ -379,6 +529,17 @@ def remove_firewall_rule(port: int = 8112) -> None:
             f"name={name}",
         ]
     )
+    _run_hidden(
+        [
+            "netsh",
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            f"name={_APP_ALLOW_NAME}",
+        ]
+    )
+    _purge_bridge_block_rules()
 
 
 def stop_other_bridge_processes() -> None:

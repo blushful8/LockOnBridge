@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from typing import Optional
 
-from .capture import ocr_screen_variants
+from .capture import ocr_screen_capture
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .phase import read_phase
 from .report_store import ReportStore
@@ -27,9 +27,10 @@ class RuntimeConfig:
     game_host: str = "127.0.0.1"
     game_port: int = 8111
     # Results UI often animates in after hangar flip — sample quickly while it is still open.
-    frames: int = 12
-    frame_gap: float = 0.9
-    capture_delay_sec: float = 0.8
+    frames: int = 14
+    frame_gap: float = 0.85
+    # Wait for the rewards tab (not just the K/D scoreboard) after hangar flip.
+    capture_delay_sec: float = 2.2
     # Hangar/battle phase poll — only while War Thunder is running.
     poll_sec: float = 1.5
 
@@ -132,7 +133,7 @@ class BridgeRuntime:
             if self._stop.is_set():
                 return
             try:
-                variants = ocr_screen_variants()
+                png, variants = ocr_screen_capture()
                 if not variants:
                     last_preview = "(empty OCR)"
                     log.info(
@@ -140,7 +141,7 @@ class BridgeRuntime:
                         index + 1,
                         cfg.frames,
                     )
-                    self._write_ocr_dump("")
+                    self._write_ocr_dump("", png=png)
                     self._stop.wait(cfg.frame_gap)
                     continue
 
@@ -158,7 +159,7 @@ class BridgeRuntime:
                             f"[{tag}]\n{text}\n"
                             f"=> RP={parsed.research_points} SL={parsed.silver_lions}"
                         )
-                self._write_ocr_dump("\n\n---OCR---\n\n".join(dump_parts))
+                self._write_ocr_dump("\n\n---OCR---\n\n".join(dump_parts), png=png)
 
                 if best is None:
                     last_preview = summarize_ocr_text(variants[0][1])
@@ -202,10 +203,12 @@ class BridgeRuntime:
             last_preview or "(none)",
         )
 
-    def _write_ocr_dump(self, text: str) -> None:
+    def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:
         try:
             path = log_dir() / "last_ocr.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text or "", encoding="utf-8")
+            if png:
+                (log_dir() / "last_capture.png").write_bytes(png)
         except OSError:
             pass

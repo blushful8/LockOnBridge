@@ -111,18 +111,38 @@ def download_tessdata(langs: list[str], *, timeout: int = 120) -> tuple[bool, st
 
 
 def ensure_core_tessdata() -> tuple[bool, str]:
-    """Ensure eng+ukr+rus at minimum when Tesseract is used."""
+    """
+    Ensure eng+ukr+rus live in LocalAppData tessdata.
+
+    When any local pack exists we pass ``--tessdata-dir`` exclusively, so system
+    eng next to tesseract.exe is invisible — download/copy eng into local too.
+    """
+    local = tessdata_dir()
+    have_local = set(list_local_tessdata())
     exe = find_tesseract_exe()
+    sys_dir: Path | None = None
     have_sys: set[str] = set()
     if exe is not None:
-        sys_dir = exe.parent / "tessdata"
-        if sys_dir.is_dir():
-            have_sys = {p.stem for p in sys_dir.glob("*.traineddata")}
-    need = [
-        c
-        for c in ("eng", "ukr", "rus")
-        if c not in set(list_local_tessdata()) and c not in have_sys
-    ]
+        candidate = exe.parent / "tessdata"
+        if candidate.is_dir():
+            sys_dir = candidate
+            have_sys = {p.stem for p in candidate.glob("*.traineddata")}
+
+    # Prefer copying from system install when available (faster, offline).
+    for code in ("eng", "ukr", "rus"):
+        if code in have_local:
+            continue
+        if sys_dir is not None and code in have_sys:
+            src = sys_dir / f"{code}.traineddata"
+            dest = local / f"{code}.traineddata"
+            try:
+                shutil.copy2(src, dest)
+                have_local.add(code)
+                log.info("Copied tessdata %s → %s", code, dest)
+            except OSError as exc:
+                log.warning("Could not copy tessdata %s: %s", code, exc)
+
+    need = [c for c in ("eng", "ukr", "rus") if c not in set(list_local_tessdata())]
     if not need:
         return True, "core tessdata present"
     return download_tessdata(need)
