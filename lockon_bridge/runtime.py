@@ -28,14 +28,19 @@ class RuntimeConfig:
     game_host: str = "127.0.0.1"
     game_port: int = 8111
     # Sample long enough for the RP/SL count-up animation to finish.
-    frames: int = 20
-    frame_gap: float = 0.75
-    # Wait for the rewards tab after hangar flip; count-up often needs a few more seconds.
-    capture_delay_sec: float = 4.0
+    frames: int = 24
+    # After the first burst, space frames a bit — settle still needs duplicates.
+    frame_gap: float = 0.7
+    # First N frames after hangar flip — capture densely so a quick results close is not missed.
+    early_frames: int = 10
+    early_frame_gap: float = 0.35
+    # Almost no wait: results often appear immediately; a long delay misses users who close fast.
+    # Count-up is handled by SettleTracker, not by sitting idle before the first screenshot.
+    capture_delay_sec: float = 0.35
     # Consecutive near-identical OCR pairs required before publish (never publish frame 1 alone).
     settle_stable_frames: int = 2
     # Hangar/battle phase poll — only while War Thunder is running.
-    poll_sec: float = 1.5
+    poll_sec: float = 1.0
 
 
 class BridgeRuntime:
@@ -125,10 +130,13 @@ class BridgeRuntime:
     def _capture_burst(self) -> None:
         cfg = self.config
         log.info(
-            "battle ended — waiting %.1fs then capturing up to %s frame(s) "
-            "(publish only after %s stable reads)",
+            "battle ended — waiting %.2fs then capturing up to %s frame(s) "
+            "(early gap %.2fs × %s, then %.2fs; publish after %s stable reads)",
             cfg.capture_delay_sec,
             cfg.frames,
+            cfg.early_frame_gap,
+            cfg.early_frames,
+            cfg.frame_gap,
             cfg.settle_stable_frames,
         )
         if cfg.capture_delay_sec > 0:
@@ -142,6 +150,7 @@ class BridgeRuntime:
         for index in range(cfg.frames):
             if self._stop.is_set():
                 return
+            gap = cfg.early_frame_gap if index < cfg.early_frames else cfg.frame_gap
             try:
                 png, variants = ocr_screen_capture()
                 if not variants:
@@ -152,7 +161,7 @@ class BridgeRuntime:
                         cfg.frames,
                     )
                     self._write_ocr_dump("", png=png)
-                    self._stop.wait(cfg.frame_gap)
+                    self._stop.wait(gap)
                     continue
 
                 candidates = [
@@ -228,7 +237,7 @@ class BridgeRuntime:
                             return
             except Exception as exc:  # noqa: BLE001
                 log.warning("frame %s/%s failed: %s", index + 1, cfg.frames, exc)
-            self._stop.wait(cfg.frame_gap)
+            self._stop.wait(gap)
 
         fallback = tracker.finalize()
         if fallback is not None and fallback.confidence >= _MIN_CONFIDENT_REPORT:
