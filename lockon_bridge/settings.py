@@ -24,6 +24,8 @@ class BridgeSettings:
     ocr_backend: str = "auto"
     # User already answered the OCR pack setup prompt.
     ocr_setup_done: bool = False
+    # Phone preference: True → OCR the with-premium column (what a premium account banks).
+    has_premium_account: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "BridgeSettings":
@@ -53,6 +55,7 @@ class BridgeSettings:
             wt_ui_language=wt_ui or "uk",
             ocr_backend=backend,
             ocr_setup_done=bool(raw.get("ocr_setup_done", False)),
+            has_premium_account=bool(raw.get("has_premium_account", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:

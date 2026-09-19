@@ -411,67 +411,107 @@ def _pair_after_without_label(amounts: list[int]) -> tuple[int | None, int | Non
     return None, None
 
 
-def _pair_from_premium_columns(text: str) -> tuple[int | None, int | None]:
+def _with_pair_from_premium_amounts(amounts: list[int]) -> tuple[int | None, int | None]:
     """
-    Prefer *without premium* RP/SL (earned without account boost).
+    Resolve *with premium* (RP, SL) — the larger of each RP/SL pair in the comparison table.
+    """
+    amounts = _sanitize_premium_amounts(amounts)
+    if len(amounts) >= 4:
+        a, b, c, d = amounts[0], amounts[1], amounts[2], amounts[3]
+        if max(a, b) < min(c, d):
+            pair = max(a, b), max(c, d)
+            if _plausible_reward_pair(*pair):
+                return pair
+        # With-row first.
+        pair = a, b
+        if _plausible_reward_pair(*pair) and max(a, b) >= max(c, d):
+            return pair
+        pair = c, d
+        if _plausible_reward_pair(*pair):
+            return pair
+        amounts = amounts[:3]
+    if len(amounts) == 3:
+        a, b, c = amounts[0], amounts[1], amounts[2]
+        # with_rp, without_rp, with_sl-ish — prefer larger RP with largest SL.
+        if max(a, b) < c and _plausible_reward_pair(max(a, b), c):
+            return max(a, b), c
+        return None, None
+    if len(amounts) >= 2:
+        pair = amounts[0], amounts[1]
+        if _plausible_reward_pair(*pair):
+            return pair
+    if len(amounts) == 1:
+        return amounts[0], None
+    return None, None
 
-    Full-window OCR text is kept for future features; this helper only extracts that pair.
+
+def _pair_from_premium_columns(
+    text: str,
+    *,
+    prefer_with: bool = False,
+) -> tuple[int | None, int | None]:
+    """
+    Extract RP/SL from the with/without premium comparison table.
+
+    [prefer_with]=False → without-premium column (default, non-premium accounts).
+    [prefer_with]=True → with-premium column (what a premium account actually banks).
     """
     flat = re.sub(r"\s+", " ", text)
+    pick = _with_pair_from_premium_amounts if prefer_with else _without_pair_from_premium_amounts
 
     without = WITHOUT_PREMIUM.search(flat)
-    if without:
+    if without and not prefer_with:
         tail = flat[without.end() :]
         next_with = WITH_PREMIUM.search(tail)
         chunk = tail[: next_with.start()] if next_with else tail[:160]
         amounts = _amounts_in(chunk)
         if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
             amounts = amounts[1:]
-        if len(amounts) < 2:
-            with_before = WITH_PREMIUM.search(flat[: without.start() + 1])
-            if with_before:
-                between = flat[with_before.end() : without.start()]
-                if len(_amounts_in(between)) == 0:
-                    amounts = _amounts_in(flat[without.end() : without.end() + 160])
-                    if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
-                        amounts = amounts[1:]
-        pair = _pair_after_without_label(amounts)
-        if pair[0] is not None and pair[1] is not None:
+        pair = _pair_after_without_label(amounts) if not prefer_with else pick(amounts)
+        if pair[0] is not None:
             return pair
 
     with_m = WITH_PREMIUM.search(flat)
-    if with_m:
+    if with_m and prefer_with:
+        tail = flat[with_m.end() :]
+        next_without = WITHOUT_PREMIUM.search(tail)
+        chunk = tail[: next_without.start()] if next_without else tail[:160]
+        amounts = _amounts_in(chunk)
+        if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
+            amounts = amounts[1:]
+        pair = pick(amounts)
+        if pair[0] is not None:
+            return pair
+
+    # Truncated second header «npeMiYMa» after with-premium (classic without-premium OCR).
+    if with_m and not prefer_with:
         after_with = flat[with_m.end() :]
-        # Second header «npeMiYMa» (truncated without-premium) → amounts after it.
         bare = _BARE_PREMIUM_WORD.search(after_with)
         if bare:
             amounts = _amounts_in(after_with[bare.end() : bare.end() + 100])
             if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
                 amounts = amounts[1:]
-            if len(amounts) >= 2:
+            if len(amounts) >= 2 and _plausible_reward_pair(amounts[0], amounts[1]):
                 return amounts[0], amounts[1]
-        # Four-cell block only — never the first two cells (those are with-premium).
-        amounts = _amounts_in(after_with[:200])
+
+    # Fallback: scan after either header / bare four-cell block.
+    for label in (WITH_PREMIUM, WITHOUT_PREMIUM):
+        match = label.search(flat)
+        if not match:
+            continue
+        amounts = _amounts_in(flat[match.end() : match.end() + 200])
         if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
             amounts = amounts[1:]
-        if len(amounts) >= 4:
-            pair = _without_pair_from_premium_amounts(amounts)
-            if pair[0] is not None and pair[1] is not None:
-                return pair
-        loose = re.search(
-            r"(?:5\s*[bв]|be[zs3]|без)\s*npe?\w*.{0,12}?"
-            r"((?:\d{1,3}(?:[\s.,'\u00A0]\d{3})+|\d{3,}))"
-            r".{0,12}?"
-            r"((?:\d{1,3}(?:[\s.,'\u00A0]\d{3})+|\d{3,}))",
-            flat,
-            re.IGNORECASE,
-        )
-        if loose:
-            rp = _to_int(loose.group(1))
-            sl = _to_int(loose.group(2))
-            if rp is not None and sl is not None and rp >= _MIN_REWARD and sl >= _MIN_REWARD:
-                return rp, sl
+        pair = pick(amounts)
+        if pair[0] is not None:
+            return pair
 
+    # Four-cell block only.
+    amounts = _amounts_in(flat)
+    if len(amounts) >= 4:
+        pair = pick(amounts[:4])
+        if pair[0] is not None:
+            return pair
     return None, None
 
 
@@ -517,36 +557,56 @@ def _research_from_total_line(text: str) -> int | None:
     return after[0] if after else None
 
 
-def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
+def parse_rewards_from_ocr_text(
+    text: str,
+    *,
+    prefer_premium_rewards: bool | None = None,
+) -> BattleReport | None:
     """
-    Map full-window OCR text to without-premium RP/SL using the canonical priority
-    documented in the module docstring.
+    Map OCR text to post-battle RP/SL.
+
+    [prefer_premium_rewards]:
+      True  → with-premium column (premium account earnings)
+      False → without-premium column / «Всього»
+      None  → read Bridge settings.has_premium_account
     """
     if looks_like_desktop_noise(text):
         return None
+
+    if prefer_premium_rewards is None:
+        try:
+            from .settings import load_settings
+
+            prefer_premium_rewards = bool(load_settings().has_premium_account)
+        except Exception:  # noqa: BLE001
+            prefer_premium_rewards = False
 
     cleaned = _normalize_results_text(text)
     rp = sl = None
     premium_hit = False
     reward_hit = False
 
-    # --- 1. Premium comparison table (without column) ---
+    # --- 1. Premium comparison table ---
     if WITHOUT_PREMIUM.search(cleaned) or WITH_PREMIUM.search(cleaned):
-        prem_rp, prem_sl = _pair_from_premium_columns(cleaned)
+        prem_rp, prem_sl = _pair_from_premium_columns(
+            cleaned,
+            prefer_with=prefer_premium_rewards,
+        )
         if _plausible_reward_pair(prem_rp, prem_sl):
             premium_hit = True
             rp, sl = prem_rp, prem_sl
 
-    # --- 2. «Всього» / Total (authoritative without-premium when confident) ---
+    # --- 2. «Всього» / Total — authoritative for *without* premium; skip override when
+    # preferring with-premium so we do not replace 10892 with 7262.
     tot_rp, tot_sl = _pair_from_total_block(cleaned)
     if _plausible_reward_pair(tot_rp, tot_sl):
-        if not premium_hit:
+        if prefer_premium_rewards and premium_hit:
+            pass  # keep with-premium table pair
+        elif not premium_hit:
             rp, sl = tot_rp, tot_sl
             premium_hit = True
         elif rp is not None and sl is not None and (rp, sl) != (tot_rp, tot_sl):
             assert tot_rp is not None and tot_sl is not None
-            # If Всього SL is at least ~as large as the table's without-SL, trust the row.
-            # Otherwise only repair RP (mods/Всього) and keep table SL.
             if tot_sl >= int(sl * 0.95):
                 rp, sl = tot_rp, tot_sl
             elif abs(tot_rp - rp) >= 50 and _plausible_reward_pair(tot_rp, sl):
@@ -556,6 +616,7 @@ def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
         mods_rp = _mods_research_rp(cleaned)
         if (
             premium_hit
+            and not prefer_premium_rewards
             and mods_rp is not None
             and rp is not None
             and sl is not None
@@ -584,7 +645,10 @@ def parse_rewards_from_ocr_text(text: str) -> BattleReport | None:
         sl = sl if sl is not None else col_sl
 
     if not premium_hit and (rp is None or sl is None):
-        prem_rp, prem_sl = _pair_from_premium_columns(cleaned)
+        prem_rp, prem_sl = _pair_from_premium_columns(
+            cleaned,
+            prefer_with=prefer_premium_rewards,
+        )
         rp = rp if rp is not None else prem_rp
         sl = sl if sl is not None else prem_sl
 
