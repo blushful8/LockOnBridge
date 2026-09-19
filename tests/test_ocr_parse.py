@@ -90,8 +90,23 @@ def test_parses_bare_second_premium_header():
     assert report.silver_lions == 6127
 
 
-def test_rejects_rp1_junk():
-    assert parse_rewards_from_ocr_text("team board rp 1 noise 2.59.0.13") is None
+def test_rejects_scoreboard_kd_as_rewards():
+    """Real battle-end OCR: participation boost + team board ratios, no premium totals."""
+    text = (
+        "города за участь в Micii: +34% ' , +20%9 з 5 4 2 0.954 0.954 0.854 0.645 "
+        "1.27 1 1 2052 1891 1531 1451 1385 1299 1252 1083 — 1040 997 867 576 406 "
+        "ЧКИ:0, ЗОНИ:0 Очки: 3640, Зон и: О"
+    )
+    assert parse_rewards_from_ocr_text(text) is None
+    latin = (
+        "ropona 3a yuacTb B Micii: +34% T, +20%• 3 5 4 2 0.954 0.954 0.854 0.645 "
+        "1.27 1 1 2052 1891 1531 1451 1385 1299 1252 1083 1040 997"
+    )
+    assert parse_rewards_from_ocr_text(latin) is None
+
+
+def test_rejects_leading_zero_ratio_amounts():
+    assert parse_rewards_from_ocr_text("Haropona 3a yuac: +34% , +20% 0.954 0.954") is None
 
 
 def test_skips_desktop_noise():

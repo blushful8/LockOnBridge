@@ -188,10 +188,12 @@ REWARD_LINE_PHRASES: tuple[str, ...] = (
     r"награда\s*за\s*участ\w*",
     r"нагород\w*\s*за\s*перемог\w*",
     r"нагород\w*\s*за\s*участь",
-    r"haropon\w*\s*3a\s*nepeMor\w*",
-    r"haropon\w*\s*za\s*nepeMor\w*",
-    r"haropon\w*\s*sanepeM0ty",
-    r"haropon\w*\s*3a\s*yuac",
+    # Latinized Cyrillic OCR («нагорода» → Haropona / ropona)
+    r"(?:h?aropon\w*|ropona)\s*3a\s*nepeMor\w*",
+    r"(?:h?aropon\w*|ropona)\s*za\s*nepeMor\w*",
+    r"(?:h?aropon\w*|ropona)\s*sanepeM0ty",
+    r"(?:h?aropon\w*|ropona)\s*3a\s*yuac",
+    r"(?:h?aropon\w*|ropona)\s*za\s*yuac",
 )
 
 

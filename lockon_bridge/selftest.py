@@ -51,6 +51,12 @@ FIXTURE_JUNK_RP1 = (
     "sawe Micue B KOMaHAi: 14 some noise rp 1 sl 0 random 2.59.0.13"
 )
 
+# Live dump 2026-09-19: boost line + K/D board, real RP/SL never on this frame.
+FIXTURE_SCOREBOARD_KD = (
+    "ropona 3a yuacTb B Micii: +34% T, +20%• 3 5 4 2 0.954 0.954 0.854 0.645 "
+    "1.27 1 1 2052 1891 1531 1451 1385 1299 1252 1083 1040 997"
+)
+
 
 @dataclass
 class CaseResult:
@@ -101,6 +107,7 @@ def run_fixture_cases() -> list[CaseResult]:
         _expect("english_labels", FIXTURE_EN, rp=1250, sl=8400),
         _expect("desktop_noise", FIXTURE_DESKTOP, none=True),
         _expect("junk_rp1_rejected", FIXTURE_JUNK_RP1, none=True),
+        _expect("scoreboard_kd_rejected", FIXTURE_SCOREBOARD_KD, none=True),
     ]
     for lang, labels in LANGUAGE_FIXTURES.items():
         text = (

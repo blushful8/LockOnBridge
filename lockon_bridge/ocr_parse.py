@@ -44,9 +44,11 @@ _TOTAL = re.compile(
     r"gesamt|somme|totale|suma|合計|합계|总计|總計",
     re.IGNORECASE,
 )
+# Thousands separators (EU `1.088` / `1 088`) — never treat ratio OCR `0.954` as 954.
 _AMOUNT = re.compile(
-    r"([+\-]?\s*(?:\d{1,3}(?:[\s.,'\u00A0]\d{3})+|\d+))"
+    r"([+\-]?\s*(?:(?!0[.,])\d{1,3}(?:[\s.,'\u00A0]\d{3})+|\d+))"
 )
+_RATIO_AMOUNT = re.compile(r"^[+\-]?\s*0[.,]\d+$")
 _BARE_PREMIUM_WORD = re.compile(
     r"(?<![bezs3zс])\b(?:npe?[mn]i?[yуu0о]?m[aаeе]?|premium)\b",
     re.IGNORECASE,
@@ -89,7 +91,11 @@ def looks_like_desktop_noise(text: str) -> bool:
 
 
 def _to_int(raw: str) -> int | None:
-    digits = re.sub(r"[^\d]", "", raw)
+    stripped = raw.strip()
+    # K/D / efficiency ratios (0.954) must not become reward integers via "." thousands rules.
+    if _RATIO_AMOUNT.match(stripped):
+        return None
+    digits = re.sub(r"[^\d]", "", stripped)
     if not digits:
         return None
     try:
@@ -216,22 +222,29 @@ def _pair_from_reward_boost_line(text: str) -> tuple[int | None, int | None]:
     UA/RU results often show:
       Нагорода за перемогу: +100%, +47%   1 148   2 732
     OCR: Haropona 3a nepeMory: +100% , +47%' 1 148 2 732'
+
+    Requires a real reward-line label. Totals must sit immediately after the last
+    +N% — otherwise team-board columns after a participation boost become RP/SL.
     """
     flat = re.sub(r"\s+", " ", text)
-    start = 0
     reward = REWARD_LINE.search(flat)
-    if reward:
-        start = reward.start()
-    # Prefer the window after the last +N% near a reward / early in the debrief block.
-    window = flat[start : start + 220]
+    if not reward:
+        return None, None
+    window = flat[reward.start() : reward.start() + 220]
     percents = list(_PERCENT.finditer(window))
     if not percents:
         return None, None
     after = window[percents[-1].end() :]
-    amounts = _amounts_in(after)
-    if len(amounts) >= 2:
-        return amounts[0], amounts[1]
-    return None, None
+    # Real debrief puts RP/SL right after the boost percents (usually < ~36 chars).
+    near = after[:36]
+    amounts = _amounts_in(near)
+    if len(amounts) < 2:
+        return None, None
+    rp, sl = amounts[0], amounts[1]
+    # Identical consecutive board cells after a boost line are almost never real totals.
+    if rp == sl:
+        return None, None
+    return rp, sl
 
 
 def _research_from_total_line(text: str) -> int | None:

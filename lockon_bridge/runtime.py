@@ -16,6 +16,9 @@ from .paths import log_dir
 
 log = logging.getLogger("lockon_bridge")
 
+# Align with LockOn Android BridgeRepository default minConfidence.
+_MIN_CONFIDENT_REPORT = 0.7
+
 
 @dataclass
 class RuntimeConfig:
@@ -169,7 +172,17 @@ class BridgeRuntime:
                 else:
                     text, report = best
                     last_preview = summarize_ocr_text(text)
-                    if self.store.publish(report):
+                    if report.confidence < _MIN_CONFIDENT_REPORT:
+                        log.info(
+                            "frame %s/%s: RP=%s SL=%s conf=%.2f (below %.2f — keep capturing)",
+                            index + 1,
+                            cfg.frames,
+                            report.research_points,
+                            report.silver_lions,
+                            report.confidence,
+                            _MIN_CONFIDENT_REPORT,
+                        )
+                    elif self.store.publish(report):
                         log.info(
                             "frame %s/%s: RP=%s SL=%s conf=%.2f",
                             index + 1,
@@ -179,7 +192,8 @@ class BridgeRuntime:
                             report.confidence,
                         )
                         return
-                    log.info("frame %s/%s: duplicate, skip", index + 1, cfg.frames)
+                    else:
+                        log.info("frame %s/%s: duplicate, skip", index + 1, cfg.frames)
             except Exception as exc:  # noqa: BLE001
                 log.warning("frame %s/%s failed: %s", index + 1, cfg.frames, exc)
             self._stop.wait(cfg.frame_gap)
