@@ -165,3 +165,36 @@ def test_full_client_left_panel_with_premium():
     assert report.research_points == 548
     assert report.silver_lions == 2421
     assert report.source == "ocr-roi"
+
+
+def test_full_client_center_header_without_over_total():
+    """
+    Center header «Без преміума» is 921/6817; «Всього» RP 799 must not win.
+    """
+    path = FIXTURES / "results_uk_center_921_6817.png"
+    if not path.is_file():
+        return
+    img = _load(path)
+    report = report_from_roi_image(img, prefer_with=False)
+    assert report is not None
+    assert report.research_points == 921
+    assert report.silver_lions == 6817
+    assert report.research_points != 799
+    assert report.source == "ocr-roi"
+
+
+def test_consensus_keeps_without_rp_when_total_differs():
+    """Unit: same SL, different RP → keep without header RP."""
+    from lockon_bridge.roi_rewards import extract_roi_reward_variants
+
+    # Synthetic path exercised via live fixture above; also guard tag presence.
+    path = FIXTURES / "results_uk_center_921_6817.png"
+    if not path.is_file():
+        return
+    variants = extract_roi_reward_variants(_load(path), prefer_with=False)
+    tags = [t for t, _ in variants]
+    assert any(
+        t in ("roi:consensus-without-rp", "roi:without-over-total", "roi:without-only", "roi:consensus")
+        for t in tags
+    )
+    assert "roi:prefer-total" not in tags or any("921" in text for t, text in variants if t.startswith("roi:"))

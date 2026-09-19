@@ -6,10 +6,11 @@ Absolute pixels are never hard-coded. Landmark word boxes (WinRT) further absorb
 FullHD / 2K / 4K / UI-scale drift.
 
 Two layouts are covered:
-  • Full WT client (e.g. 1920×1264): premium comparison table sits on the **left**
-    rewards panel (~0.22–0.37 × 0.09–0.16).
-  • Chat-cropped / scaled panels: the same table sits nearer the centre
-    (~0.42–0.55 × 0.12–0.23) — keep mid-band ROIs for those fixtures.
+  • Full WT client — **left** rewards panel (~0.22–0.37 × 0.09–0.16), seen on
+    some air hangar result overlays.
+  • Full WT client — **center** header under «Мої результати»
+    (~0.51–0.64 × 0.09–0.16): З/Без преміумом sit above the kill list.
+  • Chat-cropped / scaled panels: mid-band ROIs (~0.42–0.55 × 0.12–0.23).
 """
 
 from __future__ import annotations
@@ -42,18 +43,24 @@ class NormRect:
 # Only letterbox extreme ultrawide (≥≈21:9). 16:9 / 16:10 / chat screenshots stay as-is.
 _ULTRAWIDE_ASPECT = 1.95
 
-# With-premium column — left rewards panel on a full client frame.
+# With-premium column — left panel + center header (full client).
 WITH_DIGIT_ROIS: tuple[NormRect, ...] = (
     NormRect(0.220, 0.095, 0.295, 0.160, "with-digits"),
     NormRect(0.215, 0.090, 0.300, 0.165, "with-digits-wide"),
     NormRect(0.225, 0.100, 0.290, 0.155, "with-digits-tight"),
+    # Center header under results tabs (Мої результати).
+    NormRect(0.515, 0.095, 0.575, 0.155, "with-digits-center"),
+    NormRect(0.510, 0.090, 0.580, 0.160, "with-digits-center-wide"),
 )
 
-# Without-premium column — left panel (full client) + mid-panel (chat crops).
+# Without-premium column — left / center (full client) + mid-panel (chat crops).
 WITHOUT_DIGIT_ROIS: tuple[NormRect, ...] = (
     NormRect(0.295, 0.095, 0.370, 0.160, "without-digits"),
     NormRect(0.290, 0.090, 0.380, 0.165, "without-digits-wide"),
     NormRect(0.300, 0.100, 0.365, 0.155, "without-digits-tight"),
+    # Center header «Без преміума» (right of З преміумом).
+    NormRect(0.580, 0.095, 0.640, 0.155, "without-digits-center"),
+    NormRect(0.575, 0.090, 0.645, 0.160, "without-digits-center-wide"),
     # Chat-cropped / older mid-panel calibration (results_uk_full_*).
     NormRect(0.440, 0.140, 0.510, 0.210, "without-digits-mid"),
     NormRect(0.430, 0.130, 0.520, 0.220, "without-digits-mid-wide"),
@@ -65,6 +72,7 @@ WITHOUT_DIGIT_ROIS: tuple[NormRect, ...] = (
 BOTH_DIGIT_ROIS: tuple[NormRect, ...] = (
     NormRect(0.220, 0.095, 0.370, 0.165, "both-digits"),
     NormRect(0.210, 0.085, 0.385, 0.175, "both-digits-wide"),
+    NormRect(0.500, 0.090, 0.645, 0.160, "both-digits-center"),
     NormRect(0.420, 0.120, 0.550, 0.230, "both-digits-mid"),
 )
 
@@ -129,12 +137,12 @@ def iter_reward_digit_rois(image: Image.Image) -> list[tuple[str, Image.Image]]:
     full = is_full_client_frame(image)
     rects: list[NormRect] = []
     if full:
+        # Left + center header columns; skip mid chat ROIs (they misread on full client).
         rects.extend(WITH_DIGIT_ROIS)
         rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" not in r.tag)
         rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" not in r.tag)
-    # Mid-panel without (chat crops; also a fallback band on full clients).
-    rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag)
-    if not full:
+    else:
+        rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag)
         rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" in r.tag)
     rects.extend(TOTAL_DIGIT_ROIS)
 

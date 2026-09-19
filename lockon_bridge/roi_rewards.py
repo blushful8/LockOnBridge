@@ -15,6 +15,20 @@ from .roi_layout import is_full_client_frame, iter_reward_digit_rois
 
 log = logging.getLogger("lockon_bridge.roi")
 
+
+def _column_pair_usable(rp: int, sl: int) -> bool:
+    """Reject OCR junk that passes the loose plausible check (e.g. RP==SL)."""
+    if not _plausible_reward_pair(rp, sl):
+        return False
+    if sl <= rp:
+        return False
+    # 7262 + 72629 (trailing OCR ghost on SL) is not a real reward pair.
+    trimmed_sl = _ocr_ghost_trim(sl)
+    if trimmed_sl is not None and abs(trimmed_sl - rp) <= max(2, rp // 50):
+        return False
+    ratio = sl / max(1, rp)
+    return 1.8 <= ratio <= 80.0
+
 _TOTAL_LABEL = re.compile(
     r"всього|всего|vsego|bcboro|bcsoro|total|итого|gesamt",
     re.IGNORECASE,
@@ -487,15 +501,19 @@ def pairs_from_landmarks(image: Image.Image) -> list[tuple[str, str]]:
     if full:
         band_pair("roi:band-with", "З преміумом", x0=0.20, x1=0.295, y0=0.08, y1=0.18)
         band_pair("roi:band-without", "Без преміума", x0=0.290, x1=0.380, y0=0.08, y1=0.18)
-        left_panel = [
-            (v, x, y) for v, x, y in amount_words if 0.08 <= y <= 0.18 and 0.20 <= x <= 0.38
-        ]
-        if len(left_panel) >= 4:
-            left_panel.sort(key=lambda item: (item[2], item[1]))
-            xs = sorted(item[1] for item in left_panel)
+        band_pair("roi:band-with", "З преміумом", x0=0.50, x1=0.575, y0=0.08, y1=0.17)
+        band_pair("roi:band-without", "Без преміума", x0=0.575, x1=0.650, y0=0.08, y1=0.17)
+        for x0, x1 in ((0.20, 0.38), (0.50, 0.65)):
+            panel = [
+                (v, x, y) for v, x, y in amount_words if 0.08 <= y <= 0.18 and x0 <= x <= x1
+            ]
+            if len(panel) < 4:
+                continue
+            panel.sort(key=lambda item: (item[2], item[1]))
+            xs = sorted(item[1] for item in panel)
             mid_x = xs[len(xs) // 2]
-            with_vals = [v for v, x, _y in left_panel if x < mid_x]
-            without_vals = [v for v, x, _y in left_panel if x >= mid_x]
+            with_vals = [v for v, x, _y in panel if x < mid_x]
+            without_vals = [v for v, x, _y in panel if x >= mid_x]
             with_pair = pair_from_digit_text(" ".join(str(v) for v in with_vals[:4]))
             without_pair = pair_from_digit_text(" ".join(str(v) for v in without_vals[:4]))
             if with_pair:
@@ -603,13 +621,30 @@ def extract_roi_reward_variants(
     other = without_vote if prefer_with else with_vote
 
     if preferred and total and not prefer_with:
-        if preferred == total:
+        pref_ok = _column_pair_usable(*preferred)
+        tot_ok = _column_pair_usable(*total)
+        if preferred == total and pref_ok:
             rp, sl = preferred
             variants.insert(0, ("roi:consensus", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
-        elif preferred[0] == total[0]:
-            rp, sl = total
+        elif pref_ok and preferred[0] == total[0]:
+            # Same RP, trust total SL when usable (digit ROI often cleaner).
+            rp = preferred[0]
+            sl = total[1] if tot_ok else preferred[1]
             variants.insert(0, ("roi:consensus-total-sl", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
-        else:
+        elif pref_ok and tot_ok and preferred[1] == total[1]:
+            # Same SL, different RP: header «Без преміума» is battle RP;
+            # «Всього» RP is often free research — keep preferred.
+            rp, sl = preferred
+            variants.insert(
+                0,
+                ("roi:consensus-without-rp", f"Без преміума {rp} {sl}\nВсього {total[0]} {sl}"),
+            )
+        elif pref_ok:
+            # Usable without column always beats Всього when values disagree.
+            rp, sl = preferred
+            variants.insert(0, ("roi:without-over-total", f"Без преміума {rp} {sl}"))
+        elif tot_ok:
+            # Without-column OCR junk (chat crops) — fall back to Всього.
             rp, sl = total
             variants.insert(0, ("roi:prefer-total", f"Без преміума {rp} {sl}\nВсього {rp} {sl}"))
     elif preferred:
@@ -652,6 +687,7 @@ def report_from_roi_image(image: Image.Image, *, prefer_with: bool | None = None
             continue
         if tag.startswith("roi:consensus") or tag in (
             "roi:prefer-total",
+            "roi:without-over-total",
             "roi:total-only",
             "roi:without-only",
             "roi:with-only",
@@ -687,7 +723,7 @@ def report_from_roi_image(image: Image.Image, *, prefer_with: bool | None = None
                 report.confidence = max(report.confidence, 0.94)
             elif tag.startswith("roi:landmark") or tag.startswith("roi:band"):
                 report.confidence = max(report.confidence, 0.90)
-            elif tag in ("roi:with-only", "roi:without-only"):
+            elif tag in ("roi:with-only", "roi:without-only", "roi:without-over-total"):
                 report.confidence = max(report.confidence, 0.92)
             elif tag == "roi:prefer-total":
                 report.confidence = max(report.confidence, 0.88)
