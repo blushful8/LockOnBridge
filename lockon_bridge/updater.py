@@ -148,17 +148,28 @@ function Write-UpdLog([string]$msg) {{
   $line = ('{{0:yyyy-MM-dd HH:mm:ss}} {{1}}' -f (Get-Date), $msg)
   Add-Content -LiteralPath $log -Value $line -Encoding UTF8
 }}
+function Stop-LockOnBridgeProcesses([int]$exceptPid) {{
+  Get-Process -Name 'LockOnBridge' -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.Id -ne $exceptPid }} |
+    ForEach-Object {{
+      Write-UpdLog ("stop pid " + $_.Id)
+      Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }}
+}}
 try {{
   Write-UpdLog 'update helper start'
   $pidToWait = {pid}
   $zip = '{src}'
   $installDir = '{install}'
   $launch = '{launch_q}'
-  for ($i = 0; $i -lt 90; $i++) {{
+  for ($i = 0; $i -lt 120; $i++) {{
     if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
     Start-Sleep -Milliseconds 500
   }}
-  Start-Sleep -Milliseconds 1000
+  Start-Sleep -Milliseconds 1500
+  Stop-LockOnBridgeProcesses -exceptPid 0
+  Start-Sleep -Milliseconds 800
+
   Write-UpdLog ("extract " + $zip)
   $staging = Join-Path $env:TEMP ("lockon_bridge_upd_" + $pidToWait)
   if (Test-Path $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force }}
@@ -169,20 +180,54 @@ try {{
   if (-not $exe) {{ throw 'LockOnBridge.exe missing in update zip' }}
   $bundle = $exe.Directory.FullName
   Write-UpdLog ("bundle " + $bundle)
+
   $parent = Split-Path -Parent $installDir
   New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  $newDir = $installDir + '.new'
   $backup = $installDir + '.bak'
-  if (Test-Path $backup) {{ Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }}
-  if (Test-Path $installDir) {{
-    Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $backup) -Force
+  if (Test-Path -LiteralPath $newDir) {{
+    Remove-Item -LiteralPath $newDir -Recurse -Force -ErrorAction SilentlyContinue
   }}
-  Copy-Item -LiteralPath $bundle -Destination $installDir -Recurse -Force
-  if (-not (Test-Path $launch)) {{ throw ("launch missing after copy: " + $launch) }}
+  if (Test-Path -LiteralPath $backup) {{
+    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+  }}
+  Copy-Item -LiteralPath $bundle -Destination $newDir -Recurse -Force
+
+  if (Test-Path -LiteralPath $installDir) {{
+    $renamed = $false
+    for ($i = 0; $i -lt 50; $i++) {{
+      try {{
+        Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $backup) -ErrorAction Stop
+        $renamed = $true
+        Write-UpdLog ("renamed install -> bak on try " + ($i + 1))
+        break
+      }} catch {{
+        Write-UpdLog ("rename retry " + ($i + 1) + ": " + $_.Exception.Message)
+        Start-Sleep -Milliseconds 600
+        Stop-LockOnBridgeProcesses -exceptPid 0
+      }}
+    }}
+    if (-not $renamed) {{
+      Write-UpdLog 'fallback robocopy in-place'
+      $rc = 0
+      & robocopy $newDir $installDir /E /IS /IT /R:25 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+      $rc = $LASTEXITCODE
+      if ($rc -ge 8) {{ throw ("robocopy failed with code " + $rc) }}
+      Remove-Item -LiteralPath $newDir -Recurse -Force -ErrorAction SilentlyContinue
+    }} else {{
+      Rename-Item -LiteralPath $newDir -NewName (Split-Path -Leaf $installDir) -ErrorAction Stop
+    }}
+  }} else {{
+    Rename-Item -LiteralPath $newDir -NewName (Split-Path -Leaf $installDir) -ErrorAction Stop
+  }}
+
+  if (-not (Test-Path -LiteralPath $launch)) {{ throw ("launch missing after copy: " + $launch) }}
   Write-UpdLog ("launch " + $launch)
   Start-Process -FilePath $launch -WorkingDirectory $installDir
   Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $newDir -Recurse -Force -ErrorAction SilentlyContinue
   Write-UpdLog 'update helper done'
 }} catch {{
   Write-UpdLog ("FAIL: " + $_.Exception.Message)
@@ -212,13 +257,26 @@ try {{
   $srcExe = '{src}'
   $launch = '{launch_q}'
   $installDir = '{install}'
-  for ($i = 0; $i -lt 90; $i++) {{
+  for ($i = 0; $i -lt 120; $i++) {{
     if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
     Start-Sleep -Milliseconds 500
   }}
-  Start-Sleep -Milliseconds 1000
+  Start-Sleep -Milliseconds 1500
+  Get-Process -Name 'LockOnBridge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 800
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-  Copy-Item -LiteralPath $srcExe -Destination (Join-Path $installDir 'LockOnBridge.exe') -Force
+  $copied = $false
+  for ($i = 0; $i -lt 40; $i++) {{
+    try {{
+      Copy-Item -LiteralPath $srcExe -Destination (Join-Path $installDir 'LockOnBridge.exe') -Force -ErrorAction Stop
+      $copied = $true
+      break
+    }} catch {{
+      Start-Sleep -Milliseconds 500
+      Get-Process -Name 'LockOnBridge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }}
+  }}
+  if (-not $copied) {{ throw 'could not overwrite LockOnBridge.exe' }}
   Start-Process -FilePath $launch -WorkingDirectory $installDir
   Remove-Item -LiteralPath $srcExe -Force -ErrorAction SilentlyContinue
   Write-UpdLog 'update helper done (exe)'
@@ -239,19 +297,27 @@ try {{
 
     tmp = Path(tempfile.gettempdir()) / f"lockon_bridge_update_{pid}.ps1"
     tmp.write_text(script, encoding="utf-8")
+    startupinfo = None
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
     subprocess.Popen(
         [
             "powershell.exe",
+            "-NoLogo",
             "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
+            "-NonInteractive",
             "-WindowStyle",
             "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
             "-File",
             str(tmp),
         ],
         close_fds=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        startupinfo=startupinfo,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
     )
     log.info("update helper scheduled for pid %s → %s (log %s)", pid, install_dir, log_dir / "update.log")
 

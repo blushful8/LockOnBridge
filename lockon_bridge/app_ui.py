@@ -41,6 +41,12 @@ ACCENT_DIM = "#8a3f1a"
 OK = "#3d9a6a"
 OFF = "#6b7280"
 
+# Keep enough room for toggle, languages, port, primary actions and More menu.
+MIN_WINDOW_W = 500
+MIN_WINDOW_H = 640
+DEFAULT_WINDOW_W = 520
+DEFAULT_WINDOW_H = 680
+
 
 def _asset_path(name: str) -> Path | None:
     candidates = [
@@ -85,12 +91,11 @@ class BridgeApp:
         sync_tk_scaling(self.root)
         self.root.title(f"{PRODUCT_NAME} {__version__}")
         self.root.configure(bg=BG)
-        self.root.minsize(420, 460)
-        self.root.geometry("460x520")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self._apply_window_icon()
-        # Re-sync after the HWND exists (per-monitor DPI).
-        self.root.after(50, lambda: sync_tk_scaling(self.root))
+        self._apply_window_size(initial=True)
+        # Re-sync after the HWND exists (per-monitor DPI), then re-clamp size.
+        self.root.after(50, self._after_dpi_ready)
         self._ocr_busy = False
 
         # First open of the .exe installs a stable LocalAppData copy + Desktop shortcut.
@@ -128,6 +133,28 @@ class BridgeApp:
     def run(self) -> int:
         self.root.mainloop()
         return 0
+
+    def _after_dpi_ready(self) -> None:
+        sync_tk_scaling(self.root)
+        self._apply_window_size(initial=False)
+
+    def _apply_window_size(self, *, initial: bool) -> None:
+        """Enforce a usable minimum so controls are never clipped."""
+        self.root.minsize(MIN_WINDOW_W, MIN_WINDOW_H)
+        self.root.update_idletasks()
+        if initial:
+            self.root.geometry(f"{DEFAULT_WINDOW_W}x{DEFAULT_WINDOW_H}")
+            return
+        try:
+            cur_w = int(self.root.winfo_width())
+            cur_h = int(self.root.winfo_height())
+        except tk.TclError:
+            return
+        # Unmapped / bogus sizes come back as 1×1.
+        if cur_w < MIN_WINDOW_W or cur_h < MIN_WINDOW_H:
+            self.root.geometry(
+                f"{max(cur_w, MIN_WINDOW_W)}x{max(cur_h, MIN_WINDOW_H)}"
+            )
 
     def _apply_window_icon(self) -> None:
         ico = _asset_path("lockon_bridge.ico")
@@ -191,7 +218,7 @@ class BridgeApp:
             font=("Segoe UI", 10),
             fg=MUTED,
             bg=PANEL,
-            wraplength=380,
+            wraplength=MIN_WINDOW_W - 80,
             justify="left",
         )
         self.status_label.pack(anchor="w", padx=16, pady=(0, 6))
@@ -357,6 +384,7 @@ class BridgeApp:
         except tk.TclError:
             pass
 
+        self._apply_window_size(initial=False)
         self._refresh_badge_for_status(self._last_agent_status)
 
     def _btn(self, parent: tk.Widget, text: str, command, *, danger: bool = False) -> tk.Button:
@@ -409,6 +437,7 @@ class BridgeApp:
             self._ensure_tray()
         else:
             self.status_var.set(self.strings.status_disabled)
+        self._apply_window_size(initial=False)
         self._refresh_badge_for_status(self._last_agent_status)
 
     def _on_wt_language_chosen(self, _event=None) -> None:
@@ -867,13 +896,22 @@ class BridgeApp:
                 if release.download_url.lower().endswith(".exe"):
                     dest = data_root() / "LockOnBridge.exe.new"
                 download_release_exe(release.download_url, dest)
-                apply_update_and_restart(dest)
 
                 def finish() -> None:
-                    messagebox.showinfo(PRODUCT_NAME, t.update_restarting)
+                    # Stop agent/tray first so files under app\ unlock before replace.
                     self._closing = True
-                    self.agent.stop(join=True)
+                    try:
+                        self.agent.stop(join=True)
+                    except Exception:  # noqa: BLE001
+                        pass
                     self._destroy_tray()
+                    try:
+                        apply_update_and_restart(dest)
+                    except Exception as exc:  # noqa: BLE001
+                        self._closing = False
+                        self._update_failed(str(exc))
+                        return
+                    messagebox.showinfo(PRODUCT_NAME, t.update_restarting)
                     try:
                         self.root.destroy()
                     except tk.TclError:
