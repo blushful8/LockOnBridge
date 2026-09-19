@@ -39,14 +39,24 @@ That is the full path for most players. On first enable, Bridge may ask to insta
 
 ### Windows SmartScreen / Defender
 
-The build is **not code-signed** (no paid certificate).
+The build is **not code-signed** (no paid certificate). Unsigned PyInstaller apps are often
+misclassified by Defender **machine-learning** heuristics — typically:
 
-**SmartScreen (“Windows protected your PC”):**
+- `Trojan:Win32/Sabsik.TE.A!ml` (ZIP / onedir exe)
+- `Trojan:Win32/Wacatac.B!ml` (older one-file `.exe` builds)
 
-1. Click **More info**.
-2. Click **Run anyway**.
+This is a **false positive**, not real malware. Releases are built as **onedir ZIP, no UPX**, from this repo only.
 
-**Defender “virus” on download/extract:** this is a known false positive for many unsigned Python tools. Prefer the ZIP from the official Releases page. You can report it as a false positive to Microsoft, or allow the extracted folder. Code signing is the only lasting fix and requires a paid certificate.
+**If Defender deletes the ZIP on download:**
+
+1. Open **Windows Security → Virus & threat protection → Protection history**.
+2. Find the LockOn Bridge item → **Actions → Allow / Restore**.
+3. Optionally add an exclusion for `%LOCALAPPDATA%\LockOnBridge` (and your Downloads folder while installing).
+4. Extract the ZIP, run `LockOnBridge.exe`, turn **Bridge enabled** ON (copies into LocalAppData).
+
+**SmartScreen (“Windows protected your PC”):** More info → **Run anyway**.
+
+**Report to Microsoft** (helps everyone): [Submit a file](https://www.microsoft.com/en-us/wdsi/filesubmission) as a false positive, with the release SHA256 from the release notes. The lasting fix is a paid Authenticode certificate.
 
 ### Control window
 
@@ -91,7 +101,7 @@ Local LAN only. No cloud. No account. OCR runs only for a few frames right after
 
 **Встановлення:** ZIP з Releases → `LockOnBridge.exe` → мова WT + **Bridge enabled** → у LockOn увімкніть **Use LockOn Bridge**. OCR-пакети Bridge пропонує сам при першому увімкненні.
 
-**SmartScreen / Defender:** немає платного підпису коду. SmartScreen: **Додаткові відомості** → **Виконати**. Якщо Defender позначає файл як вірус — типова хибна тривога для непідписаних Python-програм; беріть лише офіційний ZIP. Повний фікс — лише платний code signing.
+**SmartScreen / Defender:** немає платного підпису. Defender часто хибно позначає ZIP як `Sabsik.TE.A!ml` / `Wacatac.B!ml` (ML). Відновіть у **Захист від вірусів → Журнал захисту → Дозволити**, або виключіть `%LOCALAPPDATA%\LockOnBridge`. Беріть лише офіційний ZIP з Releases. Повний фікс — платний code signing.
 
 **Вимкнути без навантаження:** вимкніть **Bridge enabled** — автозапуск знімається, фоновий процес не працює.
 
