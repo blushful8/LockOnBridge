@@ -177,7 +177,7 @@ EN = Strings(
         "Try again on THIS computer: More ▾ → Allow phone access → Yes on the Windows window.\n"
         "Nothing will appear on the phone."
     ),
-    status_idle="Idle — checks every {seconds:.0f}s",
+    status_idle="Idle — checks every {seconds:.0f}s (WT closed)",
     status_active="War Thunder — Bridge active",
     status_stopping="Stopping…",
     status_port_saved="Port saved ({port})",
@@ -338,7 +338,7 @@ UK = Strings(
         "→ «Так» у вікні Windows.\n"
         "На телефоні запиту не буде."
     ),
-    status_idle="Очікування — перевірка кожні {seconds:.0f} с",
+    status_idle="Очікування — перевірка кожні {seconds:.0f} с (WT вимкнено)",
     status_active="War Thunder — Bridge активний",
     status_stopping="Зупинка…",
     status_port_saved="Порт збережено ({port})",

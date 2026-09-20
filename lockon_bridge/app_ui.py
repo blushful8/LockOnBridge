@@ -801,7 +801,13 @@ class BridgeApp:
             self._refresh_phone_access_ui()
         except Exception:  # noqa: BLE001
             pass
-        self.root.after(5_000, self._poll_phone_access_loop)
+        # Slow when the control window is hidden — no need for a chatty UI loop.
+        try:
+            hidden = bool(self.root.state() in ("withdrawn", "iconic"))
+        except Exception:  # noqa: BLE001
+            hidden = False
+        delay = 30_000 if hidden else 10_000
+        self.root.after(delay, self._poll_phone_access_loop)
 
     def _ensure_phone_access(self, *, interactive: bool, force_prompt: bool = False) -> None:
         port = self._read_port()

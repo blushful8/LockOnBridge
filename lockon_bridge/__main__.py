@@ -93,14 +93,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--poll",
         type=float,
-        default=1.5,
-        help="Phase poll interval while War Thunder is running",
+        default=2.0,
+        help="Hangar phase poll interval while War Thunder is running",
     )
     parser.add_argument(
         "--idle-poll",
         type=float,
         default=None,
-        help="How often to check for aces.exe while idle",
+        help="How often to check for aces.exe while idle (default 120s)",
     )
     parser.add_argument(
         "--session",
@@ -242,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         frames=args.frames,
         frame_gap=args.frame_gap,
         poll_sec=args.poll,
+        poll_hangar_sec=args.poll,
+        poll_battle_sec=max(args.poll, 2.5),
     )
     if args.session:
         return run_session(config)

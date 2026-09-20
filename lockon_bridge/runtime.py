@@ -41,12 +41,18 @@ class RuntimeConfig:
     settle_stable_frames: int = 2
     # Also require lean ROI pixels to match this many times (count-up animation gate).
     settle_frame_stable: int = 2
-    # Hangar/battle phase poll — only while War Thunder is running.
-    poll_sec: float = 1.0
+    # Phase poll while in hangar (need to notice battle start; still light HTTP only).
+    poll_hangar_sec: float = 2.0
+    # Phase poll during battle — slower so we barely touch the game while fighting.
+    poll_battle_sec: float = 3.0
+    # When game HTTP is unreachable, back off harder.
+    poll_offline_sec: float = 5.0
+    # Legacy alias used by CLI ``--poll``.
+    poll_sec: float = 2.0
 
 
 class BridgeRuntime:
-    """HTTP + phase watcher that can be started/stopped with the game process."""
+    """HTTP (always) + optional phase watcher (only while War Thunder runs)."""
 
     def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
@@ -55,16 +61,25 @@ class BridgeRuntime:
         self._http_thread: Optional[threading.Thread] = None
         self._watch_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._watch_stop = threading.Event()
 
     @property
     def running(self) -> bool:
         return self._server is not None
 
+    @property
+    def watching(self) -> bool:
+        return self._watch_thread is not None and self._watch_thread.is_alive()
+
     def start(self) -> None:
+        """Start HTTP + phase watch (CLI / full session)."""
+        self.start_http()
+        self.start_watch()
+
+    def start_http(self) -> None:
         if self.running:
             return
         self._stop.clear()
-        # Keep existing store (and disk-backed last report) across WT sessions.
         self._server = serve(self.store, host=self.config.bind, port=self.config.port)
         self._http_thread = threading.Thread(
             target=self._server.serve_forever,
@@ -72,6 +87,20 @@ class BridgeRuntime:
             daemon=True,
         )
         self._http_thread.start()
+        log.info(
+            "Bridge HTTP on port %s (game %s:%s)",
+            self.config.port,
+            self.config.game_host,
+            self.config.game_port,
+        )
+
+    def start_watch(self) -> None:
+        """Begin hangar/battle phase polling (call only while WT is running)."""
+        if self.watching:
+            return
+        if not self.running:
+            self.start_http()
+        self._watch_stop.clear()
         self._watch_thread = threading.Thread(
             target=self._watch_loop,
             name="lockon-phase",
@@ -79,14 +108,22 @@ class BridgeRuntime:
         )
         self._watch_thread.start()
         log.info(
-            "Bridge active on port %s (game %s:%s)",
-            self.config.port,
-            self.config.game_host,
-            self.config.game_port,
+            "Phase watch started (hangar=%.1fs battle=%.1fs)",
+            self.config.poll_hangar_sec,
+            self.config.poll_battle_sec,
         )
+
+    def stop_watch(self) -> None:
+        """Stop phase polling; keep HTTP + last report for the phone."""
+        self._watch_stop.set()
+        thread = self._watch_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
+        self._watch_thread = None
 
     def stop(self) -> None:
         self._stop.set()
+        self.stop_watch()
         server = self._server
         self._server = None
         if server is not None:
@@ -101,33 +138,51 @@ class BridgeRuntime:
         if self._http_thread is not None:
             self._http_thread.join(timeout=3.0)
             self._http_thread = None
-        if self._watch_thread is not None:
-            self._watch_thread.join(timeout=3.0)
-            self._watch_thread = None
         # Do NOT clear self.store — phone may still poll after the game closes.
         log.info("Bridge HTTP stopped (last report kept)")
+
+    def _watch_wait(self, seconds: float) -> None:
+        """Sleep that wakes on either full stop or watch-only stop."""
+        end = time.monotonic() + max(0.05, seconds)
+        while time.monotonic() < end:
+            if self._stop.is_set() or self._watch_stop.is_set():
+                return
+            time.sleep(min(0.25, end - time.monotonic()))
 
     def _watch_loop(self) -> None:
         was_in_battle = False
         cfg = self.config
-        while not self._stop.is_set():
+        hangar = max(1.0, float(cfg.poll_hangar_sec or cfg.poll_sec or 2.0))
+        battle = max(1.5, float(cfg.poll_battle_sec or 3.0))
+        offline = max(battle, float(cfg.poll_offline_sec or 5.0))
+        log.debug(
+            "phase watch loop hangar=%.1fs battle=%.1fs offline=%.1fs",
+            hangar,
+            battle,
+            offline,
+        )
+        while not self._stop.is_set() and not self._watch_stop.is_set():
             try:
                 snapshot = read_phase(cfg.game_host, cfg.game_port)
             except Exception as exc:  # noqa: BLE001
                 log.debug("phase poll error: %s", exc)
-                self._stop.wait(cfg.poll_sec)
+                self._watch_wait(offline)
                 continue
             if snapshot is None:
-                self._stop.wait(cfg.poll_sec)
+                # Game HTTP not up yet / briefly unreachable — do not spam.
+                self._watch_wait(offline)
                 continue
             if snapshot.in_battle:
                 if not was_in_battle:
                     log.info("in battle")
                 was_in_battle = True
+                self._watch_wait(battle)
             elif was_in_battle:
                 was_in_battle = False
                 self._capture_burst()
-            self._stop.wait(cfg.poll_sec)
+                self._watch_wait(hangar)
+            else:
+                self._watch_wait(hangar)
 
     def _capture_burst(self) -> None:
         from .crashguard import breadcrumb

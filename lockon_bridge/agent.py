@@ -23,11 +23,18 @@ class AgentStatus(str, Enum):
 StatusCallback = Callable[[AgentStatus, str], None]
 
 
+def _interruptible_sleep(stop: threading.Event, seconds: float, *, slice_sec: float = 1.0) -> None:
+    """Sleep up to ``seconds``, waking early when ``stop`` is set."""
+    end = time.monotonic() + max(0.0, seconds)
+    while time.monotonic() < end and not stop.is_set():
+        time.sleep(min(slice_sec, end - time.monotonic()))
+
+
 class BridgeAgent:
     """
     Background controller: when enabled, HTTP :8112 stays up so the phone can
-    always fetch the last OCR report. OCR watching runs whenever War Thunder is
-    detected; closing the game no longer wipes the report or stops HTTP.
+    always fetch the last OCR report. Phase/OCR watching runs only while War
+    Thunder is running — idle Bridge barely touches the CPU.
     """
 
     def __init__(self) -> None:
@@ -99,13 +106,12 @@ class BridgeAgent:
             with self._lock:
                 self._runtime = None
 
-    def _ensure_runtime(self, settings: BridgeSettings) -> BridgeRuntime:
+    def _ensure_http(self, settings: BridgeSettings) -> BridgeRuntime:
         with self._lock:
             runtime = self._runtime
             if runtime is not None and runtime.running:
                 return runtime
             if runtime is not None:
-                # Stopped HTTP but keep store if same object — rebuild cleanly.
                 try:
                     runtime.stop()
                 except Exception:  # noqa: BLE001
@@ -118,7 +124,7 @@ class BridgeAgent:
             )
             runtime = BridgeRuntime(config)
             self._runtime = runtime
-        runtime.start()
+        runtime.start_http()
         return runtime
 
     def _loop(self) -> None:
@@ -127,40 +133,36 @@ class BridgeAgent:
             while not self._stop.is_set():
                 settings = self._settings
                 try:
-                    self._ensure_runtime(settings)
+                    runtime = self._ensure_http(settings)
                 except Exception as exc:  # noqa: BLE001
                     log.exception("failed to start Bridge HTTP: %s", exc)
                     self._set_status(AgentStatus.IDLE, f"Port {settings.port} busy/error")
-                    waited = 0.0
-                    while waited < 5.0 and not self._stop.is_set():
-                        time.sleep(0.5)
-                        waited += 0.5
+                    _interruptible_sleep(self._stop, 5.0, slice_sec=0.5)
                     continue
 
-                if is_war_thunder_running():
+                if is_war_thunder_running(force=True):
                     self._set_status(AgentStatus.ACTIVE, "War Thunder — Bridge active")
+                    runtime.start_watch()
+                    # While fighting / hangar: only re-check process every few seconds.
+                    # Phase HTTP is handled inside the watch thread (slow in battle).
                     while not self._stop.is_set() and is_war_thunder_running():
-                        # Port/bind change from UI stops runtime; restart below.
                         with self._lock:
-                            runtime = self._runtime
-                        if runtime is None or not runtime.running:
+                            live = self._runtime
+                        if live is None or not live.running:
                             break
-                        time.sleep(1.0)
+                        _interruptible_sleep(self._stop, 3.0, slice_sec=1.0)
+                    runtime.stop_watch()
+                    log.info("War Thunder closed — phase watch stopped (HTTP kept)")
                 else:
+                    runtime.stop_watch()
+                    idle = max(15.0, float(settings.idle_poll_sec))
                     self._set_status(
                         AgentStatus.IDLE,
-                        f"Waiting for War Thunder — phone can still read last report (:{settings.port})",
+                        f"Waiting for War Thunder — check every {idle:.0f}s "
+                        f"(phone can still read :{settings.port})",
                     )
-                    waited = 0.0
-                    while waited < settings.idle_poll_sec and not self._stop.is_set():
-                        with self._lock:
-                            runtime = self._runtime
-                        if runtime is None or not runtime.running:
-                            break
-                        if is_war_thunder_running():
-                            break
-                        time.sleep(0.5)
-                        waited += 0.5
+                    # One process scan per idle interval — no 0.5s process_iter spam.
+                    _interruptible_sleep(self._stop, idle, slice_sec=1.0)
         except Exception as exc:  # noqa: BLE001
             log.exception("agent loop crashed: %s", exc)
             self._set_status(AgentStatus.DISABLED, f"Error: {exc}")

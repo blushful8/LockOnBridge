@@ -13,7 +13,8 @@ from .paths import DEFAULT_PORT, settings_path
 class BridgeSettings:
     enabled: bool = False
     port: int = DEFAULT_PORT
-    idle_poll_sec: float = 30.0
+    # How often to look for aces.exe while the game is closed (keep this slow).
+    idle_poll_sec: float = 120.0
     bind: str = "0.0.0.0"
     game_host: str = "127.0.0.1"
     game_port: int = 8111
@@ -34,9 +35,14 @@ class BridgeSettings:
         port = int(raw.get("port", DEFAULT_PORT))
         if port < 1 or port > 65535:
             port = DEFAULT_PORT
-        idle = float(raw.get("idle_poll_sec", 30.0))
-        if idle < 5.0:
-            idle = 5.0
+        idle = float(raw.get("idle_poll_sec", 120.0))
+        # Soft-migrate previous shipping default (30s) → 2 minutes.
+        if abs(idle - 30.0) < 0.01:
+            idle = 120.0
+        if idle < 15.0:
+            idle = 15.0
+        if idle > 600.0:
+            idle = 600.0
         language = str(raw.get("language") or "").strip().lower()
         if language not in ("en", "uk"):
             language = detect_system_language()
@@ -77,7 +83,15 @@ def load_settings() -> BridgeSettings:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 return BridgeSettings(language=detect_system_language())
-            return BridgeSettings.from_dict(raw)
+            updated = BridgeSettings.from_dict(raw)
+            # Persist soft-migration (e.g. idle 30s → 120s) so next boots stay light.
+            if updated.to_dict().get("idle_poll_sec") != raw.get("idle_poll_sec"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps(updated.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+            return updated
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return BridgeSettings(language=detect_system_language())
 

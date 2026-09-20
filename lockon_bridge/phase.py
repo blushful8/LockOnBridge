@@ -13,7 +13,7 @@ class GamePhaseSnapshot:
     mission_status: str | None
 
 
-def _get_json(url: str, timeout: float = 1.5) -> Any | None:
+def _get_json(url: str, timeout: float = 0.8) -> Any | None:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8", errors="replace"))

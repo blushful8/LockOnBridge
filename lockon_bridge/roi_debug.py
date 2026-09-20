@@ -295,7 +295,7 @@ class RoiDebugOverlay:
         self,
         master: tk.Misc,
         *,
-        refresh_ms: int = 400,
+        refresh_ms: int = 750,
         on_disabled: Callable[[], None] | None = None,
     ) -> None:
         self.master = master
