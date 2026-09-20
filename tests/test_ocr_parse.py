@@ -244,6 +244,20 @@ def test_parses_bare_second_premium_header():
     assert report.silver_lions == 6127
 
 
+def test_alone_with_premium_not_banked_as_without():
+    """Phone has premium OFF — alone «З преміумом RP SL» must not publish."""
+    text = "З преміумом 436 4172"
+    assert parse_rewards_from_ocr_text(text, prefer_premium_rewards=False) is None
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=True)
+    assert report is not None
+    assert (report.research_points, report.silver_lions) == (436, 4172)
+    best = choose_best_report(
+        [(text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=False))],
+        prefer_premium_rewards=False,
+    )
+    assert best is None
+
+
 def test_rejects_scoreboard_kd_as_rewards():
     """Real battle-end OCR: participation boost + team board ratios, no premium totals."""
     text = (

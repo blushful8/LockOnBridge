@@ -751,16 +751,23 @@ def extract_roi_reward_variants(
                 w_pair = _with_pair_from_premium_amounts(amounts)
                 wo_pair = _without_pair_from_premium_amounts(amounts)
                 got_cols = False
-                if w_pair[0] is not None and w_pair[1] is not None:
+                w_ok = w_pair[0] is not None and w_pair[1] is not None
+                wo_ok = wo_pair[0] is not None and wo_pair[1] is not None
+                if w_ok:
                     with_digit_pairs.extend([(w_pair[0], w_pair[1])] * 2)
                     variants.append((f"roi:{tag}-with", f"З преміумом {w_pair[0]} {w_pair[1]}"))
                     got_cols = True
-                if wo_pair[0] is not None and wo_pair[1] is not None:
-                    without_digit_pairs.extend([(wo_pair[0], wo_pair[1])] * 2)
-                    variants.append(
-                        (f"roi:{tag}-without", f"Без преміума {wo_pair[0]} {wo_pair[1]}")
-                    )
-                    got_cols = True
+                if wo_ok:
+                    # Same pair as with ⇒ OCR only saw one column — do not invent without.
+                    if not w_ok or (wo_pair[0], wo_pair[1]) != (w_pair[0], w_pair[1]):
+                        without_digit_pairs.extend([(wo_pair[0], wo_pair[1])] * 2)
+                        variants.append(
+                            (
+                                f"roi:{tag}-without",
+                                f"Без преміума {wo_pair[0]} {wo_pair[1]}",
+                            )
+                        )
+                        got_cols = True
                 # Naive left-to-right pair pollutes the preferred column when OCR
                 # emits all four cells (1720 921 10955 6817 → fake 1720/9210).
                 if got_cols:
@@ -811,21 +818,26 @@ def extract_roi_reward_variants(
         lean_ok = _usable(preferred_digit) or _usable(total_early)
 
     if not lean_ok:
-        try:
-            landmark_variants = pairs_from_landmarks(image)
-            variants.extend(landmark_variants)
-            for tag, text in landmark_variants:
-                pair = pair_from_digit_text(text)
-                if pair is None:
-                    continue
-                if "without" in tag:
-                    without_band_pairs.append(pair)
-                elif "with" in tag and "without" not in tag:
-                    with_band_pairs.append(pair)
-                else:
-                    total_band_pairs.append(pair)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("landmark ROI failed: %s", exc)
+        # Landmark WinRT over the full frame is slow; skip when calibrated pairs
+        # already covered the preferred column (fallback dense ROIs are enough).
+        from .roi_calib import has_usable_calibration
+
+        if not has_usable_calibration():
+            try:
+                landmark_variants = pairs_from_landmarks(image)
+                variants.extend(landmark_variants)
+                for tag, text in landmark_variants:
+                    pair = pair_from_digit_text(text)
+                    if pair is None:
+                        continue
+                    if "without" in tag:
+                        without_band_pairs.append(pair)
+                    elif "with" in tag and "without" not in tag:
+                        with_band_pairs.append(pair)
+                    else:
+                        total_band_pairs.append(pair)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("landmark ROI failed: %s", exc)
 
     with_digit_vote = _vote_pair(with_digit_pairs)
     # If a «without» crop actually read the with column, drop those twins.
@@ -894,12 +906,13 @@ def extract_roi_reward_variants(
     elif total and not prefer_with:
         rp, sl = total
         variants.insert(0, ("roi:total-only", f"Всього {rp} {sl}"))
-    elif without_vote:
+    elif without_vote and not prefer_with:
         rp, sl = without_vote
         variants.insert(0, ("roi:without-only", f"Без преміума {rp} {sl}"))
-    elif with_vote:
+    elif with_vote and prefer_with:
         rp, sl = with_vote
         variants.insert(0, ("roi:with-only", f"З преміумом {rp} {sl}"))
+    # Do NOT fall back to the other premium column — that banks the wrong totals.
 
     return variants
 
@@ -931,34 +944,22 @@ def report_from_roi_image(image: Image.Image, *, prefer_with: bool | None = None
     }
 
     def _try_tag(tag: str, text: str):
+        if not prefer_with and tag in (
+            "roi:landmark-with",
+            "roi:band-with",
+            "roi:with-only",
+            "roi:other-column",
+        ):
+            # Never bank the with-premium column when the phone wants without.
+            return None
         if prefer_with and tag in (
             "roi:landmark-without",
             "roi:band-without",
             "roi:without-only",
             "roi:without-over-total",
+            "roi:other-column",
         ):
-            if any(
-                t in ("roi:with-only", "roi:landmark-with", "roi:band-with")
-                or t.startswith("roi:consensus")
-                for t, _ in variants
-            ):
-                return None
-        if not prefer_with and tag in (
-            "roi:landmark-with",
-            "roi:band-with",
-            "roi:with-only",
-        ):
-            if any(
-                t in (
-                    "roi:without-only",
-                    "roi:without-over-total",
-                    "roi:landmark-without",
-                    "roi:band-without",
-                )
-                or t.startswith("roi:consensus")
-                for t, _ in variants
-            ):
-                return None
+            return None
         report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer_with)
         if report is None:
             return None

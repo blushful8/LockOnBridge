@@ -541,10 +541,35 @@ def _pair_from_premium_columns(
             if len(amounts) >= 2 and _plausible_reward_pair(amounts[0], amounts[1]):
                 return amounts[0], amounts[1]
 
-    # Fallback: scan after either header / bare four-cell block.
+    # Fallback: scan after a matching header / bare four-cell block.
+    # Alone «З преміумом RP SL» is the WITH column — never bank it as without
+    # (2 amounts after WITH would otherwise look like a classic without pair).
     for label in (WITH_PREMIUM, WITHOUT_PREMIUM):
         match = label.search(flat)
         if not match:
+            continue
+        if (
+            not prefer_with
+            and label is WITH_PREMIUM
+            and not WITHOUT_PREMIUM.search(flat)
+        ):
+            amounts = _amounts_in(flat[match.end() : match.end() + 200])
+            if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
+                amounts = amounts[1:]
+            # Need a 4-cell grid to recover the smaller (without) pair.
+            if len(amounts) < 4:
+                continue
+            pair = pick(amounts[:4])
+            if pair[0] is not None:
+                return pair
+            continue
+        if prefer_with and label is WITHOUT_PREMIUM and not WITH_PREMIUM.search(flat):
+            amounts = _amounts_in(flat[match.end() : match.end() + 200])
+            if len(amounts) < 4:
+                continue
+            pair = pick(amounts[:4] if len(amounts) >= 4 else amounts)
+            if pair[0] is not None:
+                return pair
             continue
         amounts = _amounts_in(flat[match.end() : match.end() + 200])
         if len(amounts) >= 5 and 1 <= amounts[0] <= 16:
@@ -787,12 +812,37 @@ def _prefer_deglued_pair(text: str, rp: int, sl: int) -> tuple[int, int]:
 
 
 
-def choose_best_report(candidates: list[tuple[str, BattleReport | None]]) -> tuple[str, BattleReport] | None:
+def choose_best_report(
+    candidates: list[tuple[str, BattleReport | None]],
+    *,
+    prefer_premium_rewards: bool | None = None,
+) -> tuple[str, BattleReport] | None:
     """Pick the strongest parse among per-engine OCR texts. Never merges texts."""
+    if prefer_premium_rewards is None:
+        try:
+            from .settings import load_settings
+
+            prefer_premium_rewards = bool(load_settings().has_premium_account)
+        except Exception:  # noqa: BLE001
+            prefer_premium_rewards = False
+
     scored: list[tuple[float, str, BattleReport]] = []
     for text, report in candidates:
         if report is None:
             continue
+        # Alone «З преміумом …» must not win when the account is without-premium.
+        if not prefer_premium_rewards:
+            has_with = bool(WITH_PREMIUM.search(text))
+            has_without = bool(WITHOUT_PREMIUM.search(text))
+            has_total = bool(_TOTAL.search(text))
+            if has_with and not has_without and not has_total:
+                continue
+        if prefer_premium_rewards:
+            has_with = bool(WITH_PREMIUM.search(text))
+            has_without = bool(WITHOUT_PREMIUM.search(text))
+            has_total = bool(_TOTAL.search(text))
+            if has_without and not has_with and not has_total:
+                continue
         score = float(report.confidence)
         # Geometric ROI consensus beats flat full-frame heuristics.
         lower = text.lower()

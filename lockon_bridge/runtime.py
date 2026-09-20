@@ -246,13 +246,22 @@ class BridgeRuntime:
                     self._stop.wait(gap)
                     continue
 
+                try:
+                    from .settings import load_settings as _ls
+
+                    prefer = bool(_ls().has_premium_account)
+                except Exception:  # noqa: BLE001
+                    prefer = False
                 candidates = [
-                    (text, parse_rewards_from_ocr_text(text)) for _tag, text in variants
+                    (text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer))
+                    for _tag, text in variants
                 ]
-                best = choose_best_report(candidates)
+                best = choose_best_report(candidates, prefer_premium_rewards=prefer)
                 dump_parts: list[str] = []
                 for tag, text in variants:
-                    parsed = parse_rewards_from_ocr_text(text)
+                    parsed = parse_rewards_from_ocr_text(
+                        text, prefer_premium_rewards=prefer
+                    )
                     if parsed is None:
                         dump_parts.append(f"[{tag}]\n{text}\n=> (no parse)")
                     else:

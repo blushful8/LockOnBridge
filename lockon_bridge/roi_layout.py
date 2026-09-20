@@ -192,12 +192,28 @@ def select_reward_digit_rects(
         return chosen
 
     if dense:
+        # Only scan the preferred premium column + totals (+ both for split).
+        # Skipping the other column saves several WinRT/Tesseract calls per frame.
+        if prefer_with is None:
+            try:
+                from .settings import load_settings
+
+                prefer_with = bool(load_settings().has_premium_account)
+            except Exception:  # noqa: BLE001
+                prefer_with = False
+        if prefer_with:
+            if full:
+                rects.extend(r for r in WITH_DIGIT_ROIS)
+            else:
+                rects.extend(r for r in WITH_DIGIT_ROIS if "-mid" in r.tag)
+        else:
+            if full:
+                rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" not in r.tag)
+            else:
+                rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag)
         if full:
-            rects.extend(r for r in WITH_DIGIT_ROIS)
-            rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" not in r.tag)
             rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" not in r.tag)
         else:
-            rects.extend(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag)
             rects.extend(r for r in BOTH_DIGIT_ROIS if "-mid" in r.tag)
         rects.extend(TOTAL_DIGIT_ROIS)
     elif full:
