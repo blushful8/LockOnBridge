@@ -282,6 +282,27 @@ def _grab_hwnd_mss(hwnd: int) -> Image.Image | None:
         return None
 
 
+def _panel_contrast_score(image: Image.Image) -> float:
+    """Stddev of the results-panel band — washed GDI grabs score ~20–25."""
+    from PIL import ImageStat
+
+    width, height = image.size
+    if width < 100 or height < 100:
+        return 0.0
+    band = image.convert("L").crop(
+        (
+            int(width * 0.15),
+            int(height * 0.12),
+            int(width * 0.55),
+            int(height * 0.72),
+        )
+    )
+    try:
+        return float(ImageStat.Stat(band).stddev[0])
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def grab_wt_client_image(
     *,
     focus: bool = False,
@@ -293,8 +314,9 @@ def grab_wt_client_image(
     Never captures the desktop / other apps. When ``require_foreground`` is set
     (default), returns None unless WT is the active window — privacy + no junk OCR.
 
-    ``focus=True`` is legacy and **avoided**: ``ShowWindow(SW_RESTORE)`` on a
-    fullscreen client is a common cause of FPS staying low until Alt+Tab.
+    Prefer DXGI/mss (real composited frame). GDI BitBlt often returns a washed /
+    semi-transparent HUD on fullscreen WT — OCR then sees nothing useful.
+    Never use ``ShowWindow(SW_RESTORE)`` (FPS hitch until Alt+Tab).
     """
     hwnd = find_war_thunder_hwnd()
     if hwnd is None:
@@ -309,16 +331,35 @@ def grab_wt_client_image(
         log.info("OCR capture skipped: War Thunder is not in the foreground")
         return None
     if focus:
-        # Soft raise only — never SW_RESTORE (breaks exclusive/borderless flip).
         try:
             user32.SetForegroundWindow(wintypes.HWND(hwnd))
         except Exception:  # noqa: BLE001
             pass
 
-    image = _grab_hwnd_gdi(hwnd)
-    if image is None:
-        image = _grab_hwnd_mss(hwnd)
-    return image
+    # mss first — matches what the user actually sees.
+    mss_img = _grab_hwnd_mss(hwnd)
+    mss_score = _panel_contrast_score(mss_img) if mss_img is not None else -1.0
+    if mss_img is not None and mss_score >= 32.0:
+        log.debug("OCR grab via mss contrast=%.1f", mss_score)
+        return mss_img
+
+    gdi_img = _grab_hwnd_gdi(hwnd)
+    gdi_score = _panel_contrast_score(gdi_img) if gdi_img is not None else -1.0
+    if gdi_img is not None and gdi_score > mss_score and gdi_score >= 32.0:
+        log.debug("OCR grab via gdi contrast=%.1f (mss=%.1f)", gdi_score, mss_score)
+        return gdi_img
+
+    if mss_img is not None:
+        if mss_score < 32.0:
+            log.warning(
+                "OCR grab mss contrast low (%.1f) — likely pre-results / washed frame",
+                mss_score,
+            )
+        return mss_img
+    if gdi_img is not None:
+        log.warning("OCR grab gdi contrast=%.1f (mss failed)", gdi_score)
+        return gdi_img
+    return None
 
 
 def _grab_wt_client_image() -> Image.Image | None:
