@@ -75,6 +75,7 @@ class Strings:
     test_ocr_error: str
     test_clipboard: str
     test_clipboard_busy: str
+    test_clipboard_countdown: str
     test_clipboard_ok: str
     test_clipboard_fail: str
     replay_log: str
@@ -230,6 +231,7 @@ EN = Strings(
     test_ocr_error="OCR failed:\n{error}",
     test_clipboard="Test clipboard results",
     test_clipboard_busy="Opening Messages → Ctrl+C…",
+    test_clipboard_countdown="Switch to WT hangar — clipboard test in {n}…",
     test_clipboard_ok=(
         "Clipboard results OK\n\n"
         "Research Points: {rp}\n"
@@ -405,6 +407,7 @@ UK = Strings(
     test_ocr_error="Помилка OCR:\n{error}",
     test_clipboard="Перевірити clipboard-результати",
     test_clipboard_busy="Відкриваю Повідомлення → Ctrl+C…",
+    test_clipboard_countdown="Перемкнись на ангар WT — перевірка через {n}…",
     test_clipboard_ok=(
         "Clipboard-результати OK\n\n"
         "Очки досліджень: {rp}\n"

@@ -1108,59 +1108,81 @@ class BridgeApp:
         if getattr(self, "_ocr_busy", False):
             return
         self._ocr_busy = True
+        countdown = 5
         t = self.strings
         try:
-            self.status_var.set(t.test_clipboard_busy)
+            self._roi_overlay.pause()
         except Exception:  # noqa: BLE001
             pass
         try:
             self.root.withdraw()
         except tk.TclError:
-            pass
-
-        def work() -> None:
-            report = None
-            reason = "error"
             try:
-                from .wt_messages_ui import capture_clipboard_battle_report
-
-                report, reason = capture_clipboard_battle_report()
-            except Exception as exc:  # noqa: BLE001
-                reason = str(exc)
-
-            def show() -> None:
-                self._ocr_busy = False
-                try:
-                    self.root.deiconify()
-                    self.root.lift()
-                except tk.TclError:
-                    pass
-                if report is None:
-                    messagebox.showerror(
-                        PRODUCT_NAME,
-                        t.test_clipboard_fail.format(reason=reason),
-                    )
-                    return
-                outcome = {
-                    "victory": t.outcome_victory,
-                    "defeat": t.outcome_defeat,
-                }.get(report.outcome, t.outcome_undecided)
-                messagebox.showinfo(
-                    PRODUCT_NAME,
-                    t.test_clipboard_ok.format(
-                        rp=report.research_points,
-                        sl=report.silver_lions,
-                        outcome=outcome,
-                        conf=report.confidence,
-                    ),
-                )
-
-            try:
-                self.root.after(0, show)
+                self.root.iconify()
             except tk.TclError:
-                self._ocr_busy = False
+                pass
 
-        threading.Thread(target=work, name="clipboard-test", daemon=True).start()
+        def tick(left: int) -> None:
+            if left > 0:
+                try:
+                    self.root.after(1000, lambda: tick(left - 1))
+                except tk.TclError:
+                    self._ocr_busy = False
+                    try:
+                        self._roi_overlay.resume()
+                    except Exception:  # noqa: BLE001
+                        pass
+                return
+
+            def work() -> None:
+                report = None
+                reason = "error"
+                try:
+                    from .wt_messages_ui import capture_clipboard_battle_report
+
+                    report, reason = capture_clipboard_battle_report()
+                except Exception as exc:  # noqa: BLE001
+                    reason = str(exc)
+
+                def show() -> None:
+                    self._ocr_busy = False
+                    try:
+                        self._roi_overlay.resume()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        self.root.deiconify()
+                        self.root.lift()
+                    except tk.TclError:
+                        pass
+                    if report is None:
+                        messagebox.showerror(
+                            PRODUCT_NAME,
+                            t.test_clipboard_fail.format(reason=reason),
+                        )
+                        return
+                    outcome = {
+                        "victory": t.outcome_victory,
+                        "defeat": t.outcome_defeat,
+                    }.get(report.outcome, t.outcome_undecided)
+                    messagebox.showinfo(
+                        PRODUCT_NAME,
+                        t.test_clipboard_ok.format(
+                            rp=report.research_points,
+                            sl=report.silver_lions,
+                            outcome=outcome,
+                            conf=report.confidence,
+                        ),
+                    )
+
+                try:
+                    self.root.after(0, show)
+                except tk.TclError:
+                    self._ocr_busy = False
+
+            threading.Thread(target=work, name="clipboard-test", daemon=True).start()
+
+        tick(countdown)
 
     def _test_ocr(self) -> None:
         if getattr(self, "_ocr_busy", False):

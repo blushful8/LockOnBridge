@@ -241,8 +241,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_ocr_once_cli()
 
     if args.test_clipboard_results:
+        import time
+
         from .wt_messages_ui import capture_clipboard_battle_report
 
+        wait_sec = 5
+        print(
+            f"Switch to WT hangar — clipboard test in {wait_sec}s…",
+            flush=True,
+        )
+        time.sleep(wait_sec)
         report, reason = capture_clipboard_battle_report()
         if report is None:
             print(f"clipboard results failed: {reason}", file=sys.stderr)
