@@ -633,7 +633,14 @@ def last_capture_meta() -> dict | None:
     return _LAST_CAPTURE_META
 
 
-def ocr_screen_capture(
+def set_last_ocr_frame(frame: Image.Image | None) -> None:
+    """Expose the active frame for dumps / settle (grab-first burst)."""
+    global _LAST_OCR_FRAME
+    _LAST_OCR_FRAME = frame
+
+
+def ocr_saved_frame(
+    frame: Image.Image,
     *,
     wt_ui_language: str | None = None,
     backend: str | None = None,
@@ -644,19 +651,7 @@ def ocr_screen_capture(
     premium_ceiling: tuple[int, int] | None = None,
     skip_expensive_fallback: bool = False,
 ) -> tuple[bytes, list[tuple[str, str]]]:
-    """Return (primary_png, variants) so callers can dump the frame that was OCR'd.
-
-    When digit ROIs already yield a confident reward pair, skip the multi-engine
-    full-panel OCR (~several seconds). Pass ``roi_only=True`` to force that path
-    (settle confirmation frames).
-
-    Heavy OCR (WinRT / Tesseract) runs in an isolated child process so a native
-    crash cannot kill the Bridge UI/agent. The parent only grabs the
-    frame and reads the worker JSON.
-
-    Never falls back to the primary monitor — if WT is missing or not foreground,
-    returns empty bytes / no variants (privacy).
-    """
+    """OCR an already-grabbed WT client frame (no second screenshot)."""
     global _LAST_OCR_FRAME, _LAST_CAPTURE_META
     import os
 
@@ -672,35 +667,21 @@ def ocr_screen_capture(
         else bool(settings.has_premium_account)
     )
 
-    breadcrumb("ocr_screen_capture grab")
-    frame = _grab_wt_client_image()
-    if frame is None:
-        _LAST_OCR_FRAME = None
-        _LAST_CAPTURE_META = None
-        log.info("OCR capture skipped: no War Thunder foreground frame")
-        breadcrumb("ocr_screen_capture skipped no-wt-foreground")
-        return b"", []
-
-    source = "wt"
-    log.info("OCR capture: War Thunder window + scale-safe digit ROIs")
     _LAST_OCR_FRAME = frame
     contrast = _panel_contrast_score(frame)
-    # Washed / pre-results frames: skip dense+panel unless settle already has a hit.
     low_contrast = contrast < 32.0
     skip_expensive = bool(skip_expensive_fallback) or (
         low_contrast and not roi_only and pair_hint is None
     )
 
-    # Primary dump = results panel (readable in last_capture.png).
     panel = _crop_results_rois(frame)[0][1]
     primary = _png_from_image(panel)
 
-    # Already inside the OCR worker → run engines in-process.
     if os.environ.get("LOCKON_OCR_WORKER") == "1":
         _LAST_CAPTURE_META = None
         return primary, _ocr_variants_inprocess(
             frame,
-            source=source,
+            source="wt",
             lang=lang,
             mode=mode,
             roi_only=roi_only,
@@ -711,10 +692,9 @@ def ocr_screen_capture(
         )
 
     breadcrumb(
-        f"ocr_screen_capture isolate source={source} roi_only={roi_only} "
+        f"ocr_saved_frame isolate roi_only={roi_only} "
         f"skip_expensive={skip_expensive} contrast={contrast:.1f}"
     )
-    hint = None
     if worker is not None:
         variants, hint = worker.process(
             frame,
@@ -739,8 +719,52 @@ def ocr_screen_capture(
             premium_ceiling=premium_ceiling,
             skip_expensive_fallback=skip_expensive,
         )
+    # Only sticky-promote when this frame actually produced a calib variant.
+    if hint is not None and not any(
+        str(tag).startswith("roi:calib-p") for tag, _text in variants
+    ):
+        hint = None
     _LAST_CAPTURE_META = hint
     return primary, variants
+
+
+def ocr_screen_capture(
+    *,
+    wt_ui_language: str | None = None,
+    backend: str | None = None,
+    roi_only: bool = False,
+    worker=None,
+    pair_hint: int | None = None,
+    prefer_with: bool | None = None,
+    premium_ceiling: tuple[int, int] | None = None,
+    skip_expensive_fallback: bool = False,
+) -> tuple[bytes, list[tuple[str, str]]]:
+    """Grab WT foreground + OCR. Prefer ``ocr_saved_frame`` when the frame is buffered."""
+    global _LAST_OCR_FRAME, _LAST_CAPTURE_META
+
+    from .crashguard import breadcrumb
+
+    breadcrumb("ocr_screen_capture grab")
+    frame = _grab_wt_client_image()
+    if frame is None:
+        _LAST_OCR_FRAME = None
+        _LAST_CAPTURE_META = None
+        log.info("OCR capture skipped: no War Thunder foreground frame")
+        breadcrumb("ocr_screen_capture skipped no-wt-foreground")
+        return b"", []
+
+    log.info("OCR capture: War Thunder window + scale-safe digit ROIs")
+    return ocr_saved_frame(
+        frame,
+        wt_ui_language=wt_ui_language,
+        backend=backend,
+        roi_only=roi_only,
+        worker=worker,
+        pair_hint=pair_hint,
+        prefer_with=prefer_with,
+        premium_ceiling=premium_ceiling,
+        skip_expensive_fallback=skip_expensive_fallback,
+    )
 
 
 def _ocr_variants_inprocess(
