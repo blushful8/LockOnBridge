@@ -104,9 +104,9 @@ EN = Strings(
     bridge_enabled="Bridge",
     autostart_windows="Start with Windows",
     tip=(
-        "Choose your War Thunder UI language once. "
-        "When you enable Bridge, it can install OCR helpers automatically — "
-        "no separate tools for most users."
+        "Bridge ON starts with Windows and runs in the background. "
+        "OFF stops everything (no logon autostart). "
+        "Pick your War Thunder UI language once for better OCR."
     ),
     http_port="HTTP port",
     open_logs="Open logs",
@@ -265,9 +265,9 @@ UK = Strings(
     bridge_enabled="Bridge",
     autostart_windows="Запуск зі стартом Windows",
     tip=(
-        "Один раз оберіть мову інтерфейсу War Thunder. "
-        "Після увімкнення Bridge сам запропонує OCR-пакети — "
-        "окремі утиліти більшості користувачів не потрібні."
+        "Bridge УВІМК. — автозапуск зі стартом Windows і робота у фоні. "
+        "ВИМК. — усе зупиняється (без автозапуску). "
+        "Один раз оберіть мову інтерфейсу War Thunder для кращого OCR."
     ),
     http_port="Порт HTTP",
     open_logs="Відкрити журнали",

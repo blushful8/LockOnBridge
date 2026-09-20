@@ -17,7 +17,6 @@ from .autostart import (
     firewall_rule_present,
     full_uninstall,
     prepare_enabled_runtime,
-    register_autostart,
     register_uninstall_entry,
     unregister_autostart,
     _app_allow_present,
@@ -115,7 +114,6 @@ class BridgeApp:
             register_uninstall_entry()
 
         self.enabled_var = tk.BooleanVar(value=self.settings.enabled)
-        self.autostart_var = tk.BooleanVar(value=self.settings.autostart_with_windows)
         self.port_var = tk.StringVar(value=str(self.settings.port))
         self.status_var = tk.StringVar(value="…")
         self.badge_var = tk.StringVar(value="")
@@ -145,6 +143,10 @@ class BridgeApp:
         else:
             self._set_ui_enabled(False)
             self.status_var.set(self.strings.status_disabled)
+            # Bridge off ⇒ no logon task (clears leftover from older separate switch).
+            threading.Thread(
+                target=unregister_autostart, name="autostart-clear", daemon=True
+            ).start()
 
         self.root.after(400, self._refresh_phone_access_ui)
         self.root.after(5_000, self._poll_phone_access_loop)
@@ -324,29 +326,6 @@ class BridgeApp:
         )
         self._enabled_switch.pack(side="right", padx=(12, 0))
 
-        # Autostart with Windows
-        auto_row = tk.Frame(card, bg=PANEL)
-        auto_row.pack(fill="x", padx=16, pady=(12, 8))
-        self.autostart_label = tk.Label(
-            auto_row,
-            text=t.autostart_windows,
-            font=("Segoe UI", 11),
-            fg=FG,
-            bg=PANEL,
-        )
-        self.autostart_label.pack(side="left")
-        self._autostart_switch = SwitchButton(
-            auto_row,
-            variable=self.autostart_var,
-            command=self._on_autostart_toggle,
-            on_color=ACCENT,
-            off_color=OFF,
-            bg=PANEL,
-            width=52,
-            height=30,
-        )
-        self._autostart_switch.pack(side="right", padx=(12, 0))
-
         self.status_label = tk.Label(
             card,
             textvariable=self.status_var,
@@ -356,7 +335,7 @@ class BridgeApp:
             wraplength=MIN_WINDOW_W - 80,
             justify="left",
         )
-        self.status_label.pack(anchor="w", padx=16, pady=(4, 12))
+        self.status_label.pack(anchor="w", padx=16, pady=(12, 12))
 
         self.phone_banner = tk.Label(
             card,
@@ -776,32 +755,13 @@ class BridgeApp:
         else:
             self._disable_completely()
 
-    def _on_autostart_toggle(self) -> None:
-        want = bool(self.autostart_var.get())
-        self.settings = update_settings(autostart_with_windows=want)
-
-        def work() -> None:
-            if want:
-                ok = register_autostart()
-                if not ok:
-                    self.root.after(0, self._autostart_register_failed)
-            else:
-                unregister_autostart()
-
-        threading.Thread(target=work, name="autostart-toggle", daemon=True).start()
-
-    def _autostart_register_failed(self) -> None:
-        self.autostart_var.set(False)
-        self.settings = update_settings(autostart_with_windows=False)
-        messagebox.showwarning(PRODUCT_NAME, self.strings.autostart_failed)
-
     def _start_enabled(self, *, persist: bool) -> None:
         port = self._read_port()
-        autostart = bool(self.autostart_var.get())
+        # Bridge ON = agent + Windows logon autostart (one switch).
         self.settings = update_settings(
             enabled=True,
             port=port,
-            autostart_with_windows=autostart,
+            autostart_with_windows=True,
         )
         # Paint / agent first — schtasks, install copy, netsh stay off the UI thread.
         self._set_ui_enabled(True)
@@ -814,7 +774,7 @@ class BridgeApp:
                 prepare_enabled_runtime(
                     port=port,
                     allow_firewall_elevate=False,
-                    autostart=autostart,
+                    autostart=True,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("prepare_enabled_runtime failed")
@@ -1032,7 +992,7 @@ class BridgeApp:
             self.root.after(200, self._maybe_offer_tesseract)
 
     def _disable_completely(self) -> None:
-        self.settings = update_settings(enabled=False)
+        self.settings = update_settings(enabled=False, autostart_with_windows=False)
         self._set_ui_enabled(False)
         self.status_var.set(self.strings.status_disabled)
         self._refresh_badge_for_status(AgentStatus.DISABLED)
@@ -1043,7 +1003,6 @@ class BridgeApp:
                 self.agent.stop(join=True)
             except Exception:  # noqa: BLE001
                 log.exception("agent.stop failed")
-            # Don't launch a disabled Bridge at logon; preference stays in autostart_var.
             try:
                 unregister_autostart()
             except Exception:  # noqa: BLE001
