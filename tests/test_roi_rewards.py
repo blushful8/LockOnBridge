@@ -26,6 +26,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 FULL = FIXTURES / "results_uk_full_1025_7262.jpg"
 CROPPED = FIXTURES / "results_uk_1025_7262.jpg"
 LAST_BATTLE = FIXTURES / "last_battle_capture.png"
+UNFINISHED = FIXTURES / "results_unfinished_383_4052.jpg"
 
 
 def _load(path: Path) -> Image.Image:
@@ -258,6 +259,18 @@ def test_parse_keeps_header_rp_when_total_differs():
     assert report is not None
     assert report.research_points == 921
     assert report.silver_lions == 6817
+
+
+def test_unfinished_center_panel_fixture_has_383_4052():
+    """Chat crop of «Мої результати» / місію не завершено — mid-band must see 383/4052."""
+    if not UNFINISHED.is_file():
+        return
+    img = _load(UNFINISHED)
+    variants = extract_roi_reward_variants(img, prefer_with=False)
+    joined = " ".join(text for _tag, text in variants)
+    compact = joined.replace(" ", "").replace(",", "")
+    assert "383" in compact
+    assert "4052" in compact
 
 
 def test_rapidocr_reads_without_center_crop():
