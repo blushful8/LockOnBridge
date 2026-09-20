@@ -299,8 +299,8 @@ def hsv_bright_text_mask(image: Image.Image, *, invert: bool = True) -> Image.Im
     value = mx
     sat = np.divide(mx - mn, mx, out=np.zeros_like(mx), where=mx > 1e-3)
 
-    # White / light grey UI digits
-    white = (value >= 175) & (sat <= 0.35)
+    # White / light grey UI digits (include dimmed «З преміумом» column)
+    white = (value >= 150) & (sat <= 0.40)
     # Yellow / gold «Всього» row
     yellow = (r >= 160) & (g >= 120) & (b <= 150) & ((r + g) >= (b * 2.2)) & (value >= 140)
     # Cyan / light-blue RP numerals
@@ -328,6 +328,120 @@ def hsv_bright_text_mask(image: Image.Image, *, invert: bool = True) -> Image.Im
         canvas = np.zeros(mask.shape, dtype=np.uint8)
         canvas[mask] = 255
     return Image.fromarray(canvas, mode="L").convert("RGB")
+
+
+def trim_to_bright_ink(
+    image: Image.Image,
+    *,
+    pad: int = 3,
+    min_value: int = 130,
+) -> Image.Image:
+    """Crop to the bright ink bbox so empty cell margins do not confuse OCR."""
+    rgb = image.convert("RGB")
+    if np is None:
+        return rgb
+    arr = np.asarray(rgb, dtype=np.int16)
+    value = arr.max(axis=2)
+    ys, xs = np.where(value >= min_value)
+    if len(xs) < 8:
+        return rgb
+    left, right = int(xs.min()), int(xs.max()) + 1
+    top, bottom = int(ys.min()), int(ys.max()) + 1
+    h, w = arr.shape[:2]
+    left = max(0, left - pad)
+    top = max(0, top - pad)
+    right = min(w, right + pad)
+    bottom = min(h, bottom + pad)
+    if right - left < 8 or bottom - top < 6:
+        return rgb
+    return rgb.crop((left, top, right, bottom))
+
+
+def luma_digit_bw(image: Image.Image, *, invert: bool = True) -> Image.Image | None:
+    """
+    Hard B&W: keep only bright low-noise ink, mush everything else to background.
+
+    Tuned for WT reward digits (white/yellow) — kills panel grain and icon leftovers.
+    """
+    if np is None:
+        return None
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
+    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    value = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    sat = np.divide(value - mn, value, out=np.zeros_like(value), where=value > 1e-3)
+
+    # Percentile threshold adapts to dim premium column vs bright without.
+    floor = float(np.percentile(value, 55))
+    thr = max(125.0, min(200.0, floor + 15.0))
+    ink = (value >= thr) & (sat <= 0.45)
+    # Also keep saturated yellow / cyan reward glyphs.
+    yellow = (r >= 150) & (g >= 110) & (b <= 160) & (value >= 130)
+    cyan = (b >= 120) & (g >= 90) & (b > r + 15) & (value >= 120)
+    ink = ink | yellow | cyan
+    if not bool(ink.any()):
+        return None
+
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    try:
+        padded = np.pad(ink.astype(np.uint8), 1, mode="constant")
+        windows = sliding_window_view(padded, (3, 3))
+        ink = windows.max(axis=(-1, -2)).astype(bool)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if invert:
+        canvas = np.full(ink.shape, 255, dtype=np.uint8)
+        canvas[ink] = 0
+    else:
+        canvas = np.zeros(ink.shape, dtype=np.uint8)
+        canvas[ink] = 255
+    return Image.fromarray(canvas, mode="L").convert("RGB")
+
+
+def boost_dim_ui_text(image: Image.Image) -> Image.Image:
+    """Lift greyed-out «З преміумом» digits so OCR can see them."""
+    out = ImageOps.autocontrast(image.convert("RGB"), cutoff=0)
+    out = ImageEnhance.Brightness(out).enhance(1.55)
+    out = ImageEnhance.Contrast(out).enhance(1.85)
+    out = ImageEnhance.Sharpness(out).enhance(1.35)
+    return out
+
+
+def _looks_dim_reward_cell(image: Image.Image) -> bool:
+    if np is None:
+        return False
+    value = np.asarray(image.convert("RGB"), dtype=np.float32).max(axis=2)
+    return float(np.percentile(value, 90)) < 140.0
+
+
+def digit_focus_variants(image: Image.Image) -> list[tuple[str, Image.Image]]:
+    """
+    OCR-ready crops that suppress non-digit mush.
+
+    Each image is already upscaled for WinRT / Tesseract.
+    Keep the set small — every variant × engine × PSM adds latency.
+    """
+    base = image.convert("RGB")
+    # Dim premium column: lift first so trim/bw still see ink.
+    if _looks_dim_reward_cell(base):
+        boosted = boost_dim_ui_text(base)
+        trimmed = trim_to_bright_ink(boosted, min_value=110)
+        out: list[tuple[str, Image.Image]] = [
+            ("dim_soft", soft_upscale(trimmed, min_height=120)),
+        ]
+        bw = luma_digit_bw(trimmed, invert=True)
+        if bw is not None:
+            out.append(("dim_bw", soft_upscale(bw, min_height=128)))
+        return out
+
+    trimmed = trim_to_bright_ink(base)
+    out = [("soft", soft_upscale(trimmed, min_height=112))]
+    bw = luma_digit_bw(trimmed, invert=True)
+    if bw is not None:
+        out.append(("bw", soft_upscale(bw, min_height=128)))
+    return out
 
 
 def preprocess_variants(image: Image.Image, *, allow_hsv: bool = True) -> list[tuple[str, Image.Image]]:

@@ -360,3 +360,28 @@ def test_single_cell_amount_ignores_ghost_pair_split():
     # …but single-cell reader must prefer the raw max amount (see _read_roi_amount).
     amounts = [a for a in _amounts_in("5869", min_value=50) if a <= 250_000]
     assert int(max(amounts)) == 5869
+
+
+def test_without_rejected_when_ge_premium():
+    from lockon_bridge.roi_rewards import (
+        CalibPairsProbe,
+        PairProbeRow,
+        _without_invalid_vs_premium,
+    )
+
+    assert _without_invalid_vs_premium(1905, 9097, prem_rp=1903, prem_sl=9097)
+    assert _without_invalid_vs_premium(1903, 9097, prem_rp=1903, prem_sl=9097)
+    assert not _without_invalid_vs_premium(1064, 5869, prem_rp=1903, prem_sl=9097)
+    assert not _without_invalid_vs_premium(1064, 2969, prem_rp=1903, prem_sl=9097)
+
+    probe = CalibPairsProbe(
+        without=[
+            PairProbeRow(2, "", "", 1905, 9097, False, "ge_premium"),
+            PairProbeRow(4, "", "", 1064, 2969, True, "ok"),
+        ],
+        with_premium=[PairProbeRow(4, "", "", 1903, 9097, True, "ok")],
+    )
+    text = probe.format_lines()
+    assert ">= преміум" in text
+    assert "<- first" in text
+    assert "#5 [OK]" in text or "#5" in text

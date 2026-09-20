@@ -17,6 +17,8 @@ from .roi_layout import is_full_client_frame, iter_reward_digit_rois
 
 log = logging.getLogger("lockon_bridge.roi")
 
+_LETTER = re.compile(r"[A-Za-zА-Яа-яІіЇїЄєҐґЁё]", re.UNICODE)
+
 
 def _column_pair_usable(rp: int, sl: int) -> bool:
     """Reject OCR junk that passes the loose plausible check (e.g. RP==SL)."""
@@ -58,25 +60,28 @@ def _png_bytes(image: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-def windows_roi_text(image: Image.Image) -> str:
-    """Windows.Media.Ocr — soft upscale only."""
+def windows_roi_text(image: Image.Image, *, prepared: bool = False) -> str:
+    """Windows.Media.Ocr — digit-focus variants (or a single preprocessed crop)."""
     from .ocr_backends import windows_ocr_variants
+    from .ocr_preprocess import digit_focus_variants
 
-    prepared = soft_upscale(image)
+    variants = [("given", image)] if prepared else digit_focus_variants(image)
     best = ""
     best_score = -1
-    for _eng, text in windows_ocr_variants(_png_bytes(prepared)):
-        amounts = _amounts_in(text, min_value=50)
-        score = len(amounts) * 10 + sum(len(str(a)) for a in amounts)
-        if score > best_score:
-            best_score = score
-            best = text
+    for _tag, prep in variants:
+        for _eng, text in windows_ocr_variants(_png_bytes(prep)):
+            amounts = _amounts_in(text, min_value=50)
+            score = len(amounts) * 10 + sum(len(str(a)) for a in amounts)
+            if score > best_score:
+                best_score = score
+                best = text
     return best
 
 
-def tesseract_digits_text(image: Image.Image) -> str:
-    """Digit OCR via Tesseract — soft upscale, PSM 6/7."""
+def tesseract_digits_text(image: Image.Image, *, prepared: bool = False) -> str:
+    """Digit-only Tesseract — whitelist 0-9, several PSM × preprocess variants."""
     from .ocr_backends import ensure_core_tessdata, find_tesseract_exe, tessdata_dir
+    from .ocr_preprocess import digit_focus_variants
 
     exe = find_tesseract_exe()
     if exe is None:
@@ -90,25 +95,34 @@ def tesseract_digits_text(image: Image.Image) -> str:
     ensure_core_tessdata()
     local = tessdata_dir()
     use_local = any(local.glob("*.traineddata"))
-    prepared = soft_upscale(image)
-    configs = [
-        "--psm 6 -c tessedit_char_whitelist=0123456789 ",
-        "--psm 7 -c tessedit_char_whitelist=0123456789 ",
-    ]
+    variants = [("given", image)] if prepared else digit_focus_variants(image)
+    # Prepared crops already went through digit_focus — keep PSM set lean.
+    if prepared:
+        configs = [
+            "--psm 7 -c tessedit_char_whitelist=0123456789",
+            "--psm 8 -c tessedit_char_whitelist=0123456789",
+        ]
+    else:
+        configs = [
+            "--psm 7 -c tessedit_char_whitelist=0123456789",
+            "--psm 8 -c tessedit_char_whitelist=0123456789",
+            "--psm 13 -c tessedit_char_whitelist=0123456789",
+        ]
     if use_local:
         configs = [f"--tessdata-dir {local} {c}" for c in configs]
 
     texts: list[str] = []
-    for config in configs:
-        try:
-            raw = pytesseract.image_to_string(prepared, lang="eng", config=config) or ""
-        except Exception as exc:  # noqa: BLE001
-            log.debug("digit OCR failed (%s): %s", config, exc)
-            continue
-        cleaned = re.sub(r"[^\d\s]+", " ", raw)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        if cleaned:
-            texts.append(cleaned)
+    for _tag, prep in variants:
+        for config in configs:
+            try:
+                raw = pytesseract.image_to_string(prep, lang="eng", config=config) or ""
+            except Exception as exc:  # noqa: BLE001
+                log.debug("digit OCR failed (%s): %s", config, exc)
+                continue
+            cleaned = re.sub(r"[^\d\s]+", " ", raw)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if cleaned:
+                texts.append(cleaned)
     if not texts:
         return ""
     return max(texts, key=lambda t: (sum(ch.isdigit() for ch in t), len(t)))
@@ -313,24 +327,82 @@ def _read_roi_pair(
     return first_text, first_pair
 
 
+def _digit_amount_candidates(crop: Image.Image) -> list[tuple[str, int]]:
+    """All plausible single-cell amounts from digit-focus OCR variants."""
+    from .ocr_preprocess import digit_focus_variants
+
+    out: list[tuple[str, int]] = []
+    for tag, prep in digit_focus_variants(crop):
+        # WinRT on colour soft / dim_soft only — B&W masks often hurt Windows.Media.Ocr.
+        readers = (tesseract_digits_text,)
+        if tag in ("soft", "dim_soft"):
+            readers = (windows_roi_text, tesseract_digits_text)
+        for reader in readers:
+            try:
+                text = str(reader(prep, prepared=True) or "")
+            except Exception:  # noqa: BLE001
+                continue
+            if not text:
+                continue
+            for amount in _amounts_in(text, min_value=50):
+                if amount <= 250_000:
+                    out.append((text, int(amount)))
+                    # Weak icon-ghost alternate (lion/bulb as trailing digit).
+                    trimmed = _ocr_ghost_trim(int(amount))
+                    if trimmed is not None:
+                        out.append((str(trimmed), trimmed))
+                    elif 10_000 <= int(amount) <= 99_999:
+                        # Any trailing junk digit on a 5-digit cell (58694 → 5869).
+                        soft = int(amount) // 10
+                        if 200 <= soft <= 45_000:
+                            out.append((str(soft), soft))
+    return out
+
+
+def _pick_voted_amount(cands: list[tuple[str, int]]) -> tuple[str, int] | None:
+    """Majority vote; prefer longer digit strings (3–5) over 1–2 digit noise."""
+    if not cands:
+        return None
+    votes: Counter[int] = Counter(amount for _text, amount in cands)
+
+    def _rank(amount: int) -> tuple[int, int, int, int]:
+        digits = len(str(amount))
+        # Reward cells are almost always 3–5 digits.
+        length_score = 3 if 3 <= digits <= 5 else (1 if digits == 2 else 0)
+        return (votes[amount], length_score, digits, amount)
+
+    best = max(votes.keys(), key=_rank)
+    # Prefer a digits-only source so letter-gate does not reject a good vote.
+    digit_only = [
+        t
+        for t, a in cands
+        if a == best and t and not _LETTER.search(t)
+    ]
+    if digit_only:
+        return max(digit_only, key=lambda t: sum(ch.isdigit() for ch in t)), best
+    text = next(t for t, a in cands if a == best)
+    # Synthesize clean text when every engine glued letters onto a solid amount.
+    return str(best), best
+
+
 def _read_roi_amount(
     crop: Image.Image,
     *,
     prefer_stable: bool = False,
 ) -> tuple[str, int | None]:
-    """Single reward cell (RP or SL) — one amount, never a ghost-trim pair split."""
-    text, pair = _read_roi_pair(crop, prefer_stable=prefer_stable)
-    # Raw digit tokens only — ``pair_from_digit_text`` may invent (586, 5869) from a
-    # real SL ending in 9 via icon-ghost trim; that must not steal the cell value.
+    """Single reward cell (RP or SL) — voted digit-only OCR across preprocess variants."""
+    del prefer_stable
+    picked = _pick_voted_amount(_digit_amount_candidates(crop))
+    if picked is not None:
+        return picked[0], picked[1]
+    # Fallback: legacy dual-engine path (pair_from may still help odd crops).
+    text, pair = _read_roi_pair(crop)
     amounts = [a for a in _amounts_in(text or "", min_value=50) if a <= 250_000]
     if amounts:
         return text or "", int(max(amounts))
     if pair is not None:
         return text, int(max(pair))
     return text or "", None
-
-
-_LETTER = re.compile(r"[A-Za-zА-Яа-яІіЇїЄєҐґЁё]", re.UNICODE)
 
 
 def _cell_is_clean_number(text: str, amount: int | None) -> bool:
@@ -467,22 +539,53 @@ def _probe_one_pair_rects(
     )
 
 
+def _without_invalid_vs_premium(
+    rp: int,
+    sl: int,
+    *,
+    prem_rp: int,
+    prem_sl: int,
+) -> bool:
+    """
+    Without-premium totals must be strictly below with-premium on both axes.
+
+    Equal/higher RP or SL means the OCR box almost certainly read the premium
+    column (or junk) — reject and try the next calib pair.
+    """
+    return rp >= prem_rp or sl >= prem_sl
+
+
 def try_calibrated_column_pair(
     image: Image.Image,
     *,
     prefer_with: bool,
     record_failure: bool = True,
     calib=None,
+    premium_ceiling: tuple[int, int] | None = None,
 ) -> tuple[int, int, int] | None:
     """
     Walk calibrated fallback pairs in order.
 
     Accept a pair only when BOTH RP and SL read as clean numbers (no letters in
     either cell). If one cell has letters / no digits → try the next pair.
+    Without-premium also rejects values ≥ known with-premium RP/SL.
     When every pair fails and ``record_failure``, overwrite error_parse.png.
     ``calib`` — optional in-memory CalibratedRois (calibrator preview).
     """
     from .roi_calib import calibrated_all_pair_rects
+
+    ceiling = premium_ceiling
+    if not prefer_with and ceiling is None:
+        # One recursive call into WITH only (that branch never asks for ceiling).
+        with_hit = try_calibrated_column_pair(
+            image,
+            prefer_with=True,
+            record_failure=False,
+            calib=calib,
+            premium_ceiling=None,
+        )
+        if with_hit is not None:
+            ceiling = (int(with_hit[1]), int(with_hit[2]))
 
     stack = calibrated_all_pair_rects(prefer_with=prefer_with, calib=calib)
     if not stack:
@@ -492,8 +595,33 @@ def try_calibrated_column_pair(
         row = _probe_one_pair_rects(
             image, rp_rect, sl_rect, pair_index=index, prefix=prefix
         )
-        if row.accepted and row.research_points is not None and row.silver_lions is not None:
-            return index, row.research_points, row.silver_lions
+        if not (
+            row.accepted
+            and row.research_points is not None
+            and row.silver_lions is not None
+        ):
+            continue
+        if (
+            not prefer_with
+            and ceiling is not None
+            and _without_invalid_vs_premium(
+                row.research_points,
+                row.silver_lions,
+                prem_rp=ceiling[0],
+                prem_sl=ceiling[1],
+            )
+        ):
+            log.info(
+                "calib pair %s-p%s rejected (>= premium %s/%s): %s/%s",
+                prefix,
+                index,
+                ceiling[0],
+                ceiling[1],
+                row.research_points,
+                row.silver_lions,
+            )
+            continue
+        return index, row.research_points, row.silver_lions
     if record_failure:
         save_error_parse_frame(image)
     return None
@@ -528,6 +656,11 @@ class CalibPairsProbe:
                     body = f"RP {row.research_points} / SL {row.silver_lions}"
                 elif row.reason == "crop":
                     body = "немає crop"
+                elif row.reason == "ge_premium":
+                    body = (
+                        f">= преміум (RP {row.research_points} / "
+                        f"SL {row.silver_lions})"
+                    )
                 elif row.reason == "unusable":
                     body = (
                         f"відхилено (RP {row.research_points} / "
@@ -572,7 +705,51 @@ def probe_all_calib_pairs(
             for index, rp_rect, sl_rect in stack
         ]
 
-    return CalibPairsProbe(without=_col(False), with_premium=_col(True))
+    with_rows = _col(True)
+    without_rows = _col(False)
+    prem = next((r for r in with_rows if r.accepted), None)
+    if (
+        prem is not None
+        and prem.research_points is not None
+        and prem.silver_lions is not None
+    ):
+        filtered: list[PairProbeRow] = []
+        for row in without_rows:
+            if (
+                row.accepted
+                and row.research_points is not None
+                and row.silver_lions is not None
+                and _without_invalid_vs_premium(
+                    row.research_points,
+                    row.silver_lions,
+                    prem_rp=prem.research_points,
+                    prem_sl=prem.silver_lions,
+                )
+            ):
+                log.info(
+                    "calib preview without-p%s rejected (>= premium %s/%s): %s/%s",
+                    row.pair_index,
+                    prem.research_points,
+                    prem.silver_lions,
+                    row.research_points,
+                    row.silver_lions,
+                )
+                filtered.append(
+                    PairProbeRow(
+                        pair_index=row.pair_index,
+                        rp_text=row.rp_text,
+                        sl_text=row.sl_text,
+                        research_points=row.research_points,
+                        silver_lions=row.silver_lions,
+                        accepted=False,
+                        reason="ge_premium",
+                    )
+                )
+            else:
+                filtered.append(row)
+        without_rows = filtered
+
+    return CalibPairsProbe(without=without_rows, with_premium=with_rows)
 
 
 @dataclass(frozen=True)
@@ -1149,10 +1326,19 @@ def extract_roi_reward_variants(
                 log.warning("landmark ROI failed: %s", exc)
 
     with_digit_vote = _vote_pair(with_digit_pairs)
-    # If a «without» crop actually read the with column, drop those twins.
+    # If a «without» crop actually read the with column (or higher), drop those.
     if with_digit_vote is not None:
-        without_digit_pairs = [p for p in without_digit_pairs if p != with_digit_vote]
-        without_band_pairs = [p for p in without_band_pairs if p != with_digit_vote]
+        wrp, wsl = with_digit_vote
+        without_digit_pairs = [
+            p
+            for p in without_digit_pairs
+            if not _without_invalid_vs_premium(p[0], p[1], prem_rp=wrp, prem_sl=wsl)
+        ]
+        without_band_pairs = [
+            p
+            for p in without_band_pairs
+            if not _without_invalid_vs_premium(p[0], p[1], prem_rp=wrp, prem_sl=wsl)
+        ]
     without_digit_vote = _vote_pair(without_digit_pairs)
     total_digit_vote = _vote_pair(total_digit_pairs)
     with_band_vote = _vote_pair(with_band_pairs)
