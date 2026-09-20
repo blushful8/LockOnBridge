@@ -210,9 +210,7 @@ EN = Strings(
     test_ocr_busy="Reading screen…",
     test_ocr_countdown="Switch to WT results — capture in {n}…",
     test_ocr_ok=(
-        "Parsed rewards:\n"
-        "Research Points: {rp}\n"
-        "Silver Lions: {sl}\n"
+        "{probe}\n\n"
         "Outcome: {outcome}\n"
         "Confidence: {conf:.0%}"
     ),
@@ -373,10 +371,8 @@ UK = Strings(
     test_ocr_busy="Читаю екран…",
     test_ocr_countdown="Перемкнись на результати WT — знімок через {n}…",
     test_ocr_ok=(
-        "Розпізнано нагороди:\n"
-        "Очки досліджень: {rp}\n"
-        "Срібні леви: {sl}\n"
-        "Результат: {outcome}\n"
+        "{probe}\n\n"
+        "Результат бою: {outcome}\n"
         "Впевненість: {conf:.0%}"
     ),
     test_ocr_fail=(

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 from collections import Counter
+from dataclasses import dataclass
 from io import BytesIO
 
 from PIL import Image
@@ -365,13 +366,14 @@ def try_calibrated_column_pair(
     image: Image.Image,
     *,
     prefer_with: bool,
+    record_failure: bool = True,
 ) -> tuple[int, int, int] | None:
     """
     Walk calibrated fallback pairs in order.
 
     Accept a pair only when BOTH RP and SL read as clean numbers (no letters in
     either cell). If one cell has letters / no digits → try the next pair.
-    When every pair fails, overwrite error_parse.png for offline tuning.
+    When every pair fails and ``record_failure``, overwrite error_parse.png.
     """
     from .roi_calib import calibrated_all_pair_rects
     from .roi_layout import crop_norm
@@ -430,8 +432,132 @@ def try_calibrated_column_pair(
             chosen_sl,
         )
         return index, rp_amt, chosen_sl
-    save_error_parse_frame(image)
+    if record_failure:
+        save_error_parse_frame(image)
     return None
+
+
+@dataclass(frozen=True)
+class ColumnProbeHit:
+    pair_index: int  # 0-based calib pair
+    research_points: int
+    silver_lions: int
+
+
+@dataclass(frozen=True)
+class DualColumnProbe:
+    """Both premium columns probed independently (for Test OCR diagnostics)."""
+
+    prefer_with: bool
+    without: ColumnProbeHit | None
+    with_premium: ColumnProbeHit | None
+
+    def banked(self) -> ColumnProbeHit | None:
+        return self.with_premium if self.prefer_with else self.without
+
+    def to_dict(self) -> dict:
+        def _hit(h: ColumnProbeHit | None) -> dict | None:
+            if h is None:
+                return None
+            return {
+                "pairIndex": h.pair_index,
+                "pairNumber": h.pair_index + 1,
+                "researchPoints": h.research_points,
+                "silverLions": h.silver_lions,
+            }
+
+        banked = self.banked()
+        return {
+            "preferWith": self.prefer_with,
+            "without": _hit(self.without),
+            "with": _hit(self.with_premium),
+            "banked": _hit(banked),
+        }
+
+    def format_lines(self, *, uk: bool = True) -> str:
+        if uk:
+            pref = "З преміумом" if self.prefer_with else "Без преміуму"
+            lines = [f"Налаштування Bridge: банк колонки «{pref}»", ""]
+
+            def _fmt(label: str, hit: ColumnProbeHit | None) -> str:
+                if hit is None:
+                    return f"{label}: не зчитано (жодна calib-пара)"
+                return (
+                    f"{label}: пара #{hit.pair_index + 1} -> "
+                    f"RP {hit.research_points} / SL {hit.silver_lions}"
+                )
+
+            lines.append(_fmt("Без преміуму", self.without))
+            lines.append(_fmt("З преміумом", self.with_premium))
+            banked = self.banked()
+            lines.append("")
+            if banked is None:
+                lines.append(f"У звіт піде: (немає) — колонка «{pref}» порожня")
+            else:
+                lines.append(
+                    f"У звіт піде: «{pref}» пара #{banked.pair_index + 1} -> "
+                    f"RP {banked.research_points} / SL {banked.silver_lions}"
+                )
+            return "\n".join(lines)
+
+        pref = "WITH premium" if self.prefer_with else "WITHOUT premium"
+        lines = [f"Bridge setting: bank «{pref}» column", ""]
+
+        def _fmt_en(label: str, hit: ColumnProbeHit | None) -> str:
+            if hit is None:
+                return f"{label}: not read (no calib pair)"
+            return (
+                f"{label}: pair #{hit.pair_index + 1} -> "
+                f"RP {hit.research_points} / SL {hit.silver_lions}"
+            )
+
+        lines.append(_fmt_en("Without premium", self.without))
+        lines.append(_fmt_en("With premium", self.with_premium))
+        banked = self.banked()
+        lines.append("")
+        if banked is None:
+            lines.append(f"Would publish: (none) — «{pref}» empty")
+        else:
+            lines.append(
+                f"Would publish: «{pref}» pair #{banked.pair_index + 1} -> "
+                f"RP {banked.research_points} / SL {banked.silver_lions}"
+            )
+        return "\n".join(lines)
+
+
+def probe_both_premium_columns(
+    image: Image.Image,
+    *,
+    prefer_with: bool | None = None,
+) -> DualColumnProbe:
+    """Read WITH and WITHOUT calibrated stacks separately (no side-effect dump)."""
+    if prefer_with is None:
+        try:
+            from .settings import load_settings
+
+            prefer_with = bool(load_settings().has_premium_account)
+        except Exception:  # noqa: BLE001
+            prefer_with = False
+
+    def _one(with_col: bool) -> ColumnProbeHit | None:
+        hit = try_calibrated_column_pair(
+            image, prefer_with=with_col, record_failure=False
+        )
+        if hit is None:
+            return None
+        index, rp, sl = hit
+        return ColumnProbeHit(pair_index=index, research_points=rp, silver_lions=sl)
+
+    without = _one(False)
+    with_prem = _one(True)
+    # If both miss, keep one failure dump for calibrator.
+    if without is None and with_prem is None:
+        save_error_parse_frame(image)
+    return DualColumnProbe(
+        prefer_with=bool(prefer_with),
+        without=without,
+        with_premium=with_prem,
+    )
 
 
 # --- Landmark path (WinRT word boxes) ---

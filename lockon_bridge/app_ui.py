@@ -1233,7 +1233,40 @@ class BridgeApp:
         if error:
             messagebox.showerror(PRODUCT_NAME, t.test_ocr_error.format(error=error))
             return
-        if report is None:
+
+        probe_text = ""
+        try:
+            import json
+
+            probe_path = log_dir() / "last_ocr_probe.json"
+            if probe_path.is_file():
+                raw = json.loads(probe_path.read_text(encoding="utf-8"))
+                from .roi_rewards import ColumnProbeHit, DualColumnProbe
+
+                def _hit(node) -> ColumnProbeHit | None:
+                    if not isinstance(node, dict):
+                        return None
+                    return ColumnProbeHit(
+                        pair_index=int(node.get("pairIndex", 0)),
+                        research_points=int(node["researchPoints"]),
+                        silver_lions=int(node["silverLions"]),
+                    )
+
+                probe = DualColumnProbe(
+                    prefer_with=bool(raw.get("preferWith")),
+                    without=_hit(raw.get("without")),
+                    with_premium=_hit(raw.get("with")),
+                )
+                probe_text = probe.format_lines(uk=(self.settings.language == "uk"))
+        except Exception:  # noqa: BLE001
+            probe_text = ""
+
+        if not probe_text and text and "=== COLUMN PROBE ===" in text:
+            probe_text = text.split("---OCR---", 1)[0].replace(
+                "=== COLUMN PROBE ===", ""
+            ).strip()
+
+        if report is None and not probe_text:
             from .ocr_parse import summarize_ocr_text
 
             messagebox.showwarning(
@@ -1241,14 +1274,23 @@ class BridgeApp:
                 t.test_ocr_fail.format(preview=summarize_ocr_text(text, limit=240)),
             )
             return
+
+        if not probe_text and report is not None:
+            probe_text = (
+                f"RP {report.research_points} / SL {report.silver_lions}"
+                if self.settings.language != "uk"
+                else f"RP {report.research_points} / SL {report.silver_lions}"
+            )
+
+        conf = report.confidence if report is not None else 0.0
+        outcome = (
+            self._localize_outcome(report.outcome)
+            if report is not None
+            else ("—" if self.settings.language == "uk" else "—")
+        )
         messagebox.showinfo(
             PRODUCT_NAME,
-            t.test_ocr_ok.format(
-                rp=report.research_points,
-                sl=report.silver_lions,
-                outcome=self._localize_outcome(report.outcome),
-                conf=report.confidence,
-            ),
+            t.test_ocr_ok.format(probe=probe_text, outcome=outcome, conf=conf),
         )
 
     def _localize_outcome(self, outcome: str) -> str:
