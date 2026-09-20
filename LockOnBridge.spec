@@ -38,6 +38,7 @@ a = Analysis(
         ("assets/lockon_bridge.png", "assets"),
         ("assets/lockon_bridge.ico", "assets"),
         ("lockon_bridge/roi_calibrated.json", "lockon_bridge"),
+        ("lockon_bridge/reward_icons", "lockon_bridge/reward_icons"),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -318,15 +318,16 @@ def _read_roi_amount(
     *,
     prefer_stable: bool = False,
 ) -> tuple[str, int | None]:
-    """Single reward cell (RP or SL) — first plausible amount."""
+    """Single reward cell (RP or SL) — one amount, never a ghost-trim pair split."""
     text, pair = _read_roi_pair(crop, prefer_stable=prefer_stable)
-    if pair is not None:
-        # Prefer the first of a pair when a cell accidentally covers both.
-        return text, int(pair[0])
+    # Raw digit tokens only — ``pair_from_digit_text`` may invent (586, 5869) from a
+    # real SL ending in 9 via icon-ghost trim; that must not steal the cell value.
     amounts = [a for a in _amounts_in(text or "", min_value=50) if a <= 250_000]
-    if not amounts:
-        return text or "", None
-    return text or "", int(amounts[0])
+    if amounts:
+        return text or "", int(max(amounts))
+    if pair is not None:
+        return text, int(max(pair))
+    return text or "", None
 
 
 _LETTER = re.compile(r"[A-Za-zА-Яа-яІіЇїЄєҐґЁё]", re.UNICODE)

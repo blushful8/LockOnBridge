@@ -336,6 +336,8 @@ def test_icon_ghost_trim_and_blank_margin():
     assert _ocr_ghost_trim(3799) == 379
     assert _ocr_ghost_trim(1369) == 136
     assert _best_column_sl(136, [3799, 379]) == 379
+    # Real SL ending in 9 must stay 5869 when paired with RP (not ghost-split to 586).
+    assert _best_column_sl(1064, [5869, 586]) == 5869
 
     sl_path = FIXTURES / "cell_sl_379_lion.png"
     rp_path = FIXTURES / "cell_rp_136_bulb.png"
@@ -345,3 +347,16 @@ def test_icon_ghost_trim_and_blank_margin():
     rp = blank_trailing_reward_icon(Image.open(rp_path).convert("RGB"))
     assert _read_roi_amount(sl, prefer_stable=True)[1] == 379
     assert _read_roi_amount(rp, prefer_stable=True)[1] == 136
+
+
+def test_single_cell_amount_ignores_ghost_pair_split():
+    """OCR text ``5869`` must not become 586 via (586, 5869) ghost pair."""
+    from lockon_bridge.ocr_parse import _amounts_in
+    from lockon_bridge.roi_rewards import pair_from_digit_text
+
+    assert _amounts_in("5869", min_value=50) == [5869]
+    # Ghost pair may still exist for dual-cell ROIs…
+    assert pair_from_digit_text("5869") == (586, 5869)
+    # …but single-cell reader must prefer the raw max amount (see _read_roi_amount).
+    amounts = [a for a in _amounts_in("5869", min_value=50) if a <= 250_000]
+    assert int(max(amounts)) == 5869
