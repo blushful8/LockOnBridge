@@ -17,6 +17,7 @@ from .autostart import (
     firewall_rule_present,
     full_uninstall,
     prepare_enabled_runtime,
+    register_autostart,
     register_uninstall_entry,
     unregister_autostart,
     _app_allow_present,
@@ -27,6 +28,7 @@ from .dpi import enable_windows_dpi_awareness, sync_tk_scaling
 from .paths import PRODUCT_NAME, data_root, is_frozen, log_dir, log_file
 from .roi_debug import RoiDebugOverlay
 from .settings import load_settings, update_settings
+from .switch_widget import SwitchButton
 from .updater import (
     apply_update_and_restart,
     download_release_exe,
@@ -113,6 +115,7 @@ class BridgeApp:
             register_uninstall_entry()
 
         self.enabled_var = tk.BooleanVar(value=self.settings.enabled)
+        self.autostart_var = tk.BooleanVar(value=self.settings.autostart_with_windows)
         self.port_var = tk.StringVar(value=str(self.settings.port))
         self.status_var = tk.StringVar(value="…")
         self.badge_var = tk.StringVar(value="")
@@ -286,21 +289,63 @@ class BridgeApp:
         card = tk.Frame(self.root, bg=PANEL, highlightthickness=0)
         card.pack(fill="x", padx=20, pady=10)
 
+        # Bridge ON/OFF — primary switch row
         toggle_row = tk.Frame(card, bg=PANEL)
-        toggle_row.pack(fill="x", padx=16, pady=(14, 6))
+        toggle_row.pack(fill="x", padx=16, pady=(16, 4))
+        left_bridge = tk.Frame(toggle_row, bg=PANEL)
+        left_bridge.pack(side="left", fill="x", expand=True)
         self.enabled_label = tk.Label(
-            toggle_row,
+            left_bridge,
             text=t.bridge_enabled,
-            font=("Segoe UI Semibold", 12),
+            font=("Segoe UI Semibold", 13),
             fg=FG,
             bg=PANEL,
         )
-        self.enabled_label.pack(side="left")
-        ttk.Checkbutton(
+        self.enabled_label.pack(anchor="w")
+        self.badge = tk.Label(
+            left_bridge,
+            textvariable=self.badge_var,
+            font=("Segoe UI Semibold", 9),
+            fg="#ffffff",
+            bg=OFF,
+            padx=8,
+            pady=2,
+        )
+        self.badge.pack(anchor="w", pady=(6, 0))
+        self._enabled_switch = SwitchButton(
             toggle_row,
             variable=self.enabled_var,
             command=self._on_toggle,
-        ).pack(side="right")
+            on_color=OK,
+            off_color=OFF,
+            bg=PANEL,
+            width=56,
+            height=32,
+        )
+        self._enabled_switch.pack(side="right", padx=(12, 0))
+
+        # Autostart with Windows
+        auto_row = tk.Frame(card, bg=PANEL)
+        auto_row.pack(fill="x", padx=16, pady=(12, 8))
+        self.autostart_label = tk.Label(
+            auto_row,
+            text=t.autostart_windows,
+            font=("Segoe UI", 11),
+            fg=FG,
+            bg=PANEL,
+        )
+        self.autostart_label.pack(side="left")
+        self._autostart_switch = SwitchButton(
+            auto_row,
+            variable=self.autostart_var,
+            command=self._on_autostart_toggle,
+            on_color=ACCENT,
+            off_color=OFF,
+            bg=PANEL,
+            width=52,
+            height=30,
+        )
+        self._autostart_switch.pack(side="right", padx=(12, 0))
 
         self.status_label = tk.Label(
             card,
@@ -311,18 +356,7 @@ class BridgeApp:
             wraplength=MIN_WINDOW_W - 80,
             justify="left",
         )
-        self.status_label.pack(anchor="w", padx=16, pady=(0, 6))
-
-        self.badge = tk.Label(
-            card,
-            textvariable=self.badge_var,
-            font=("Segoe UI Semibold", 11),
-            fg="#ffffff",
-            bg=OFF,
-            padx=10,
-            pady=3,
-        )
-        self.badge.pack(anchor="w", padx=16, pady=(0, 8))
+        self.status_label.pack(anchor="w", padx=16, pady=(4, 12))
 
         self.phone_banner = tk.Label(
             card,
@@ -707,11 +741,33 @@ class BridgeApp:
         else:
             self._disable_completely()
 
+    def _on_autostart_toggle(self) -> None:
+        want = bool(self.autostart_var.get())
+        self.settings = update_settings(autostart_with_windows=want)
+        if want:
+            ok = register_autostart()
+            if not ok:
+                self.autostart_var.set(False)
+                self.settings = update_settings(autostart_with_windows=False)
+                messagebox.showwarning(PRODUCT_NAME, self.strings.autostart_failed)
+                return
+        else:
+            unregister_autostart()
+
     def _start_enabled(self, *, persist: bool) -> None:
         port = self._read_port()
-        self.settings = update_settings(enabled=True, port=port)
-        # Install/autostart first; firewall elevation only after a clear Yes/No.
-        prepare_enabled_runtime(port=port, allow_firewall_elevate=False)
+        autostart = bool(self.autostart_var.get())
+        self.settings = update_settings(
+            enabled=True,
+            port=port,
+            autostart_with_windows=autostart,
+        )
+        # Install first; firewall elevation only after a clear Yes/No.
+        prepare_enabled_runtime(
+            port=port,
+            allow_firewall_elevate=False,
+            autostart=autostart,
+        )
         self._set_ui_enabled(True)
         self.status_var.set(self.strings.status_enabled_waiting)
         self.agent.start(self.settings)
@@ -907,6 +963,7 @@ class BridgeApp:
     def _disable_completely(self) -> None:
         self.settings = update_settings(enabled=False)
         self.agent.stop(join=True)
+        # Don't launch a disabled Bridge at logon; preference stays in autostart_var.
         unregister_autostart()
         self._set_ui_enabled(False)
         self.status_var.set(self.strings.status_disabled)

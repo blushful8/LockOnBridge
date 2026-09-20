@@ -7,6 +7,7 @@ from dataclasses import dataclass
 class Strings:
     subtitle: str
     bridge_enabled: str
+    autostart_windows: str
     tip: str
     http_port: str
     open_logs: str
@@ -50,6 +51,7 @@ class Strings:
     status_active: str
     status_stopping: str
     status_port_saved: str
+    autostart_failed: str
     tray_open: str
     tray_disable: str
     tray_quit: str
@@ -99,7 +101,8 @@ class Strings:
 
 EN = Strings(
     subtitle="OCR companion for LockOn (War Thunder)",
-    bridge_enabled="Bridge enabled",
+    bridge_enabled="Bridge",
+    autostart_windows="Start with Windows",
     tip=(
         "Choose your War Thunder UI language once. "
         "When you enable Bridge, it can install OCR helpers automatically — "
@@ -181,6 +184,7 @@ EN = Strings(
     status_active="War Thunder — Bridge active",
     status_stopping="Stopping…",
     status_port_saved="Port saved ({port})",
+    autostart_failed="Could not register Windows autostart (scheduled task).",
     tray_open="Open",
     tray_disable="Disable Bridge",
     tray_quit="Quit",
@@ -258,7 +262,8 @@ EN = Strings(
 
 UK = Strings(
     subtitle="OCR-супутник для LockOn (War Thunder)",
-    bridge_enabled="Bridge увімкнено",
+    bridge_enabled="Bridge",
+    autostart_windows="Запуск зі стартом Windows",
     tip=(
         "Один раз оберіть мову інтерфейсу War Thunder. "
         "Після увімкнення Bridge сам запропонує OCR-пакети — "
@@ -342,6 +347,7 @@ UK = Strings(
     status_active="War Thunder — Bridge активний",
     status_stopping="Зупинка…",
     status_port_saved="Порт збережено ({port})",
+    autostart_failed="Не вдалося зареєструвати автозапуск Windows (завдання планувальника).",
     tray_open="Відкрити",
     tray_disable="Вимкнути Bridge",
     tray_quit="Вийти",

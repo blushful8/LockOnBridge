@@ -166,6 +166,12 @@ def remove_desktop_shortcut() -> None:
         log.warning("Could not remove desktop shortcut: %s", exc)
 
 
+def is_autostart_registered() -> bool:
+    """True when the LockOn Bridge logon scheduled task exists."""
+    result = _run_hidden(["schtasks.exe", "/Query", "/TN", TASK_NAME])
+    return result.returncode == 0
+
+
 def register_autostart() -> bool:
     execute, arguments, cwd = _launch_parts()
     if is_frozen():
@@ -574,14 +580,22 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             continue
 
 
-def prepare_enabled_runtime(*, port: int, allow_firewall_elevate: bool = False) -> None:
+def prepare_enabled_runtime(
+    *,
+    port: int,
+    allow_firewall_elevate: bool = False,
+    autostart: bool = True,
+) -> None:
     """
     One-shot setup when Bridge is turned ON / starts enabled.
     Firewall elevation is opt-in from the UI (clear prompt before UAC).
     """
     stop_other_bridge_processes()
     ensure_install_copy()
-    register_autostart()
+    if autostart:
+        register_autostart()
+    else:
+        unregister_autostart()
     register_uninstall_entry()
     ensure_firewall_rule(port, allow_elevate=allow_firewall_elevate)
 

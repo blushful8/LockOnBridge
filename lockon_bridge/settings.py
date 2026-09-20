@@ -29,6 +29,8 @@ class BridgeSettings:
     has_premium_account: bool = False
     # Developer: live transparent ROI overlay + annotated dumps.
     debug_show_rois: bool = False
+    # Launch Bridge at Windows logon (scheduled task). Independent of agent run.
+    autostart_with_windows: bool = True
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "BridgeSettings":
@@ -52,6 +54,11 @@ class BridgeSettings:
         backend = str(raw.get("ocr_backend") or "auto").strip().lower()
         if backend not in ("auto", "windows", "tesseract"):
             backend = "auto"
+        # Default True when key missing (previous builds always registered on enable).
+        if "autostart_with_windows" in raw:
+            autostart = bool(raw.get("autostart_with_windows"))
+        else:
+            autostart = True
         return cls(
             enabled=bool(raw.get("enabled", False)),
             port=port,
@@ -65,6 +72,7 @@ class BridgeSettings:
             ocr_setup_done=bool(raw.get("ocr_setup_done", False)),
             has_premium_account=bool(raw.get("has_premium_account", False)),
             debug_show_rois=bool(raw.get("debug_show_rois", False)),
+            autostart_with_windows=autostart,
         )
 
     def to_dict(self) -> dict[str, Any]:
