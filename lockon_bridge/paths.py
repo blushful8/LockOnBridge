@@ -31,6 +31,11 @@ def log_file() -> Path:
     return log_dir() / "bridge.log"
 
 
+def error_parse_image_path() -> Path:
+    """Single overwriteable frame when all calibrated ROI pairs fail OCR."""
+    return data_root() / "error_parse.png"
+
+
 def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 

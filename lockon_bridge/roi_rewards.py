@@ -294,6 +294,25 @@ def _cell_is_clean_number(text: str, amount: int | None) -> bool:
     return True
 
 
+def save_error_parse_frame(image: Image.Image) -> None:
+    """
+    Overwrite the single debug frame used when every calibrated pair fails.
+
+    Always one file (error_parse.png) under LocalAppData so disk stays bounded
+    while the latest failure stays available for offline pair tuning.
+    """
+    from .paths import data_root, error_parse_image_path
+
+    path = error_parse_image_path()
+    try:
+        data_root().mkdir(parents=True, exist_ok=True)
+        rgb = image if image.mode == "RGB" else image.convert("RGB")
+        rgb.save(path, format="PNG", optimize=True)
+        log.info("All calib pairs failed — wrote %s", path)
+    except OSError as exc:
+        log.warning("Could not write %s: %s", path, exc)
+
+
 def try_calibrated_column_pair(
     image: Image.Image,
     *,
@@ -304,6 +323,7 @@ def try_calibrated_column_pair(
 
     Accept a pair only when BOTH RP and SL read as clean numbers (no letters in
     either cell). If one cell has letters / no digits → try the next pair.
+    When every pair fails, overwrite error_parse.png for offline tuning.
     """
     from .roi_calib import calibrated_all_pair_rects
     from .roi_layout import crop_norm
@@ -343,6 +363,7 @@ def try_calibrated_column_pair(
             continue
         log.info("calib pair %s-p%s OK → %s / %s", prefix, index, rp_amt, sl_amt)
         return index, rp_amt, sl_amt
+    save_error_parse_frame(image)
     return None
 
 

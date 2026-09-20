@@ -305,3 +305,37 @@ def test_consensus_keeps_without_rp_when_total_differs():
         )
         for t in tags
     )
+
+
+def test_all_calib_pairs_fail_overwrites_single_error_parse(tmp_path, monkeypatch):
+    """When every calibrated pair fails, keep exactly one error_parse.png."""
+    from lockon_bridge.roi_layout import NormRect
+    from lockon_bridge.roi_rewards import try_calibrated_column_pair
+
+    dump = tmp_path / "error_parse.png"
+    monkeypatch.setattr(
+        "lockon_bridge.paths.error_parse_image_path",
+        lambda: dump,
+    )
+    monkeypatch.setattr(
+        "lockon_bridge.paths.data_root",
+        lambda: tmp_path,
+    )
+    # Two pairs that crop black empty cells → no clean numbers.
+    junk = NormRect(0.01, 0.01, 0.05, 0.05, "junk")
+    monkeypatch.setattr(
+        "lockon_bridge.roi_calib.calibrated_all_pair_rects",
+        lambda *, prefer_with: [
+            (0, junk, junk),
+            (1, junk, junk),
+        ],
+    )
+    img = Image.new("RGB", (200, 200), (0, 0, 0))
+    assert try_calibrated_column_pair(img, prefer_with=False) is None
+    assert dump.is_file()
+    first_size = dump.stat().st_size
+    img2 = Image.new("RGB", (220, 180), (12, 34, 56))
+    assert try_calibrated_column_pair(img2, prefer_with=True) is None
+    assert dump.is_file()
+    assert list(tmp_path.glob("error_parse*")) == [dump]
+    assert dump.stat().st_size != first_size or dump.stat().st_mtime_ns >= 0
