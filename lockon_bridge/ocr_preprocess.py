@@ -25,6 +25,41 @@ def soft_upscale(image: Image.Image, *, min_height: int = 96) -> Image.Image:
     return out
 
 
+def blank_trailing_reward_icon(
+    image: Image.Image,
+    *,
+    right_frac: float = 0.28,
+) -> Image.Image:
+    """
+    Blank the right strip of a single RP/SL cell where WT draws the bulb/lion icon.
+
+    OCR often reads the lion mane as a trailing ``9`` (``379`` → ``3799``) or the
+    RP bulb as ``9``/``8``. Digits sit on the left; icons are always on the right.
+    """
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    if width < 24 or height < 8:
+        return rgb
+    cut = max(1, min(width - 1, int(round(width * (1.0 - right_frac)))))
+    # Sample a dark background from the far-left margin (away from white digits).
+    sample = rgb.crop((0, 0, max(1, width // 8), height))
+    if np is not None:
+        arr = np.asarray(sample, dtype=np.int32)
+        fill = tuple(int(x) for x in arr.reshape(-1, 3).mean(axis=0))
+    else:
+        pixels = list(sample.getdata())
+        fill = (
+            tuple(int(sum(c[i] for c in pixels) / len(pixels)) for i in range(3))
+            if pixels
+            else (32, 32, 32)
+        )
+    out = rgb.copy()
+    from PIL import ImageDraw
+
+    ImageDraw.Draw(out).rectangle([cut, 0, width, height], fill=fill)
+    return out
+
+
 def hsv_bright_text_mask(image: Image.Image, *, invert: bool = True) -> Image.Image | None:
     """
     Keep bright game UI text (white / yellow «Всього» / cyan-blue RP), black out the rest.

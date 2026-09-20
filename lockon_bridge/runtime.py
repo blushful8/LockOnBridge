@@ -27,16 +27,16 @@ class RuntimeConfig:
     port: int = 8112
     game_host: str = "127.0.0.1"
     game_port: int = 8111
-    # Hard ceiling only — settle usually publishes after 2 matching frames.
-    frames: int = 8
+    # Hard ceiling: ideally settle in 2–3 frames; never more than 5 screenshots.
+    frames: int = 5
     # Idle gap *after* OCR finishes (OCR itself is the long part).
-    frame_gap: float = 0.35
+    frame_gap: float = 0.25
     # First frames: almost no idle; catch quick results closes.
-    early_frames: int = 4
-    early_frame_gap: float = 0.12
+    early_frames: int = 2
+    early_frame_gap: float = 0.08
     # Almost no wait: results often appear immediately; a long delay misses users who close fast.
     # Count-up is handled by SettleTracker, not by sitting idle before the first screenshot.
-    capture_delay_sec: float = 0.2
+    capture_delay_sec: float = 0.15
     # Consecutive near-identical OCR pairs required before publish (never publish frame 1 alone).
     settle_stable_frames: int = 2
     # Also require lean ROI pixels to match this many times (count-up animation gate).

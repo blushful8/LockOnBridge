@@ -118,12 +118,18 @@ def _ocr_ghost_trim(value: int) -> int | None:
     Optional OCR trailing-digit trim. Never mutates real high rewards in place.
 
     Safe cases only:
+      • trailing 9 on a 4-digit token (3799 → 379) — lion/bulb icon ghost
       • trailing 9 on a 5-digit token (10259 → 1025) — rare for real rewards
       • trailing 0 on a *non-round* 5-digit token (72620 → 7262), but NOT
         15000 / 20000 / 10000 (real thousand amounts farmers hit with premium)
 
     6+ digit values (100000+ SL) are never trimmed.
     """
+    # Lion / bulb icon glued as trailing 9 on a 4-digit cell (379 → 3799).
+    if 1_000 <= value <= 9_999 and value % 10 == 9:
+        trimmed = value // 10
+        if 50 <= trimmed <= 4_500:
+            return trimmed
     if not (10_000 <= value <= 99_999):
         return None
     trimmed = value // 10
@@ -135,6 +141,39 @@ def _ocr_ghost_trim(value: int) -> int | None:
         # 72620 → 7262; keep 15000 / 28000 / etc.
         return trimmed
     return None
+
+
+def _prefer_amount_with_ghost_trim(amount: int) -> list[int]:
+    """Raw amount first, then optional icon-ghost trim candidate."""
+    out = [amount]
+    trimmed = _ocr_ghost_trim(amount)
+    if trimmed is not None and trimmed not in out:
+        out.append(trimmed)
+    return out
+
+
+def _best_column_sl(rp: int, sl_candidates: list[int]) -> int | None:
+    """Pick SL that pairs with RP; prefer classic arcade ratio + icon-ghost trim."""
+    best: int | None = None
+    best_score = -1.0
+    for sl in sl_candidates:
+        if not _column_pair_usable(rp, sl):
+            continue
+        ratio = sl / max(1, rp)
+        score = 0.0
+        if 2.5 <= ratio <= 20.0:
+            score += 3.0
+        elif 1.8 <= ratio < 2.5:
+            score += 1.0
+        elif 20.0 < ratio <= 40.0:
+            score += 0.2
+        # Prefer trimmed lion-ghost (3799→379) when both are usable.
+        if sl != sl_candidates[0] and sl_candidates[0] % 10 == 9:
+            score += 1.5
+        if score > best_score:
+            best_score = score
+            best = sl
+    return best
 
 
 def pair_from_digit_text(text: str) -> tuple[int, int] | None:
@@ -345,9 +384,20 @@ def try_calibrated_column_pair(
         if rp_crop is None or sl_crop is None:
             log.debug("calib pair %s-p%s: crop missing", prefix, index)
             continue
+        # Blank bulb/lion on the right so OCR does not append a ghost digit.
+        from .ocr_preprocess import blank_trailing_reward_icon
+
+        rp_crop = blank_trailing_reward_icon(rp_crop)
+        sl_crop = blank_trailing_reward_icon(sl_crop)
         # WinRT / Tesseract only (RapidOCR removed — native AV on some GPUs).
         rp_text, rp_amt = _read_roi_amount(rp_crop, prefer_stable=True)
         sl_text, sl_amt = _read_roi_amount(sl_crop, prefer_stable=True)
+        # Bulb icon → trailing 9 on RP (1369 → 136) when mask was not enough.
+        if rp_amt is not None:
+            trimmed_rp = _ocr_ghost_trim(rp_amt)
+            if trimmed_rp is not None and rp_amt % 10 == 9:
+                rp_amt = trimmed_rp
+                rp_text = str(trimmed_rp)
         rp_ok = _cell_is_clean_number(rp_text, rp_amt)
         sl_ok = _cell_is_clean_number(sl_text, sl_amt)
         if not rp_ok or not sl_ok:
@@ -360,15 +410,7 @@ def try_calibrated_column_pair(
             )
             continue
         assert rp_amt is not None and sl_amt is not None
-        sl_candidates = [sl_amt]
-        trimmed = _ocr_ghost_trim(sl_amt)
-        if trimmed is not None and trimmed not in sl_candidates:
-            sl_candidates.append(trimmed)
-        chosen_sl: int | None = None
-        for sl_try in sl_candidates:
-            if _column_pair_usable(rp_amt, sl_try):
-                chosen_sl = sl_try
-                break
+        chosen_sl = _best_column_sl(rp_amt, _prefer_amount_with_ghost_trim(sl_amt))
         if chosen_sl is None:
             log.info(
                 "calib pair %s-p%s rejected (unusable): %s/%s",

@@ -322,3 +322,26 @@ def test_all_calib_pairs_fail_overwrites_single_error_parse(tmp_path, monkeypatc
     assert dump.is_file()
     assert list(tmp_path.glob("error_parse*")) == [dump]
     assert dump.stat().st_size != first_size or dump.stat().st_mtime_ns >= 0
+
+
+def test_icon_ghost_trim_and_blank_margin():
+    """Lion/bulb on the right must not become a trailing digit (3799→379)."""
+    from lockon_bridge.ocr_preprocess import blank_trailing_reward_icon
+    from lockon_bridge.roi_rewards import (
+        _best_column_sl,
+        _ocr_ghost_trim,
+        _read_roi_amount,
+    )
+
+    assert _ocr_ghost_trim(3799) == 379
+    assert _ocr_ghost_trim(1369) == 136
+    assert _best_column_sl(136, [3799, 379]) == 379
+
+    sl_path = FIXTURES / "cell_sl_379_lion.png"
+    rp_path = FIXTURES / "cell_rp_136_bulb.png"
+    if not sl_path.is_file() or not rp_path.is_file():
+        return
+    sl = blank_trailing_reward_icon(Image.open(sl_path).convert("RGB"))
+    rp = blank_trailing_reward_icon(Image.open(rp_path).convert("RGB"))
+    assert _read_roi_amount(sl, prefer_stable=True)[1] == 379
+    assert _read_roi_amount(rp, prefer_stable=True)[1] == 136
