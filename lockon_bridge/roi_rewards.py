@@ -282,15 +282,28 @@ def _read_roi_amount(crop: Image.Image) -> tuple[str, int | None]:
     return text or "", int(amounts[0])
 
 
+_LETTER = re.compile(r"[A-Za-zА-Яа-яІіЇїЄєҐґЁё]", re.UNICODE)
+
+
+def _cell_is_clean_number(text: str, amount: int | None) -> bool:
+    """True only when the cell yielded a number and OCR did not see letters."""
+    if amount is None:
+        return False
+    if _LETTER.search(text or ""):
+        return False
+    return True
+
+
 def try_calibrated_column_pair(
     image: Image.Image,
     *,
     prefer_with: bool,
 ) -> tuple[int, int, int] | None:
     """
-    Walk calibrated fallback pairs in order until RP+SL both read as usable numbers.
+    Walk calibrated fallback pairs in order.
 
-    Returns ``(pair_index, rp, sl)`` or None if every pair fails (letters / junk).
+    Accept a pair only when BOTH RP and SL read as clean numbers (no letters in
+    either cell). If one cell has letters / no digits → try the next pair.
     """
     from .roi_calib import calibrated_all_pair_rects
     from .roi_layout import crop_norm
@@ -307,15 +320,18 @@ def try_calibrated_column_pair(
             continue
         rp_text, rp_amt = _read_roi_amount(rp_crop)
         sl_text, sl_amt = _read_roi_amount(sl_crop)
-        if rp_amt is None or sl_amt is None:
+        rp_ok = _cell_is_clean_number(rp_text, rp_amt)
+        sl_ok = _cell_is_clean_number(sl_text, sl_amt)
+        if not rp_ok or not sl_ok:
             log.debug(
-                "calib pair %s-p%s rejected (non-numeric): rp=%r sl=%r",
+                "calib pair %s-p%s rejected (need both numeric): rp=%r sl=%r",
                 prefix,
                 index,
                 (rp_text or "")[:40],
                 (sl_text or "")[:40],
             )
             continue
+        assert rp_amt is not None and sl_amt is not None
         if not _column_pair_usable(rp_amt, sl_amt):
             log.debug(
                 "calib pair %s-p%s rejected (unusable): %s/%s",

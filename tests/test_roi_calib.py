@@ -66,25 +66,45 @@ def test_legacy_v1_loads_as_single_pair():
     assert calib.with_premium.rp.left == 0.1
 
 
-def test_multi_pair_roundtrip():
-    from lockon_bridge.roi_calib import ColumnRois, RoiPair
-    from lockon_bridge.roi_layout import NormRect
-
+def test_add_fallback_pair_syncs_both_columns():
     base = default_calibrated_rois()
-    extra = RoiPair(
-        rp=NormRect(0.5, 0.2, 0.6, 0.25, "with-p1-rp"),
-        sl=NormRect(0.5, 0.26, 0.6, 0.31, "with-p1-sl"),
-    )
-    calib = CalibratedRois(
-        version=2,
-        with_premium=base.with_premium.add_pair(extra),
-        without_premium=base.without_premium,
-    )
-    assert len(calib.with_premium.pairs) == 2
-    again = calibrated_from_dict(calibrated_to_dict(calib))
-    assert again is not None
-    assert len(again.with_premium.pairs) == 2
-    assert again.with_premium.pairs[1].rp.left == 0.5
+    assert base.pair_count == 1
+    synced = base.add_fallback_pair()
+    assert synced.pair_count == 2
+    assert len(synced.with_premium.pairs) == 2
+    assert len(synced.without_premium.pairs) == 2
+    trimmed = synced.remove_fallback_pair(1)
+    assert trimmed.pair_count == 1
+
+
+def test_uneven_columns_pad_on_load():
+    raw = {
+        "version": 2,
+        "with": {
+            "pairs": [
+                {
+                    "rp": {"left": 0.1, "top": 0.1, "right": 0.2, "bottom": 0.15},
+                    "sl": {"left": 0.1, "top": 0.16, "right": 0.2, "bottom": 0.21},
+                },
+                {
+                    "rp": {"left": 0.2, "top": 0.1, "right": 0.3, "bottom": 0.15},
+                    "sl": {"left": 0.2, "top": 0.16, "right": 0.3, "bottom": 0.21},
+                },
+            ]
+        },
+        "without": {
+            "pairs": [
+                {
+                    "rp": {"left": 0.3, "top": 0.1, "right": 0.4, "bottom": 0.15},
+                    "sl": {"left": 0.3, "top": 0.16, "right": 0.4, "bottom": 0.21},
+                }
+            ]
+        },
+    }
+    calib = calibrated_from_dict(raw)
+    assert calib is not None
+    assert calib.pair_count == 2
+    assert len(calib.without_premium.pairs) == 2
 
 
 def test_lean_rects_use_calibrated_when_present():

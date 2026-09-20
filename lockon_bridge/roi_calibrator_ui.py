@@ -113,7 +113,7 @@ class RoiCalibrator:
     ) -> None:
         self.master = master
         self._on_closed = on_closed
-        self._calib = load_calibrated_rois() or default_calibrated_rois()
+        self._calib = (load_calibrated_rois() or default_calibrated_rois()).with_synced_pair_counts()
         self._edit_with = False
         self._pair_index = 0
         self._source = _SRC_WT
@@ -258,9 +258,13 @@ class RoiCalibrator:
     def _refresh_pair_label(self) -> None:
         if self._pair_label is None:
             return
-        n = len(self._active_column().pairs)
+        n = self._calib.pair_count
+        self._pair_index = min(self._pair_index, max(0, n - 1))
         self._pair_label.configure(
-            text=f"Пара {self._pair_index + 1} / {n}  (OCR: 1→2→… поки є числа)"
+            text=(
+                f"Пара {self._pair_index + 1} / {n}  "
+                "(спільний індекс для з/без преміуму; OCR: обидва числа → ок)"
+            )
         )
 
     def _ensure_panel(self) -> None:
@@ -431,9 +435,10 @@ class RoiCalibrator:
         tk.Label(
             win,
             text=(
-                "Скріншот відкривається на весь екран без рамок (як WT). "
-                "Пари 2+ — запасні: якщо в парі 1 OCR бачить букви замість чисел, "
-                "береться наступна. Esc — закрити overlay."
+                "Скріншот — fullscreen без рамок. «+ пара» додає слот одразу для "
+                "з преміумом і без. Індекс пари спільний при перемиканні. "
+                "OCR: якщо RP і SL — числа → ок; якщо в одній клітинці буква → наступна пара. "
+                "Esc — закрити overlay."
             ),
             font=("Segoe UI", 9),
             fg="#8b909a",
@@ -453,32 +458,38 @@ class RoiCalibrator:
         self._redraw_overlay(force_boxes=True)
 
     def _next_pair(self) -> None:
-        if self._pair_index >= len(self._active_column().pairs) - 1:
+        if self._pair_index >= self._calib.pair_count - 1:
             return
         self._pair_index += 1
         self._refresh_pair_label()
         self._redraw_overlay(force_boxes=True)
 
     def _add_pair(self) -> None:
-        col = self._active_column().add_pair()
-        self._set_active_column(col)
-        self._pair_index = len(col.pairs) - 1
+        self._calib = self._calib.add_fallback_pair()
+        self._pair_index = self._calib.pair_count - 1
         self._refresh_pair_label()
         self._redraw_overlay(force_boxes=True)
         if self._status is not None:
             self._status.configure(
-                text=f"Додано запасну пару #{self._pair_index + 1}. Вирівняй RP/SL."
+                text=(
+                    f"Додано пару #{self._pair_index + 1} для З і БЕЗ преміуму. "
+                    "Вирівняй RP/SL у поточному режимі, потім перемкни колонку."
+                )
             )
 
     def _remove_pair(self) -> None:
-        col = self._active_column()
-        if len(col.pairs) <= 1:
+        if self._calib.pair_count <= 1:
             if self._status is not None:
                 self._status.configure(text="Потрібна хоча б одна пара.")
             return
-        col = col.remove_pair(self._pair_index)
-        self._set_active_column(col)
+        self._calib = self._calib.remove_fallback_pair(self._pair_index)
+        self._pair_index = min(self._pair_index, self._calib.pair_count - 1)
+        self._refresh_pair_label()
         self._redraw_overlay(force_boxes=True)
+        if self._status is not None:
+            self._status.configure(
+                text=f"Видалено пару з обох колонок. Залишилось: {self._calib.pair_count}."
+            )
 
     def _on_source_toggle(self) -> None:
         self._source = (self._src_var.get() if self._src_var else _SRC_WT) or _SRC_WT
@@ -528,20 +539,24 @@ class RoiCalibrator:
 
     def _on_column_toggle(self) -> None:
         self._edit_with = bool(self._col_var and self._col_var.get() == "with")
-        self._pair_index = min(self._pair_index, len(self._active_column().pairs) - 1)
+        # Shared pair index — stay on the same slot when flipping with/without.
+        self._pair_index = min(self._pair_index, max(0, self._calib.pair_count - 1))
         self._refresh_pair_label()
         self._redraw_overlay(force_boxes=True)
         if self._status is not None:
             which = "З преміумом" if self._edit_with else "Без преміуму"
-            self._status.configure(text=f"Редагується колонка: {which}")
+            self._status.configure(
+                text=f"Редагується колонка: {which} (пара {self._pair_index + 1})"
+            )
 
     def _reset_column(self) -> None:
         defaults = default_calibrated_rois()
         self._pair_index = 0
-        self._set_active_column(
-            defaults.with_premium if self._edit_with else defaults.without_premium
-        )
+        self._calib = defaults.with_synced_pair_counts()
+        self._refresh_pair_label()
         self._redraw_overlay(force_boxes=True)
+        if self._status is not None:
+            self._status.configure(text="Скинуто обидві колонки до дефолтних пар.")
 
     def _save(self) -> None:
         also_pkg = not bool(getattr(sys, "frozen", False))

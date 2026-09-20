@@ -100,6 +100,61 @@ class CalibratedRois:
     def column(self, *, prefer_with: bool) -> ColumnRois:
         return self.with_premium if prefer_with else self.without_premium
 
+    @property
+    def pair_count(self) -> int:
+        return max(len(self.with_premium.pairs), len(self.without_premium.pairs))
+
+    def with_synced_pair_counts(self) -> CalibratedRois:
+        """Pad the shorter column so with/without always share the same pair indices."""
+        w = list(self.with_premium.pairs)
+        wo = list(self.without_premium.pairs)
+        while len(w) < len(wo):
+            w.append(_nudge_pair(w[-1] if w else wo[-1], tag_prefix="with"))
+        while len(wo) < len(w):
+            wo.append(_nudge_pair(wo[-1] if wo else w[-1], tag_prefix="without"))
+        if len(w) == len(self.with_premium.pairs) and len(wo) == len(self.without_premium.pairs):
+            return self
+        return CalibratedRois(
+            version=self.version,
+            with_premium=ColumnRois(pairs=tuple(w)),
+            without_premium=ColumnRois(pairs=tuple(wo)),
+        )
+
+    def add_fallback_pair(self) -> CalibratedRois:
+        """Append one new pair slot to BOTH premium columns (same index)."""
+        return CalibratedRois(
+            version=self.version,
+            with_premium=self.with_premium.add_pair(),
+            without_premium=self.without_premium.add_pair(),
+        ).with_synced_pair_counts()
+
+    def remove_fallback_pair(self, index: int) -> CalibratedRois:
+        """Remove the same pair index from BOTH columns."""
+        return CalibratedRois(
+            version=self.version,
+            with_premium=self.with_premium.remove_pair(index),
+            without_premium=self.without_premium.remove_pair(index),
+        ).with_synced_pair_counts()
+
+
+def _nudge_pair(base: RoiPair, *, tag_prefix: str) -> RoiPair:
+    return RoiPair(
+        rp=NormRect(
+            min(0.95, base.rp.left + 0.02),
+            min(0.95, base.rp.top + 0.02),
+            min(0.99, base.rp.right + 0.02),
+            min(0.99, base.rp.bottom + 0.02),
+            f"{tag_prefix}-rp",
+        ).clamp(),
+        sl=NormRect(
+            min(0.95, base.sl.left + 0.02),
+            min(0.95, base.sl.top + 0.02),
+            min(0.99, base.sl.right + 0.02),
+            min(0.99, base.sl.bottom + 0.02),
+            f"{tag_prefix}-sl",
+        ).clamp(),
+    )
+
 
 def _norm_from_dict(raw: Any, tag: str) -> NormRect | None:
     if not isinstance(raw, dict):
@@ -206,7 +261,7 @@ def calibrated_from_dict(raw: Any) -> CalibratedRois | None:
         version=version,
         with_premium=with_col,
         without_premium=without_col,
-    )
+    ).with_synced_pair_counts()
 
 
 def packaged_calib_path() -> Path:
