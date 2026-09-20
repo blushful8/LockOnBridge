@@ -15,15 +15,15 @@ def main(argv: list[str] | None = None) -> int:
     quiet = _quiet(args)
 
     from lockon_bridge.autostart import full_uninstall
-    from lockon_bridge.i18n import STRINGS_EN, STRINGS_UK
+    from lockon_bridge.i18n import EN, UK
     from lockon_bridge.paths import PRODUCT_NAME
     from lockon_bridge.settings import load_settings
 
-    confirm = STRINGS_EN.uninstall_confirm
+    confirm = EN.uninstall_confirm
     try:
         lang = (load_settings().language or "en").lower()
         if lang.startswith("uk") or lang.startswith("ua"):
-            confirm = STRINGS_UK.uninstall_confirm
+            confirm = UK.uninstall_confirm
     except Exception:  # noqa: BLE001 — settings optional during uninstall
         pass
 
