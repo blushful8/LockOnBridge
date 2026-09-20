@@ -308,7 +308,7 @@ def test_all_calib_pairs_fail_overwrites_single_error_parse(tmp_path, monkeypatc
     junk = NormRect(0.01, 0.01, 0.05, 0.05, "junk")
     monkeypatch.setattr(
         "lockon_bridge.roi_calib.calibrated_all_pair_rects",
-        lambda *, prefer_with: [
+        lambda *, prefer_with, calib=None: [
             (0, junk, junk),
             (1, junk, junk),
         ],

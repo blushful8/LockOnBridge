@@ -362,11 +362,116 @@ def save_error_parse_frame(image: Image.Image) -> None:
     archive_capture_frame(image, kind="fail", note="calib")
 
 
+@dataclass(frozen=True)
+class PairProbeRow:
+    """One calib pair OCR attempt (for calibrator preview)."""
+
+    pair_index: int
+    rp_text: str
+    sl_text: str
+    research_points: int | None
+    silver_lions: int | None
+    accepted: bool
+    reason: str  # ok | crop | letters | unusable
+
+
+def _probe_one_pair_rects(
+    image: Image.Image,
+    rp_rect,
+    sl_rect,
+    *,
+    pair_index: int,
+    prefix: str,
+) -> PairProbeRow:
+    """OCR a single RP+SL NormRect pair (shared by runtime + calibrator preview)."""
+    from .ocr_preprocess import blank_trailing_reward_icon
+    from .roi_layout import crop_norm
+
+    rp_crop = crop_norm(image, rp_rect)
+    sl_crop = crop_norm(image, sl_rect)
+    if rp_crop is None or sl_crop is None:
+        log.debug("calib pair %s-p%s: crop missing", prefix, pair_index)
+        return PairProbeRow(
+            pair_index=pair_index,
+            rp_text="",
+            sl_text="",
+            research_points=None,
+            silver_lions=None,
+            accepted=False,
+            reason="crop",
+        )
+
+    rp_crop = blank_trailing_reward_icon(rp_crop)
+    sl_crop = blank_trailing_reward_icon(sl_crop)
+    rp_text, rp_amt = _read_roi_amount(rp_crop, prefer_stable=True)
+    sl_text, sl_amt = _read_roi_amount(sl_crop, prefer_stable=True)
+    if rp_amt is not None:
+        trimmed_rp = _ocr_ghost_trim(rp_amt)
+        if trimmed_rp is not None and rp_amt % 10 == 9:
+            rp_amt = trimmed_rp
+            rp_text = str(trimmed_rp)
+    rp_ok = _cell_is_clean_number(rp_text, rp_amt)
+    sl_ok = _cell_is_clean_number(sl_text, sl_amt)
+    if not rp_ok or not sl_ok:
+        log.info(
+            "calib pair %s-p%s rejected (need both numeric): rp=%r sl=%r",
+            prefix,
+            pair_index,
+            (rp_text or "")[:40],
+            (sl_text or "")[:40],
+        )
+        return PairProbeRow(
+            pair_index=pair_index,
+            rp_text=rp_text or "",
+            sl_text=sl_text or "",
+            research_points=rp_amt if rp_ok else None,
+            silver_lions=sl_amt if sl_ok else None,
+            accepted=False,
+            reason="letters",
+        )
+    assert rp_amt is not None and sl_amt is not None
+    chosen_sl = _best_column_sl(rp_amt, _prefer_amount_with_ghost_trim(sl_amt))
+    if chosen_sl is None:
+        log.info(
+            "calib pair %s-p%s rejected (unusable): %s/%s",
+            prefix,
+            pair_index,
+            rp_amt,
+            sl_amt,
+        )
+        return PairProbeRow(
+            pair_index=pair_index,
+            rp_text=rp_text or "",
+            sl_text=sl_text or "",
+            research_points=rp_amt,
+            silver_lions=sl_amt,
+            accepted=False,
+            reason="unusable",
+        )
+    log.info(
+        "calib pair %s-p%s OK → %s / %s",
+        prefix,
+        pair_index,
+        rp_amt,
+        chosen_sl,
+    )
+    return PairProbeRow(
+        pair_index=pair_index,
+        rp_text=rp_text or "",
+        sl_text=sl_text or "",
+        research_points=rp_amt,
+        silver_lions=chosen_sl,
+        accepted=True,
+        reason="ok",
+    )
+
+
 def try_calibrated_column_pair(
     image: Image.Image,
     *,
     prefer_with: bool,
     record_failure: bool = True,
+    calib=None,
 ) -> tuple[int, int, int] | None:
     """
     Walk calibrated fallback pairs in order.
@@ -374,67 +479,99 @@ def try_calibrated_column_pair(
     Accept a pair only when BOTH RP and SL read as clean numbers (no letters in
     either cell). If one cell has letters / no digits → try the next pair.
     When every pair fails and ``record_failure``, overwrite error_parse.png.
+    ``calib`` — optional in-memory CalibratedRois (calibrator preview).
     """
     from .roi_calib import calibrated_all_pair_rects
-    from .roi_layout import crop_norm
 
-    stack = calibrated_all_pair_rects(prefer_with=prefer_with)
+    stack = calibrated_all_pair_rects(prefer_with=prefer_with, calib=calib)
     if not stack:
         return None
     prefix = "with" if prefer_with else "without"
     for index, rp_rect, sl_rect in stack:
-        rp_crop = crop_norm(image, rp_rect)
-        sl_crop = crop_norm(image, sl_rect)
-        if rp_crop is None or sl_crop is None:
-            log.debug("calib pair %s-p%s: crop missing", prefix, index)
-            continue
-        # Blank bulb/lion on the right so OCR does not append a ghost digit.
-        from .ocr_preprocess import blank_trailing_reward_icon
-
-        rp_crop = blank_trailing_reward_icon(rp_crop)
-        sl_crop = blank_trailing_reward_icon(sl_crop)
-        # WinRT / Tesseract only (RapidOCR removed — native AV on some GPUs).
-        rp_text, rp_amt = _read_roi_amount(rp_crop, prefer_stable=True)
-        sl_text, sl_amt = _read_roi_amount(sl_crop, prefer_stable=True)
-        # Bulb icon → trailing 9 on RP (1369 → 136) when mask was not enough.
-        if rp_amt is not None:
-            trimmed_rp = _ocr_ghost_trim(rp_amt)
-            if trimmed_rp is not None and rp_amt % 10 == 9:
-                rp_amt = trimmed_rp
-                rp_text = str(trimmed_rp)
-        rp_ok = _cell_is_clean_number(rp_text, rp_amt)
-        sl_ok = _cell_is_clean_number(sl_text, sl_amt)
-        if not rp_ok or not sl_ok:
-            log.info(
-                "calib pair %s-p%s rejected (need both numeric): rp=%r sl=%r",
-                prefix,
-                index,
-                (rp_text or "")[:40],
-                (sl_text or "")[:40],
-            )
-            continue
-        assert rp_amt is not None and sl_amt is not None
-        chosen_sl = _best_column_sl(rp_amt, _prefer_amount_with_ghost_trim(sl_amt))
-        if chosen_sl is None:
-            log.info(
-                "calib pair %s-p%s rejected (unusable): %s/%s",
-                prefix,
-                index,
-                rp_amt,
-                sl_amt,
-            )
-            continue
-        log.info(
-            "calib pair %s-p%s OK → %s / %s",
-            prefix,
-            index,
-            rp_amt,
-            chosen_sl,
+        row = _probe_one_pair_rects(
+            image, rp_rect, sl_rect, pair_index=index, prefix=prefix
         )
-        return index, rp_amt, chosen_sl
+        if row.accepted and row.research_points is not None and row.silver_lions is not None:
+            return index, row.research_points, row.silver_lions
     if record_failure:
         save_error_parse_frame(image)
     return None
+
+
+@dataclass(frozen=True)
+class CalibPairsProbe:
+    """Full per-pair dump for both premium columns (calibrator live preview)."""
+
+    without: list[PairProbeRow]
+    with_premium: list[PairProbeRow]
+
+    def first_ok(self, *, with_premium: bool) -> PairProbeRow | None:
+        rows = self.with_premium if with_premium else self.without
+        for row in rows:
+            if row.accepted:
+                return row
+        return None
+
+    def format_lines(self) -> str:
+        lines: list[str] = []
+
+        def _block(title: str, rows: list[PairProbeRow]) -> None:
+            lines.append(title)
+            if not rows:
+                lines.append("  (немає пар)")
+                return
+            first = next((r for r in rows if r.accepted), None)
+            for row in rows:
+                mark = "OK" if row.accepted else "—"
+                if row.accepted:
+                    body = f"RP {row.research_points} / SL {row.silver_lions}"
+                elif row.reason == "crop":
+                    body = "немає crop"
+                elif row.reason == "unusable":
+                    body = (
+                        f"відхилено (RP {row.research_points} / "
+                        f"SL {row.silver_lions})"
+                    )
+                else:
+                    rp_show = (
+                        str(row.research_points)
+                        if row.research_points is not None
+                        else repr((row.rp_text or "")[:24])
+                    )
+                    sl_show = (
+                        str(row.silver_lions)
+                        if row.silver_lions is not None
+                        else repr((row.sl_text or "")[:24])
+                    )
+                    body = f"RP {rp_show} / SL {sl_show}"
+                star = " <- first" if first is not None and row is first else ""
+                lines.append(f"  #{row.pair_index + 1} [{mark}] {body}{star}")
+            lines.append("")
+
+        _block("Без преміуму:", self.without)
+        _block("З преміумом:", self.with_premium)
+        return "\n".join(lines).rstrip() + "\n"
+
+
+def probe_all_calib_pairs(
+    image: Image.Image,
+    *,
+    calib=None,
+) -> CalibPairsProbe:
+    """OCR every calib pair in both columns (no failure dump side-effect)."""
+    from .roi_calib import calibrated_all_pair_rects
+
+    def _col(with_prem: bool) -> list[PairProbeRow]:
+        stack = calibrated_all_pair_rects(prefer_with=with_prem, calib=calib) or []
+        prefix = "with" if with_prem else "without"
+        return [
+            _probe_one_pair_rects(
+                image, rp_rect, sl_rect, pair_index=index, prefix=prefix
+            )
+            for index, rp_rect, sl_rect in stack
+        ]
+
+    return CalibPairsProbe(without=_col(False), with_premium=_col(True))
 
 
 @dataclass(frozen=True)
@@ -529,6 +666,7 @@ def probe_both_premium_columns(
     image: Image.Image,
     *,
     prefer_with: bool | None = None,
+    calib=None,
 ) -> DualColumnProbe:
     """Read WITH and WITHOUT calibrated stacks separately (no side-effect dump)."""
     if prefer_with is None:
@@ -541,7 +679,7 @@ def probe_both_premium_columns(
 
     def _one(with_col: bool) -> ColumnProbeHit | None:
         hit = try_calibrated_column_pair(
-            image, prefer_with=with_col, record_failure=False
+            image, prefer_with=with_col, record_failure=False, calib=calib
         )
         if hit is None:
             return None

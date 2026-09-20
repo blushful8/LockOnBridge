@@ -389,10 +389,11 @@ def calibrated_rects_for(
 def calibrated_all_pair_rects(
     *,
     prefer_with: bool,
+    calib: CalibratedRois | None = None,
 ) -> list[tuple[int, NormRect, NormRect]] | None:
     """``[(pair_index, rp, sl), ...]`` for sequential OCR fallback."""
-    calib = load_calibrated_rois()
-    if calib is None:
+    loaded = calib if calib is not None else load_calibrated_rois()
+    if loaded is None:
         return None
-    col = calib.column(prefer_with=prefer_with)
+    col = loaded.column(prefer_with=prefer_with)
     return [(i, p.rp, p.sl) for i, p in enumerate(col.pairs)]

@@ -1,4 +1,4 @@
-﻿"""Developer ROI calibrator — two draggable RP/SL boxes (session unlock only).
+"""Developer ROI calibrator — two draggable RP/SL boxes (session unlock only).
 
 Sources:
   • War Thunder client (live)
@@ -11,6 +11,7 @@ import ctypes
 import hashlib
 import logging
 import sys
+import threading
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -127,6 +128,9 @@ class RoiCalibrator:
         self._overlay: tk.Toplevel | None = None
         self._canvas: tk.Canvas | None = None
         self._panel: tk.Toplevel | None = None
+        self._preview: tk.Toplevel | None = None
+        self._preview_text: tk.Text | None = None
+        self._preview_busy = False
         self._status: tk.Label | None = None
         self._pair_label: tk.Label | None = None
         self._src_var: tk.StringVar | None = None
@@ -168,7 +172,7 @@ class RoiCalibrator:
             except Exception:
                 pass
             self._job = None
-        for attr in ("_overlay", "_panel"):
+        for attr in ("_overlay", "_panel", "_preview"):
             win = getattr(self, attr)
             if win is not None:
                 try:
@@ -177,6 +181,9 @@ class RoiCalibrator:
                     pass
                 setattr(self, attr, None)
         self._panel_size_locked = False
+        self._preview_size_locked = False
+        self._preview_text = None
+        self._preview_busy = False
         self._canvas = None
         self._status = None
         self._last_geom = None
@@ -190,8 +197,8 @@ class RoiCalibrator:
                 pass
 
     def _lift(self) -> None:
-        # Overlay first, then panel — panel must always win Z-order.
-        for win in (self._overlay, self._panel):
+        # Overlay first, then panel / preview — controls must win Z-order.
+        for win in (self._overlay, self._panel, self._preview):
             if win is None:
                 continue
             try:
@@ -202,18 +209,18 @@ class RoiCalibrator:
         self._ensure_panel_on_top()
 
     def _ensure_panel_on_top(self) -> None:
-        """Keep the control panel above the fullscreen calib overlay and other apps."""
-        panel = self._panel
-        if panel is None:
-            return
-        try:
-            if not bool(panel.winfo_exists()):
-                return
-            panel.attributes("-topmost", True)
-            panel.lift()
-            _force_hwnd_topmost(_toplevel_hwnd(panel), activate=False)
-        except Exception:
-            pass
+        """Keep the control panel (and parse preview) above the calib overlay."""
+        for win in (self._panel, self._preview):
+            if win is None:
+                continue
+            try:
+                if not bool(win.winfo_exists()):
+                    continue
+                win.attributes("-topmost", True)
+                win.lift()
+                _force_hwnd_topmost(_toplevel_hwnd(win), activate=False)
+            except Exception:
+                pass
 
     def _schedule(self) -> None:
         if self._job is not None:
@@ -449,6 +456,7 @@ class RoiCalibrator:
         for text, cmd in (
             ("Зберегти", self._save),
             ("Скинути колонку", self._reset_column),
+            ("Перевірити пари", self._open_parse_preview),
             ("Закрити", self.close),
         ):
             tk.Button(
@@ -470,8 +478,8 @@ class RoiCalibrator:
             text=(
                 "Скріншот — fullscreen без рамок. «+ пара» додає слот одразу для "
                 "з преміумом і без. Індекс пари спільний при перемиканні. "
-                "OCR: якщо RP і SL — числа → ок; якщо в одній клітинці буква → наступна пара. "
-                "Esc — закрити overlay."
+                "«Перевірити пари» — окреме вікно: OCR усіх пар з/без преміуму "
+                "(поточні бокси, навіть незбережені). Esc — закрити overlay."
             ),
             font=("Segoe UI", 9),
             fg="#8b909a",
@@ -509,9 +517,213 @@ class RoiCalibrator:
             win.update_idletasks()
         except Exception:
             pass
-        fit_toplevel(win, min_w=460, min_h=400, pad_w=20, pad_h=40, x=40, y=40, fixed=True)
+        fit_toplevel(win, min_w=520, min_h=420, pad_w=20, pad_h=40, x=40, y=40, fixed=True)
         self._panel_size_locked = True
         self._ensure_panel_on_top()
+
+    def _open_parse_preview(self) -> None:
+        """Show / refresh the separate OCR pair-parse window."""
+        self._ensure_parse_preview()
+        self._run_parse_preview()
+
+    def _ensure_parse_preview(self) -> None:
+        if self._preview is not None:
+            try:
+                if bool(self._preview.winfo_exists()):
+                    self._preview.deiconify()
+                    self._ensure_panel_on_top()
+                    return
+            except Exception:
+                pass
+        win = tk.Toplevel(self.master)
+        win.title("Перевірка пар OCR")
+        win.configure(bg="#12141a")
+        win.attributes("-topmost", True)
+        win.protocol("WM_DELETE_WINDOW", self._hide_parse_preview)
+        win.bind("<FocusOut>", lambda _e: self.master.after_idle(self._ensure_panel_on_top), add="+")
+        win.bind("<Map>", lambda _e: self._ensure_panel_on_top(), add="+")
+
+        tip = tk.Label(
+            win,
+            text=(
+                "Усі пари з/без преміуму по поточному джерелу (WT або скрін). "
+                "<- first = яку візьме Bridge. Бокси — з калібратора (можна ще не Зберегти)."
+            ),
+            font=("Segoe UI", 9),
+            fg="#8b909a",
+            bg="#12141a",
+            wraplength=420,
+            justify="left",
+            anchor="w",
+        )
+        tip.pack(fill="x", padx=12, pady=(10, 6))
+
+        text = tk.Text(
+            win,
+            height=16,
+            width=52,
+            font=("Consolas", 10),
+            fg="#e8eaed",
+            bg="#1a1e26",
+            insertbackground="#e8eaed",
+            relief="flat",
+            padx=8,
+            pady=8,
+            wrap="word",
+        )
+        text.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        text.insert("1.0", "Натисни «Оновити» або відкрий знову «Перевірити пари».")
+        text.configure(state="disabled")
+        self._preview_text = text
+
+        row = tk.Frame(win, bg="#12141a")
+        row.pack(fill="x", padx=12, pady=(0, 12))
+        for label, cmd in (
+            ("Оновити", self._run_parse_preview),
+            ("Сховати", self._hide_parse_preview),
+        ):
+            tk.Button(
+                row,
+                text=label,
+                command=cmd,
+                font=("Segoe UI", 10),
+                fg="#e8eaed",
+                bg="#2a2f38",
+                activebackground="#3a414d",
+                relief="flat",
+                padx=10,
+                pady=6,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 8))
+
+        self._preview = win
+        self._preview_size_locked = False
+        self._fit_parse_preview()
+        self._ensure_panel_on_top()
+
+    def _fit_parse_preview(self) -> None:
+        win = self._preview
+        if win is None or getattr(self, "_preview_size_locked", False):
+            return
+        try:
+            win.update_idletasks()
+        except Exception:
+            pass
+        # Place to the right of the control panel when possible.
+        x, y = 520, 40
+        panel = self._panel
+        if panel is not None:
+            try:
+                x = int(panel.winfo_rootx()) + int(panel.winfo_width()) + 12
+                y = int(panel.winfo_rooty())
+            except Exception:
+                pass
+        fit_toplevel(win, min_w=440, min_h=360, pad_w=16, pad_h=24, x=x, y=y, fixed=True)
+        self._preview_size_locked = True
+
+    def _hide_parse_preview(self) -> None:
+        win = self._preview
+        if win is None:
+            return
+        try:
+            win.withdraw()
+        except Exception:
+            pass
+
+    def _set_preview_body(self, body: str) -> None:
+        widget = self._preview_text
+        if widget is None:
+            return
+        try:
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.insert("1.0", body)
+            widget.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+    def _grab_preview_frame(self) -> Image.Image | None:
+        """Frame for pair OCR: loaded screenshot, or WT client (overlay hidden)."""
+        if self._source == _SRC_IMAGE:
+            if self._image is None:
+                return None
+            return self._image.copy()
+
+        overlay = self._overlay
+        was_mapped = False
+        if overlay is not None:
+            try:
+                was_mapped = bool(overlay.winfo_viewable())
+                if was_mapped:
+                    overlay.withdraw()
+                    overlay.update_idletasks()
+            except Exception:
+                was_mapped = False
+        try:
+            from .capture import grab_wt_client_image
+
+            # Calibrator steals focus — do not require WT foreground.
+            return grab_wt_client_image(focus=False, require_foreground=False)
+        finally:
+            if overlay is not None and was_mapped:
+                try:
+                    overlay.deiconify()
+                    self._ensure_panel_on_top()
+                except Exception:
+                    pass
+
+    def _run_parse_preview(self) -> None:
+        if self._preview_busy:
+            return
+        self._ensure_parse_preview()
+        frame = self._grab_preview_frame()
+        if frame is None:
+            if self._source == _SRC_IMAGE:
+                msg = "Немає зображення — відкрий скріншот або «Останній fail»."
+            else:
+                msg = "Немає кадру WT — відкрий War Thunder (windowed/borderless)."
+            self._set_preview_body(msg)
+            if self._status is not None:
+                self._status.configure(text=msg)
+            return
+
+        self._preview_busy = True
+        self._set_preview_body("OCR усіх пар… зачекай.")
+        if self._status is not None:
+            self._status.configure(text="Перевірка пар OCR…")
+        # Snapshot in-memory boxes so the worker sees what you are editing now.
+        calib = self._calib
+
+        def work() -> None:
+            error: str | None = None
+            body = ""
+            try:
+                from .roi_rewards import probe_all_calib_pairs
+
+                probe = probe_all_calib_pairs(frame, calib=calib)
+                body = probe.format_lines()
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+                log.warning("calib parse preview failed: %s", exc)
+
+            def done() -> None:
+                self._preview_busy = False
+                if error:
+                    self._set_preview_body(f"Помилка OCR:\n{error}")
+                    if self._status is not None:
+                        self._status.configure(text=f"Перевірка пар: помилка — {error}")
+                else:
+                    self._set_preview_body(body or "(порожньо)")
+                    if self._status is not None:
+                        self._status.configure(text="Перевірка пар готово — дивись окреме вікно.")
+                self._ensure_panel_on_top()
+
+            try:
+                self.master.after(0, done)
+            except tk.TclError:
+                self._preview_busy = False
+
+        threading.Thread(target=work, name="calib-parse-preview", daemon=True).start()
 
     def _prev_pair(self) -> None:
         if self._pair_index <= 0:
