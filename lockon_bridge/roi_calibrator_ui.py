@@ -44,6 +44,11 @@ _GWL_EXSTYLE = -20
 _WS_EX_LAYERED = 0x00080000
 _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_NOACTIVATE = 0x08000000
+_HWND_TOPMOST = -1
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
+_SWP_NOACTIVATE = 0x0010
+_SWP_SHOWWINDOW = 0x0040
 
 user32 = ctypes.windll.user32
 
@@ -79,6 +84,14 @@ def _style_tool_topmost(hwnd: int) -> None:
         _GWL_EXSTYLE,
         style | _WS_EX_LAYERED | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE,
     )
+
+
+def _force_hwnd_topmost(hwnd: int, *, activate: bool = False) -> None:
+    """Pin HWND above other topmost windows (panel must beat fullscreen overlay)."""
+    flags = _SWP_NOMOVE | _SWP_NOSIZE | _SWP_SHOWWINDOW
+    if not activate:
+        flags |= _SWP_NOACTIVATE
+    user32.SetWindowPos(int(hwnd), _HWND_TOPMOST, 0, 0, 0, 0, flags)
 
 
 @dataclass
@@ -169,14 +182,30 @@ class RoiCalibrator:
                 pass
 
     def _lift(self) -> None:
-        for win in (self._panel, self._overlay):
+        # Overlay first, then panel — panel must always win Z-order.
+        for win in (self._overlay, self._panel):
             if win is None:
                 continue
             try:
-                win.lift()
                 win.attributes("-topmost", True)
+                win.lift()
             except Exception:
                 pass
+        self._ensure_panel_on_top()
+
+    def _ensure_panel_on_top(self) -> None:
+        """Keep the control panel above the fullscreen calib overlay and other apps."""
+        panel = self._panel
+        if panel is None:
+            return
+        try:
+            if not bool(panel.winfo_exists()):
+                return
+            panel.attributes("-topmost", True)
+            panel.lift()
+            _force_hwnd_topmost(_toplevel_hwnd(panel), activate=False)
+        except Exception:
+            pass
 
     def _schedule(self) -> None:
         if self._job is not None:
@@ -196,6 +225,7 @@ class RoiCalibrator:
         try:
             if self._drag is None:
                 self._redraw_overlay(force_boxes=False)
+            self._ensure_panel_on_top()
         except Exception as exc:
             log.warning("calibrator tick failed: %s", exc)
         self._schedule()
@@ -246,6 +276,9 @@ class RoiCalibrator:
         win.geometry("480x420+40+40")
         win.attributes("-topmost", True)
         win.protocol("WM_DELETE_WINDOW", self.close)
+        # If focus leaves the panel (click on overlay / other apps), pin it back.
+        win.bind("<FocusOut>", lambda _e: self.master.after_idle(self._ensure_panel_on_top), add="+")
+        win.bind("<Map>", lambda _e: self._ensure_panel_on_top(), add="+")
 
         self._status = tk.Label(
             win,
@@ -410,6 +443,7 @@ class RoiCalibrator:
             anchor="w",
         ).pack(fill="x", padx=12, pady=(0, 10))
         self._panel = win
+        self._ensure_panel_on_top()
 
     def _prev_pair(self) -> None:
         if self._pair_index <= 0:
@@ -557,19 +591,18 @@ class RoiCalibrator:
         canvas.bind("<ButtonPress-1>", self._on_press)
         canvas.bind("<B1-Motion>", self._on_drag)
         canvas.bind("<ButtonRelease-1>", self._on_release)
+        # Clicks on the fullscreen image must not bury the control panel.
+        canvas.bind("<ButtonPress-1>", lambda _e: self._ensure_panel_on_top(), add="+")
+        win.bind("<FocusIn>", lambda _e: self._ensure_panel_on_top(), add="+")
         self._overlay = win
         self._canvas = canvas
         win.update_idletasks()
         try:
             _style_tool_topmost(_toplevel_hwnd(win))
+            _force_hwnd_topmost(_toplevel_hwnd(win), activate=False)
         except Exception:
             pass
-        if self._panel is not None:
-            try:
-                self._panel.lift()
-                self._panel.attributes("-topmost", True)
-            except Exception:
-                pass
+        self._ensure_panel_on_top()
 
     def _resolve_target_hwnd(self) -> int | None:
         if self._source == _SRC_WT:
@@ -603,6 +636,7 @@ class RoiCalibrator:
             )
             self._last_geom = None
             self._logic_size = None
+            self._ensure_panel_on_top()
             return
 
         left, top, right, bottom = bounds
@@ -621,11 +655,13 @@ class RoiCalibrator:
                 pass
 
         if not force_boxes and not geom_changed and canvas.find_withtag("box"):
+            self._ensure_panel_on_top()
             return
 
         canvas.delete("all")
         probe = Image.new("RGB", (width, height), (0, 0, 0))
         self._paint_boxes(canvas, probe, width, height, label_suffix="")
+        self._ensure_panel_on_top()
 
     def _redraw_image_mode(
         self, win: tk.Toplevel, canvas: tk.Canvas, *, force_boxes: bool
@@ -645,6 +681,7 @@ class RoiCalibrator:
             )
             self._last_geom = None
             self._logic_size = None
+            self._ensure_panel_on_top()
             return
 
         iw, ih = self._image.size
@@ -676,13 +713,9 @@ class RoiCalibrator:
                 _style_tool_topmost(_toplevel_hwnd(win))
             except Exception:
                 pass
-            if self._panel is not None:
-                try:
-                    self._panel.lift()
-                except Exception:
-                    pass
 
         if not force_boxes and not geom_changed and canvas.find_withtag("box"):
+            self._ensure_panel_on_top()
             return
 
         canvas.delete("all")
@@ -696,6 +729,7 @@ class RoiCalibrator:
         suffix = f"  pair {self._pair_index + 1}/{n}"
         self._draw_box_scaled(canvas, self._image, pair.rp, _RP_COLOR, f"RP{suffix}", "rp")
         self._draw_box_scaled(canvas, self._image, pair.sl, _SL_COLOR, f"SL{suffix}", "sl")
+        self._ensure_panel_on_top()
 
     def _paint_boxes(
         self,
@@ -847,3 +881,4 @@ class RoiCalibrator:
 
     def _on_release(self, _event) -> None:
         self._drag = None
+        self._ensure_panel_on_top()
