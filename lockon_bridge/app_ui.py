@@ -25,6 +25,7 @@ from .autostart import (
 from .i18n import EN, UK, Strings, strings_for
 from .dpi import enable_windows_dpi_awareness, sync_tk_scaling
 from .paths import PRODUCT_NAME, data_root, is_frozen, log_dir, log_file
+from .roi_debug import RoiDebugOverlay
 from .settings import load_settings, update_settings
 from .updater import (
     apply_update_and_restart,
@@ -122,9 +123,13 @@ class BridgeApp:
         self.wt_language_var = tk.StringVar(value="")
         self.ocr_backend_var = tk.StringVar(value="")
         self._ocr_backend_by_label: dict[str, str] = {}
+        self.debug_rois_var = tk.BooleanVar(value=self.settings.debug_show_rois)
+        self._roi_overlay = RoiDebugOverlay(self.root)
 
         self._build_ui()
         self.agent.set_status_callback(self._on_agent_status)
+        if self.settings.debug_show_rois:
+            self.root.after(200, lambda: self._roi_overlay.set_enabled(True))
 
         if self.settings.enabled:
             self._start_enabled(persist=False)
@@ -465,6 +470,12 @@ class BridgeApp:
         more_menu.add_command(label=t.firewall_menu, command=self._allow_phone_access)
         more_menu.add_command(label=t.check_updates, command=self._check_updates)
         more_menu.add_separator()
+        more_menu.add_checkbutton(
+            label=t.debug_show_rois,
+            variable=self.debug_rois_var,
+            command=self._on_debug_rois_toggle,
+        )
+        more_menu.add_separator()
         more_menu.add_command(label=t.uninstall, command=self._uninstall)
         self.btn_more.configure(menu=more_menu)
         self._more_menu = more_menu
@@ -479,6 +490,8 @@ class BridgeApp:
 
         self._apply_window_size(initial=False)
         self._refresh_badge_for_status(self._last_agent_status)
+        # _build_ui destroys Toplevel children — recreate overlay if still on.
+        self._roi_overlay.on_ui_rebuilt()
 
     def _btn(self, parent: tk.Widget, text: str, command, *, danger: bool = False) -> tk.Button:
         return tk.Button(
@@ -546,6 +559,11 @@ class BridgeApp:
         if code == self.settings.ocr_backend:
             return
         self.settings = update_settings(ocr_backend=code)
+
+    def _on_debug_rois_toggle(self) -> None:
+        on = bool(self.debug_rois_var.get())
+        self.settings = update_settings(debug_show_rois=on)
+        self._roi_overlay.set_enabled(on)
 
     def _setup_tesseract(self) -> None:
         from .ocr_backends import (
@@ -1142,6 +1160,10 @@ class BridgeApp:
                     # Stop agent/tray first so files under app\ unlock before replace.
                     self._closing = True
                     try:
+                        self._roi_overlay.shutdown()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
                         self.agent.stop(join=True)
                     except Exception:  # noqa: BLE001
                         pass
@@ -1172,6 +1194,10 @@ class BridgeApp:
         if not ok:
             return
         self._closing = True
+        try:
+            self._roi_overlay.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
         self.agent.stop(join=True)
         self._destroy_tray()
         full_uninstall()
@@ -1183,6 +1209,10 @@ class BridgeApp:
 
     def _exit_clean(self) -> None:
         self._closing = True
+        try:
+            self._roi_overlay.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
         self.agent.stop(join=True)
         self._destroy_tray()
         try:

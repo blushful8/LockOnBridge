@@ -267,5 +267,11 @@ class BridgeRuntime:
             path.write_text(text or "", encoding="utf-8")
             if png:
                 (log_dir() / "last_capture.png").write_bytes(png)
+            from .capture import last_ocr_frame
+            from .roi_debug import save_annotated_rois
+
+            frame = last_ocr_frame()
+            if frame is not None:
+                save_annotated_rois(frame, log_dir() / "last_capture_rois.png")
         except OSError:
             pass

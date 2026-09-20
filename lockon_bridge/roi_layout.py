@@ -122,8 +122,14 @@ def is_full_client_frame(image: Image.Image) -> bool:
     return width >= 1600 or (width >= 1280 and height >= 900)
 
 
-def crop_norm(image: Image.Image, rect: NormRect) -> Image.Image | None:
-    """Crop ``rect`` relative to the active content frame."""
+def pixel_box(
+    image: Image.Image,
+    rect: NormRect,
+    *,
+    min_width: int = 24,
+    min_height: int = 16,
+) -> tuple[int, int, int, int] | None:
+    """Absolute pixel box for ``rect`` inside ``image`` (content-frame relative)."""
     rect = rect.clamp()
     if rect.right <= rect.left or rect.bottom <= rect.top:
         return None
@@ -134,20 +140,28 @@ def crop_norm(image: Image.Image, rect: NormRect) -> Image.Image | None:
     top = ft + int(round(fh * rect.top))
     right = fl + int(round(fw * rect.right))
     bottom = ft + int(round(fh * rect.bottom))
-    if right - left < 24 or bottom - top < 16:
+    if right - left < min_width or bottom - top < min_height:
         return None
-    return image.crop((left, top, right, bottom))
+    return left, top, right, bottom
 
 
-def iter_reward_digit_rois(
+def crop_norm(image: Image.Image, rect: NormRect) -> Image.Image | None:
+    """Crop ``rect`` relative to the active content frame."""
+    box = pixel_box(image, rect)
+    if box is None:
+        return None
+    return image.crop(box)
+
+
+def select_reward_digit_rects(
     image: Image.Image,
     *,
     dense: bool = False,
-) -> list[tuple[str, Image.Image]]:
+) -> list[NormRect]:
     """
-    Digit crops for reward OCR.
+    Digit ROI rectangles for reward OCR (no crops).
 
-    Lean (default): as few crops as possible —
+    Lean (default): as few as possible —
       full client → summary 4-cell + one «Всього» row
       chat crop   → mid without + one total
     Dense: full ROI catalogue only when lean cannot bank a pair.
@@ -178,16 +192,54 @@ def iter_reward_digit_rois(
         rects.extend(_first(BOTH_DIGIT_ROIS, "both-digits-summary"))
         rects.extend(_first(TOTAL_DIGIT_ROIS, "total-digits", "total-digits-wide"))
     else:
-        rects.extend(_first(tuple(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag), "without-digits-mid-wide", "without-digits-mid"))
+        rects.extend(
+            _first(
+                tuple(r for r in WITHOUT_DIGIT_ROIS if "-mid" in r.tag),
+                "without-digits-mid-wide",
+                "without-digits-mid",
+            )
+        )
         rects.extend(_first(BOTH_DIGIT_ROIS, "both-digits-mid"))
         rects.extend(_first(TOTAL_DIGIT_ROIS, "total-digits-wide", "total-digits"))
 
-    out: list[tuple[str, Image.Image]] = []
+    out: list[NormRect] = []
     seen: set[str] = set()
     for rect in rects:
         if rect.tag in seen:
             continue
         seen.add(rect.tag)
+        out.append(rect)
+    return out
+
+
+def iter_roi_pixel_boxes(
+    image: Image.Image,
+    *,
+    dense: bool = True,
+) -> list[tuple[str, tuple[int, int, int, int], bool]]:
+    """
+    ``(tag, (l,t,r,b), is_lean)`` for digit ROIs.
+
+    Lean tags match the default OCR path; dense adds the full catalogue.
+    """
+    lean_tags = {r.tag for r in select_reward_digit_rects(image, dense=False)}
+    out: list[tuple[str, tuple[int, int, int, int], bool]] = []
+    for rect in select_reward_digit_rects(image, dense=dense):
+        box = pixel_box(image, rect)
+        if box is None:
+            continue
+        out.append((rect.tag, box, rect.tag in lean_tags))
+    return out
+
+
+def iter_reward_digit_rois(
+    image: Image.Image,
+    *,
+    dense: bool = False,
+) -> list[tuple[str, Image.Image]]:
+    """Digit crops for reward OCR (see ``select_reward_digit_rects``)."""
+    out: list[tuple[str, Image.Image]] = []
+    for rect in select_reward_digit_rects(image, dense=dense):
         crop = crop_norm(image, rect)
         if crop is not None:
             out.append((rect.tag, crop))

@@ -442,6 +442,14 @@ def ocr_screen_variants(
     return variants
 
 
+_LAST_OCR_FRAME: Image.Image | None = None
+
+
+def last_ocr_frame() -> Image.Image | None:
+    """Full client/monitor frame from the most recent ``ocr_screen_capture``."""
+    return _LAST_OCR_FRAME
+
+
 def ocr_screen_capture(
     *,
     wt_ui_language: str | None = None,
@@ -454,6 +462,8 @@ def ocr_screen_capture(
     full-panel OCR (~several seconds). Pass ``roi_only=True`` to force that path
     (settle confirmation frames).
     """
+    global _LAST_OCR_FRAME
+
     from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
     from .roi_rewards import extract_roi_reward_variants
     from .settings import load_settings
@@ -470,6 +480,8 @@ def ocr_screen_capture(
         log.info("OCR capture: primary monitor (WT window not found)")
     else:
         log.info("OCR capture: War Thunder window + scale-safe digit ROIs")
+
+    _LAST_OCR_FRAME = frame
 
     # Primary dump = results panel (readable in last_capture.png).
     panel = _crop_results_rois(frame)[0][1]

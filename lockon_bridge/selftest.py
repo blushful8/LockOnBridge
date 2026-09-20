@@ -206,7 +206,8 @@ def make_test_report(
 
 
 def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path | None]:
-    from .capture import ocr_screen_capture
+    from .capture import last_ocr_frame, ocr_screen_capture
+    from .roi_debug import save_annotated_rois
 
     png, variants = ocr_screen_capture()
     candidates = [(text, parse_rewards_from_ocr_text(text)) for _tag, text in variants]
@@ -227,6 +228,9 @@ def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path 
         dump_dir.mkdir(parents=True, exist_ok=True)
         (dump_dir / "last_ocr.txt").write_text(dump_text or "", encoding="utf-8")
         (dump_dir / "last_capture.png").write_bytes(png)
+        frame = last_ocr_frame()
+        if frame is not None:
+            save_annotated_rois(frame, dump_dir / "last_capture_rois.png")
     if best is None:
         preview = variants[0][1] if variants else ""
         return preview, None, dump_dir

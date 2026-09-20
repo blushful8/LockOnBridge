@@ -26,6 +26,8 @@ class BridgeSettings:
     ocr_setup_done: bool = False
     # Phone preference: True → OCR the with-premium column (what a premium account banks).
     has_premium_account: bool = False
+    # Developer: live transparent ROI overlay + annotated dumps.
+    debug_show_rois: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "BridgeSettings":
@@ -56,6 +58,7 @@ class BridgeSettings:
             ocr_backend=backend,
             ocr_setup_done=bool(raw.get("ocr_setup_done", False)),
             has_premium_account=bool(raw.get("has_premium_account", False)),
+            debug_show_rois=bool(raw.get("debug_show_rois", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:

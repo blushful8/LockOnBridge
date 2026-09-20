@@ -12,7 +12,10 @@ from lockon_bridge.roi_layout import (
     content_frame,
     crop_norm,
     iter_reward_digit_rois,
+    iter_roi_pixel_boxes,
+    select_reward_digit_rects,
 )
+from lockon_bridge.roi_debug import annotate_roi_image
 from lockon_bridge.roi_rewards import (
     extract_roi_reward_variants,
     pair_from_digit_text,
@@ -81,6 +84,26 @@ def test_crop_norm_scales_with_resolution():
     assert b.height > a.height * 2
     # Relative position stays in the same band of the frame.
     assert abs(a.width / small.width - b.width / large.width) < 0.02
+
+
+def test_lean_roi_boxes_are_subset_of_dense():
+    img = Image.new("RGB", (1920, 1080), (0, 0, 0))
+    lean = {r.tag for r in select_reward_digit_rects(img, dense=False)}
+    dense = {r.tag for r in select_reward_digit_rects(img, dense=True)}
+    assert lean
+    assert lean <= dense
+    boxes = iter_roi_pixel_boxes(img, dense=True)
+    lean_flags = {tag: is_lean for tag, _box, is_lean in boxes}
+    for tag in lean:
+        assert lean_flags.get(tag) is True
+
+
+def test_annotate_roi_image_draws_hud():
+    img = Image.new("RGB", (1920, 1080), (20, 20, 30))
+    out = annotate_roi_image(img, dense=True)
+    assert out.size == img.size
+    # HUD bar is black at the top.
+    assert out.getpixel((10, 10)) == (0, 0, 0)
 
 
 def test_pair_from_digit_text_deglues_trailing():

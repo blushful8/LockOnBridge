@@ -89,6 +89,7 @@ class Strings:
     outcome_defeat: str
     outcome_undecided: str
     menu_more: str
+    debug_show_rois: str
 
 
 EN = Strings(
@@ -242,6 +243,7 @@ EN = Strings(
     outcome_defeat="defeat",
     outcome_undecided="undecided",
     menu_more="More ▾",
+    debug_show_rois="Show OCR regions (dev)",
 )
 
 UK = Strings(
@@ -397,6 +399,7 @@ UK = Strings(
     outcome_defeat="поразка",
     outcome_undecided="невідомо",
     menu_more="Ще ▾",
+    debug_show_rois="Показати OCR-області (dev)",
 )
 
 
