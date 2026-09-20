@@ -346,6 +346,32 @@ class RoiCalibrator:
             pady=4,
             cursor="hand2",
         ).pack(side="left")
+        tk.Button(
+            src_btns,
+            text="Останній fail",
+            command=self._open_last_fail,
+            font=("Segoe UI", 9),
+            fg="#e8eaed",
+            bg="#2a2f38",
+            activebackground="#3a414d",
+            relief="flat",
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        ).pack(side="left", padx=(6, 0))
+        tk.Button(
+            src_btns,
+            text="Папка captures",
+            command=self._open_captures_folder,
+            font=("Segoe UI", 9),
+            fg="#e8eaed",
+            bg="#2a2f38",
+            activebackground="#3a414d",
+            relief="flat",
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        ).pack(side="left", padx=(6, 0))
 
         col = tk.Frame(win, bg="#12141a")
         col.pack(fill="x", padx=12, pady=4)
@@ -547,9 +573,17 @@ class RoiCalibrator:
             self._status.configure(text=f"Джерело: зображення {name} ({size})")
 
     def _open_image(self) -> None:
+        from .capture_archive import captures_dir
+
+        initial = captures_dir()
+        try:
+            initial.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            initial = Path.home()
         path = filedialog.askopenfilename(
             parent=self._panel or self.master,
             title="Скріншот для калібрування ROI",
+            initialdir=str(initial),
             filetypes=[
                 ("Images", "*.png;*.jpg;*.jpeg;*.webp;*.bmp"),
                 ("All files", "*.*"),
@@ -557,6 +591,35 @@ class RoiCalibrator:
         )
         if not path:
             return
+        self._load_image_path(Path(path))
+
+    def _open_last_fail(self) -> None:
+        from .capture_archive import preferred_fail_image_path
+
+        path = preferred_fail_image_path()
+        if path is None or not path.is_file():
+            if self._status is not None:
+                self._status.configure(
+                    text="Немає збереженого fail-кадру "
+                    "(LocalAppData\\LockOnBridge\\captures)."
+                )
+            return
+        self._load_image_path(path)
+
+    def _open_captures_folder(self) -> None:
+        import os
+
+        from .capture_archive import captures_dir
+
+        folder = captures_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(folder))  # noqa: S606
+        except OSError as exc:
+            if self._status is not None:
+                self._status.configure(text=f"Не вдалося відкрити папку: {exc}")
+
+    def _load_image_path(self, path: Path) -> None:
         try:
             image = Image.open(path).convert("RGB")
         except OSError as exc:
@@ -567,12 +630,14 @@ class RoiCalibrator:
             self._src_var.set(_SRC_IMAGE)
         self._source = _SRC_IMAGE
         self._image = image
-        self._image_path = Path(path)
+        self._image_path = path
         self._last_geom = None
         self._logic_size = image.size
         self._rebuild_overlay_shell()
         self._redraw_overlay(force_boxes=True)
         self._update_status_source()
+        self._panel_size_locked = False
+        self._fit_panel()
 
     def _on_column_toggle(self) -> None:
         self._edit_with = bool(self._col_var and self._col_var.get() == "with")

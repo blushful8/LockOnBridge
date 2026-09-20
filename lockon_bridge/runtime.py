@@ -343,6 +343,21 @@ class BridgeRuntime:
                                 else f"{frame_gate.last_mae:.1f}",
                             )
                         else:
+                            frame = None
+                            try:
+                                from .capture import last_ocr_frame
+                                from .capture_archive import archive_capture_frame
+
+                                frame = last_ocr_frame()
+                                if frame is not None:
+                                    archive_capture_frame(
+                                        frame,
+                                        kind="ok",
+                                        rp=settled.research_points,
+                                        sl=settled.silver_lions,
+                                    )
+                            except Exception:  # noqa: BLE001
+                                pass
                             if self.store.publish(settled):
                                 log.info(
                                     "frame %s/%s: settled RP=%s SL=%s conf=%.2f "
@@ -353,6 +368,18 @@ class BridgeRuntime:
                                     settled.silver_lions,
                                     settled.confidence,
                                 )
+                                if frame is not None:
+                                    try:
+                                        from .roi_auto_learn import maybe_auto_learn_pair
+
+                                        maybe_auto_learn_pair(
+                                            frame,
+                                            rp=settled.research_points,
+                                            sl=settled.silver_lions,
+                                            prefer_with=prefer,
+                                        )
+                                    except Exception as exc:  # noqa: BLE001
+                                        log.debug("auto-learn skipped: %s", exc)
                             else:
                                 log.info(
                                     "frame %s/%s: settled duplicate RP=%s SL=%s",
@@ -389,11 +416,43 @@ class BridgeRuntime:
                     tracker.cfg.stable_required,
                     last_preview or "(none)",
                 )
+                try:
+                    from .capture import last_ocr_frame
+                    from .capture_archive import archive_capture_frame
+                    from .roi_auto_learn import maybe_auto_learn_pair
+                    from .settings import load_settings as _ls
+
+                    frame = last_ocr_frame()
+                    if frame is not None:
+                        archive_capture_frame(
+                            frame,
+                            kind="ok",
+                            rp=fallback.research_points,
+                            sl=fallback.silver_lions,
+                            note="finalize",
+                        )
+                        maybe_auto_learn_pair(
+                            frame,
+                            rp=fallback.research_points,
+                            sl=fallback.silver_lions,
+                            prefer_with=bool(_ls().has_premium_account),
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
                 return
         log.info(
             "burst finished without a confident report | last_ocr=%s",
             last_preview or "(none)",
         )
+        try:
+            from .capture import last_ocr_frame
+            from .capture_archive import archive_capture_frame
+
+            frame = last_ocr_frame()
+            if frame is not None:
+                archive_capture_frame(frame, kind="fail", note="burst")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:
         try:

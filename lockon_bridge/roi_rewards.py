@@ -342,11 +342,12 @@ def _cell_is_clean_number(text: str, amount: int | None) -> bool:
 
 def save_error_parse_frame(image: Image.Image) -> None:
     """
-    Overwrite the single debug frame used when every calibrated pair fails.
+    Keep the latest failed frame for calibrator tuning.
 
-    Always one file (error_parse.png) under LocalAppData so disk stays bounded
-    while the latest failure stays available for offline pair tuning.
+    Writes ``error_parse.png`` (overwrite) and a timestamped copy under
+    ``captures/`` so older failures are not lost when adding ROI pairs later.
     """
+    from .capture_archive import archive_capture_frame
     from .paths import data_root, error_parse_image_path
 
     path = error_parse_image_path()
@@ -357,6 +358,7 @@ def save_error_parse_frame(image: Image.Image) -> None:
         log.info("All calib pairs failed — wrote %s", path)
     except OSError as exc:
         log.warning("Could not write %s: %s", path, exc)
+    archive_capture_frame(image, kind="fail", note="calib")
 
 
 def try_calibrated_column_pair(

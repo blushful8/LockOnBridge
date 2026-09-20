@@ -36,6 +36,11 @@ def error_parse_image_path() -> Path:
     return data_root() / "error_parse.png"
 
 
+def captures_dir() -> Path:
+    """Timestamped OCR frames kept for offline ROI pair tuning."""
+    return data_root() / "captures"
+
+
 def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
