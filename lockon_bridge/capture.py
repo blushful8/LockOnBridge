@@ -470,17 +470,22 @@ def ocr_screen_capture(
     When digit ROIs already yield a confident reward pair, skip the multi-engine
     full-panel OCR (~several seconds). Pass ``roi_only=True`` to force that path
     (settle confirmation frames).
+
+    Heavy OCR (RapidOCR/Win/Tess) runs in an isolated child process so a native
+    ACCESS_VIOLATION cannot kill the Bridge UI/agent. The parent only grabs the
+    frame and reads the worker JSON.
     """
     global _LAST_OCR_FRAME
+    import os
 
-    from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
-    from .roi_rewards import extract_roi_reward_variants
+    from .crashguard import breadcrumb
     from .settings import load_settings
 
     settings = load_settings()
     lang = wt_ui_language or settings.wt_ui_language or settings.language
     mode = backend or getattr(settings, "ocr_backend", "auto") or "auto"
 
+    breadcrumb("ocr_screen_capture grab")
     frame = _grab_wt_client_image()
     source = "wt"
     if frame is None:
@@ -496,6 +501,42 @@ def ocr_screen_capture(
     panel = _crop_results_rois(frame)[0][1]
     primary = _png_from_image(panel)
 
+    # Already inside the OCR worker → run engines in-process (RapidOCR allowed).
+    if os.environ.get("LOCKON_OCR_WORKER") == "1":
+        return primary, _ocr_variants_inprocess(
+            frame,
+            source=source,
+            lang=lang,
+            mode=mode,
+            roi_only=roi_only,
+        )
+
+    from .ocr_isolate import run_ocr_worker_on_image
+
+    breadcrumb(f"ocr_screen_capture isolate source={source} roi_only={roi_only}")
+    variants = run_ocr_worker_on_image(
+        frame,
+        roi_only=roi_only,
+        wt_ui_language=lang,
+        backend=mode,
+    )
+    if not variants and source == "monitor":
+        log.warning("OCR worker returned no variants (monitor fallback already inside worker)")
+    return primary, variants
+
+
+def _ocr_variants_inprocess(
+    frame: Image.Image,
+    *,
+    source: str,
+    lang: str,
+    mode: str,
+    roi_only: bool,
+) -> list[tuple[str, str]]:
+    """ROI + optional panel OCR — only called inside the OCR worker process."""
+    from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
+    from .roi_rewards import extract_roi_reward_variants
+
     variants: list[tuple[str, str]] = []
     try:
         variants.extend(extract_roi_reward_variants(frame))
@@ -509,9 +550,7 @@ def ocr_screen_capture(
             if tag.startswith("roi:")
         ]
     )
-    roi_confident = (
-        roi_best is not None and roi_best[1].confidence >= 0.85
-    )
+    roi_confident = roi_best is not None and roi_best[1].confidence >= 0.85
     if roi_only or roi_confident:
         if roi_confident:
             log.info(
@@ -520,9 +559,8 @@ def ocr_screen_capture(
                 roi_best[1].silver_lions,
                 roi_best[1].confidence,
             )
-        return primary, variants
+        return variants
 
-    # Fallback: broader panel / band OCR when digit ROIs are weak.
     for roi_tag, crop in _crop_results_rois(frame):
         png = _png_from_image(crop)
         for eng_tag, text in ocr_png_variants(png, wt_ui_language=lang, backend=mode):
@@ -532,7 +570,7 @@ def ocr_screen_capture(
         png = grab_primary_monitor_png()
         variants.extend(ocr_png_variants(png, wt_ui_language=lang, backend=mode))
 
-    return primary, variants
+    return variants
 
 
 def ocr_screen() -> str:

@@ -130,7 +130,12 @@ class BridgeRuntime:
             self._stop.wait(cfg.poll_sec)
 
     def _capture_burst(self) -> None:
+        from .crashguard import breadcrumb
+
         cfg = self.config
+        breadcrumb(
+            f"capture_burst begin frames={cfg.frames} delay={cfg.capture_delay_sec}"
+        )
         log.info(
             "battle ended — waiting %.2fs then capturing up to %s frame(s) "
             "(early gap %.2fs × %s, then %.2fs; publish after %s OCR + %s pixel-stable)",
@@ -162,8 +167,13 @@ class BridgeRuntime:
                 return
             gap = cfg.early_frame_gap if index < cfg.early_frames else cfg.frame_gap
             try:
+                breadcrumb(f"capture_burst frame {index + 1}/{cfg.frames} grab+ocr")
                 # After the first confident ROI read, confirm settle with digit ROIs only.
                 png, variants = ocr_screen_capture(roi_only=saw_confident)
+                breadcrumb(
+                    f"capture_burst frame {index + 1}/{cfg.frames} "
+                    f"variants={len(variants)}"
+                )
                 frame = last_ocr_frame()
                 pixels_stable = False
                 if frame is not None:
@@ -278,6 +288,17 @@ class BridgeRuntime:
                             return
             except Exception as exc:  # noqa: BLE001
                 log.warning("frame %s/%s failed: %s", index + 1, cfg.frames, exc)
+                try:
+                    from .crashguard import write_crash_report
+                    import traceback
+
+                    write_crash_report(
+                        f"burst-frame-{index + 1}",
+                        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                breadcrumb(f"capture_burst frame {index + 1} error: {exc}")
             self._stop.wait(gap)
 
         fallback = tracker.finalize()

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from . import __version__
+from .crashguard import FlushingRotatingFileHandler, breadcrumb, install_crash_guard
 from .paths import log_file
 from .process_watch import (
     is_war_thunder_running,
@@ -30,10 +31,10 @@ def _configure_logging(log_path: Path | None, verbose: bool) -> None:
         root.addHandler(stream)
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
+        file_handler = FlushingRotatingFileHandler(
             log_path,
-            maxBytes=512_000,
-            backupCount=2,
+            maxBytes=1_048_576,
+            backupCount=5,
             encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
@@ -143,6 +144,16 @@ def main(argv: list[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--ocr-worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--image", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--roi-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--lang", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--backend", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
         "--serve-test",
         action="store_true",
         help="Serve a fixed test RP/SL report on the Bridge port (no War Thunder)",
@@ -153,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
 
     log_path = Path(args.log_file) if args.log_file else None
     _configure_logging(log_path, verbose=args.verbose)
+    install_crash_guard()
+    breadcrumb(f"main argv={argv or sys.argv[1:]}")
 
     if args.uninstall:
         from .autostart import full_uninstall
@@ -165,12 +178,29 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_rapidocr_probe_main()
 
+    if args.ocr_worker:
+        from .ocr_isolate import ocr_worker_main
+
+        if not args.image or not args.out:
+            print("--ocr-worker requires --image and --out", file=sys.stderr)
+            return 2
+        return ocr_worker_main(
+            image_path=Path(args.image),
+            out_path=Path(args.out),
+            roi_only=bool(args.roi_only),
+            lang=args.lang,
+            backend=args.backend,
+        )
+
     if args.self_test:
         from .selftest import run_self_test
 
         return run_self_test()
 
     if args.ocr_once:
+        # Isolated OCR child from the UI — allow RapidOCR in this process only.
+        os.environ["LOCKON_OCR_WORKER"] = "1"
+        os.environ["LOCKON_ALLOW_RAPIDOCR"] = "1"
         from .selftest import run_ocr_once_cli
 
         return run_ocr_once_cli()
