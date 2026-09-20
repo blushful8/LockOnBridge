@@ -8,10 +8,12 @@ from http.server import ThreadingHTTPServer
 from typing import Optional
 
 from .capture import last_ocr_frame, ocr_screen_capture
+from .capture_archive import archive_capture_frame
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .paths import log_dir
 from .phase import read_phase
 from .report_store import ReportStore
+from .roi_auto_learn import maybe_auto_learn_pair
 from .server import serve
 from .settle import LeanRoiFrameGate, SettleConfig, SettleTracker
 
@@ -343,21 +345,17 @@ class BridgeRuntime:
                                 else f"{frame_gate.last_mae:.1f}",
                             )
                         else:
-                            frame = None
-                            try:
-                                from .capture import last_ocr_frame
-                                from .capture_archive import archive_capture_frame
-
-                                frame = last_ocr_frame()
-                                if frame is not None:
+                            settled_frame = last_ocr_frame()
+                            if settled_frame is not None:
+                                try:
                                     archive_capture_frame(
-                                        frame,
+                                        settled_frame,
                                         kind="ok",
                                         rp=settled.research_points,
                                         sl=settled.silver_lions,
                                     )
-                            except Exception:  # noqa: BLE001
-                                pass
+                                except Exception:  # noqa: BLE001
+                                    pass
                             if self.store.publish(settled):
                                 log.info(
                                     "frame %s/%s: settled RP=%s SL=%s conf=%.2f "
@@ -368,12 +366,10 @@ class BridgeRuntime:
                                     settled.silver_lions,
                                     settled.confidence,
                                 )
-                                if frame is not None:
+                                if settled_frame is not None:
                                     try:
-                                        from .roi_auto_learn import maybe_auto_learn_pair
-
                                         maybe_auto_learn_pair(
-                                            frame,
+                                            settled_frame,
                                             rp=settled.research_points,
                                             sl=settled.silver_lions,
                                             prefer_with=prefer,
@@ -417,9 +413,6 @@ class BridgeRuntime:
                     last_preview or "(none)",
                 )
                 try:
-                    from .capture import last_ocr_frame
-                    from .capture_archive import archive_capture_frame
-                    from .roi_auto_learn import maybe_auto_learn_pair
                     from .settings import load_settings as _ls
 
                     frame = last_ocr_frame()
@@ -445,9 +438,6 @@ class BridgeRuntime:
             last_preview or "(none)",
         )
         try:
-            from .capture import last_ocr_frame
-            from .capture_archive import archive_capture_frame
-
             frame = last_ocr_frame()
             if frame is not None:
                 archive_capture_frame(frame, kind="fail", note="burst")
@@ -459,7 +449,6 @@ class BridgeRuntime:
             path = log_dir() / "last_ocr.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text or "", encoding="utf-8")
-            from .capture import last_ocr_frame
             from .roi_debug import save_ocr_crop_dumps
             from .settings import load_settings
 
