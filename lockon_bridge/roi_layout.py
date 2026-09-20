@@ -136,11 +136,15 @@ def pixel_box(
     fl, ft, fr, fb = content_frame(image)
     fw = max(1, fr - fl)
     fh = max(1, fb - ft)
+    # Calib cells are short (~2% of frame height). On 1024x640 chat/scaled
+    # captures a fixed min_height=16 rejects every pair («немає crop»).
+    need_w = max(8, min(min_width, max(8, fw // 45)))
+    need_h = max(6, min(min_height, max(6, fh // 55)))
     left = fl + int(round(fw * rect.left))
     top = ft + int(round(fh * rect.top))
     right = fl + int(round(fw * rect.right))
     bottom = ft + int(round(fh * rect.bottom))
-    if right - left < min_width or bottom - top < min_height:
+    if right - left < need_w or bottom - top < need_h:
         return None
     return left, top, right, bottom
 
