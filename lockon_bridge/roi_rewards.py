@@ -245,26 +245,15 @@ def _read_roi_pair(
     prefer_stable: bool = False,
 ) -> tuple[str, tuple[int, int] | None]:
     """
-    Soft OCR for a digit crop.
+    Soft OCR for a digit crop — Windows OCR then Tesseract.
 
-    Default: Rapid first (best digits when the worker is healthy).
-    ``prefer_stable=True`` (calibrated cells): WinRT → Tesseract only — never
-    RapidOCR, so onnxruntime ACCESS_VIOLATION cannot abort the pair walk.
+    ``prefer_stable`` is kept for call-site compatibility (always Win→Tess).
     """
-    from .rapid_ocr import rapidocr_digits_text
-
-    engines: list[tuple[str, object]]
-    if prefer_stable:
-        engines = [
-            ("win", windows_roi_text),
-            ("tess", tesseract_digits_text),
-        ]
-    else:
-        engines = [
-            ("rapid", rapidocr_digits_text),
-            ("win", windows_roi_text),
-            ("tess", tesseract_digits_text),
-        ]
+    del prefer_stable  # historical flag; RapidOCR removed
+    engines: list[tuple[str, object]] = [
+        ("win", windows_roi_text),
+        ("tess", tesseract_digits_text),
+    ]
 
     first_text = ""
     first_pair: tuple[int, int] | None = None
@@ -356,7 +345,7 @@ def try_calibrated_column_pair(
         if rp_crop is None or sl_crop is None:
             log.debug("calib pair %s-p%s: crop missing", prefix, index)
             continue
-        # Stable engines first — RapidOCR AV would kill the worker mid-loop.
+        # WinRT / Tesseract only (RapidOCR removed — native AV on some GPUs).
         rp_text, rp_amt = _read_roi_amount(rp_crop, prefer_stable=True)
         sl_text, sl_amt = _read_roi_amount(sl_crop, prefer_stable=True)
         rp_ok = _cell_is_clean_number(rp_text, rp_amt)
@@ -772,7 +761,7 @@ def extract_roi_reward_variants(
                         (f"roi:{tag}-without", f"Без преміума {wo_pair[0]} {wo_pair[1]}")
                     )
                     got_cols = True
-                # Naive left-to-right pair pollutes the preferred column when RapidOCR
+                # Naive left-to-right pair pollutes the preferred column when OCR
                 # emits all four cells (1720 921 10955 6817 → fake 1720/9210).
                 if got_cols:
                     continue

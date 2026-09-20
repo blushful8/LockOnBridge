@@ -471,8 +471,8 @@ def ocr_screen_capture(
     full-panel OCR (~several seconds). Pass ``roi_only=True`` to force that path
     (settle confirmation frames).
 
-    Heavy OCR (RapidOCR/Win/Tess) runs in an isolated child process so a native
-    ACCESS_VIOLATION cannot kill the Bridge UI/agent. The parent only grabs the
+    Heavy OCR (WinRT / Tesseract) runs in an isolated child process so a native
+    crash cannot kill the Bridge UI/agent. The parent only grabs the
     frame and reads the worker JSON.
     """
     global _LAST_OCR_FRAME
@@ -501,7 +501,7 @@ def ocr_screen_capture(
     panel = _crop_results_rois(frame)[0][1]
     primary = _png_from_image(panel)
 
-    # Already inside the OCR worker → run engines in-process (RapidOCR allowed).
+    # Already inside the OCR worker → run engines in-process.
     if os.environ.get("LOCKON_OCR_WORKER") == "1":
         return primary, _ocr_variants_inprocess(
             frame,

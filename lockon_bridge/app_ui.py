@@ -1162,7 +1162,7 @@ class BridgeApp:
 
     def _run_ocr_once_isolated(self):
         """
-        Run OCR in a child process so a RapidOCR/onnxruntime AV cannot kill the UI.
+        Run OCR in a child process so a native OCR crash cannot kill the UI.
         Returns (text, report, error).
         """
         import subprocess

@@ -1,4 +1,4 @@
-"""Run heavy OCR in an isolated child so native AV cannot kill the Bridge."""
+"""Run heavy OCR in an isolated child so a native crash cannot kill the Bridge UI."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from .paths import log_dir
 log = logging.getLogger("lockon_bridge.ocr_isolate")
 
 _WORKER_ENV = "LOCKON_OCR_WORKER"
-_ALLOW_RAPID = "LOCKON_ALLOW_RAPIDOCR"
 
 
 def _worker_cmd() -> list[str]:
@@ -35,7 +34,7 @@ def run_ocr_worker_on_image(
     timeout: float = 120.0,
 ) -> list[tuple[str, str]]:
     """
-    OCR ``image`` in a child process (RapidOCR allowed there only).
+    OCR ``image`` in a child process (WinRT / Tesseract).
 
     Returns ``[(tag, text), ...]``. On worker crash/timeout returns [].
     """
@@ -56,7 +55,6 @@ def run_ocr_worker_on_image(
 
     env = os.environ.copy()
     env[_WORKER_ENV] = "1"
-    env[_ALLOW_RAPID] = "1"
     cmd = _worker_cmd() + [
         "--image",
         str(frame_path),
@@ -107,21 +105,6 @@ def run_ocr_worker_on_image(
             err,
         )
         breadcrumb(f"ocr-worker exit={proc.returncode}")
-        # ACCESS_VIOLATION (0xC0000005) from onnxruntime — ban RapidOCR so the
-        # rest of this burst (and later battles) fall back to WinRT/Tesseract.
-        av = proc.returncode in (3221225477, -1073741819)
-        if av:
-            try:
-                from .rapid_ocr import write_rapidocr_status
-
-                write_rapidocr_status(
-                    ok=False,
-                    detail=f"ocr-worker ACCESS_VIOLATION exit={proc.returncode}",
-                )
-                log.warning("RapidOCR banned after worker ACCESS_VIOLATION")
-            except Exception:  # noqa: BLE001
-                pass
-        # Leave a mini report next to breadcrumbs.
         try:
             from .crashguard import write_crash_report
 
@@ -167,7 +150,6 @@ def ocr_worker_main(
 ) -> int:
     """Child entry: load PNG, run ROI (+ optional panel) OCR, write JSON."""
     os.environ[_WORKER_ENV] = "1"
-    os.environ[_ALLOW_RAPID] = "1"
     from .crashguard import breadcrumb, install_crash_guard
 
     install_crash_guard()

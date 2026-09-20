@@ -139,11 +139,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Capture the screen once, OCR, print RP/SL (open a results screenshot first)",
     )
     parser.add_argument(
-        "--rapidocr-probe",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
         "--ocr-worker",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -173,11 +168,6 @@ def main(argv: list[str] | None = None) -> int:
         full_uninstall()
         return 0
 
-    if args.rapidocr_probe:
-        from .rapid_ocr import run_rapidocr_probe_main
-
-        return run_rapidocr_probe_main()
-
     if args.ocr_worker:
         from .ocr_isolate import ocr_worker_main
 
@@ -198,9 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_self_test()
 
     if args.ocr_once:
-        # Isolated OCR child from the UI — allow RapidOCR in this process only.
         os.environ["LOCKON_OCR_WORKER"] = "1"
-        os.environ["LOCKON_ALLOW_RAPIDOCR"] = "1"
         from .selftest import run_ocr_once_cli
 
         return run_ocr_once_cli()

@@ -9,8 +9,6 @@ hiddenimports = [
     "pystray._win32",
     "PIL._tkinter_finder",
     "pytesseract",
-    "rapidocr_onnxruntime",
-    "onnxruntime",
     "numpy",
 ]
 for pkg in (
@@ -23,8 +21,6 @@ for pkg in (
     "winrt.windows.media.ocr",
     "winrt.windows.storage",
     "winrt.windows.storage.streams",
-    "rapidocr_onnxruntime",
-    "onnxruntime",
 ):
     try:
         d, b, h = collect_all(pkg)
@@ -47,7 +43,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["rapidocr_onnxruntime", "onnxruntime", "onnxruntime.capi"],
     noarchive=False,
 )
 

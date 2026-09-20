@@ -117,7 +117,7 @@ def test_pair_from_digit_text_deglues_trailing():
     assert pair_from_digit_text("1025 72620") == (1025, 7262)
     assert pair_from_digit_text("10259 72620") == (1025, 7262)
     assert pair_from_digit_text("1025 72629") == (1025, 7262)
-    # RapidOCR noise digits before a real 4-digit RP must not glue into 3102.
+    # OCR noise digits before a real 4-digit RP must not glue into 3102.
     assert pair_from_digit_text("5 3 1025 7262") == (1025, 7262)
     # Achievements crumb before Всього must not beat real RP/SL.
     assert pair_from_digit_text("1050 1473 11834") == (1473, 11834)
@@ -269,23 +269,6 @@ def test_unfinished_center_panel_fixture_has_383_4052():
     compact = joined.replace(" ", "").replace(",", "")
     assert "383" in compact
     assert "4052" in compact
-
-
-def test_rapidocr_reads_without_center_crop():
-    from lockon_bridge.rapid_ocr import rapidocr_available, rapidocr_digits_text
-    from lockon_bridge.roi_layout import crop_norm, NormRect
-
-    if not rapidocr_available():
-        return
-    path = FIXTURES / "results_uk_center_921_6817.png"
-    if not path.is_file():
-        return
-    img = _load(path)
-    crop = crop_norm(img, NormRect(0.580, 0.095, 0.640, 0.155, "wo"))
-    assert crop is not None
-    text = rapidocr_digits_text(crop)
-    assert "921" in text.replace(" ", "")
-    assert "6817" in text.replace(" ", "")
 
 
 def test_consensus_keeps_without_rp_when_total_differs():
