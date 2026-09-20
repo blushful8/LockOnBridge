@@ -611,6 +611,23 @@ class BridgeApp:
         code = self._ocr_backend_by_label.get(label, "auto")
         if code == self.settings.ocr_backend:
             return
+        if code in ("auto", "tesseract"):
+            from .ocr_backends import tesseract_available
+
+            if not tesseract_available():
+                required = code == "tesseract"
+                if not self._prompt_tesseract_install(required=required):
+                    # Revert radio to the previously saved backend.
+                    prev = next(
+                        (
+                            lbl
+                            for lbl, c in self._ocr_backend_by_label.items()
+                            if c == self.settings.ocr_backend
+                        ),
+                        self.strings.ocr_backend_auto,
+                    )
+                    self.ocr_backend_var.set(prev)
+                    return
         self.settings = update_settings(ocr_backend=code)
 
     def _on_version_clicked(self, _event=None) -> None:
@@ -662,11 +679,43 @@ class BridgeApp:
         self.debug_rois_var.set(False)
         self.settings = load_settings()
 
+    def _begin_tesseract_winget_install(self) -> None:
+        from .ocr_backends import install_tesseract_via_winget
+
+        t = self.strings
+        messagebox.showinfo(PRODUCT_NAME, t.setup_tesseract_installing)
+
+        def install_work() -> None:
+            ok, detail = install_tesseract_via_winget()
+            self.root.after(
+                0,
+                lambda: messagebox.showinfo(
+                    PRODUCT_NAME,
+                    (t.setup_tesseract_done if ok else t.setup_tesseract_failed).format(
+                        detail=detail
+                    ),
+                ),
+            )
+
+        threading.Thread(target=install_work, name="tesseract-winget", daemon=True).start()
+
+    def _prompt_tesseract_install(self, *, required: bool) -> bool:
+        """
+        Ask to install Tesseract when missing.
+
+        required=True (Tesseract only): decline → False (caller reverts selection).
+        required=False (Auto): decline is OK; Auto still works with Windows OCR.
+        """
+        t = self.strings
+        if not messagebox.askyesno(PRODUCT_NAME, t.setup_tesseract_no_exe):
+            return not required
+        self._begin_tesseract_winget_install()
+        return True
+
     def _setup_tesseract(self) -> None:
         from .ocr_backends import (
             describe_ocr_status,
             download_tessdata,
-            install_tesseract_via_winget,
             missing_tessdata_for_wt,
             tesseract_available,
         )
@@ -677,21 +726,7 @@ class BridgeApp:
         if not tesseract_available():
             if not messagebox.askyesno(PRODUCT_NAME, t.setup_tesseract_no_exe):
                 return
-            messagebox.showinfo(PRODUCT_NAME, t.setup_tesseract_installing)
-
-            def install_work() -> None:
-                ok, detail = install_tesseract_via_winget()
-                self.root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        PRODUCT_NAME,
-                        (t.setup_tesseract_done if ok else t.setup_tesseract_failed).format(
-                            detail=detail
-                        ),
-                    ),
-                )
-
-            threading.Thread(target=install_work, name="tesseract-winget", daemon=True).start()
+            self._begin_tesseract_winget_install()
             return
         status = describe_ocr_status(wt)
         missing = missing_tessdata_for_wt(wt)
@@ -744,15 +779,21 @@ class BridgeApp:
     def _on_autostart_toggle(self) -> None:
         want = bool(self.autostart_var.get())
         self.settings = update_settings(autostart_with_windows=want)
-        if want:
-            ok = register_autostart()
-            if not ok:
-                self.autostart_var.set(False)
-                self.settings = update_settings(autostart_with_windows=False)
-                messagebox.showwarning(PRODUCT_NAME, self.strings.autostart_failed)
-                return
-        else:
-            unregister_autostart()
+
+        def work() -> None:
+            if want:
+                ok = register_autostart()
+                if not ok:
+                    self.root.after(0, self._autostart_register_failed)
+            else:
+                unregister_autostart()
+
+        threading.Thread(target=work, name="autostart-toggle", daemon=True).start()
+
+    def _autostart_register_failed(self) -> None:
+        self.autostart_var.set(False)
+        self.settings = update_settings(autostart_with_windows=False)
+        messagebox.showwarning(PRODUCT_NAME, self.strings.autostart_failed)
 
     def _start_enabled(self, *, persist: bool) -> None:
         port = self._read_port()
@@ -762,16 +803,28 @@ class BridgeApp:
             port=port,
             autostart_with_windows=autostart,
         )
-        # Install first; firewall elevation only after a clear Yes/No.
-        prepare_enabled_runtime(
-            port=port,
-            allow_firewall_elevate=False,
-            autostart=autostart,
-        )
+        # Paint / agent first — schtasks, install copy, netsh stay off the UI thread.
         self._set_ui_enabled(True)
         self.status_var.set(self.strings.status_enabled_waiting)
         self.agent.start(self.settings)
         self._ensure_tray()
+
+        def work() -> None:
+            try:
+                prepare_enabled_runtime(
+                    port=port,
+                    allow_firewall_elevate=False,
+                    autostart=autostart,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("prepare_enabled_runtime failed")
+            self.root.after(0, self._after_enabled_runtime)
+
+        threading.Thread(target=work, name="bridge-enable", daemon=True).start()
+
+    def _after_enabled_runtime(self) -> None:
+        if self._closing or not self.settings.enabled:
+            return
         self.root.after(200, lambda: self._ensure_phone_access(interactive=True))
         # Offer official Microsoft OCR packs once (or when still missing).
         self.root.after(400, lambda: self._maybe_prompt_ocr_packs(force=False))
@@ -820,7 +873,25 @@ class BridgeApp:
             self.root.after_idle(lambda: self._apply_window_size(initial=False))
             return
 
-        ok = self._phone_access_ok(port)
+        # netsh / firewall queries are slow — never block the Tk thread.
+        if getattr(self, "_phone_check_busy", False):
+            return
+        self._phone_check_busy = True
+
+        def work() -> None:
+            try:
+                ok = self._phone_access_ok(port)
+            except Exception:  # noqa: BLE001
+                ok = False
+            self.root.after(0, lambda: self._apply_phone_access_ui(ok, port, url))
+
+        threading.Thread(target=work, name="phone-access-check", daemon=True).start()
+
+    def _apply_phone_access_ui(self, ok: bool, port: int, url: str) -> None:
+        self._phone_check_busy = False
+        if self._closing or not bool(self.enabled_var.get()):
+            return
+        t = self.strings
         if ok:
             try:
                 self.phone_banner.pack_forget()
@@ -962,14 +1033,24 @@ class BridgeApp:
 
     def _disable_completely(self) -> None:
         self.settings = update_settings(enabled=False)
-        self.agent.stop(join=True)
-        # Don't launch a disabled Bridge at logon; preference stays in autostart_var.
-        unregister_autostart()
         self._set_ui_enabled(False)
         self.status_var.set(self.strings.status_disabled)
         self._refresh_badge_for_status(AgentStatus.DISABLED)
         self._destroy_tray()
-        log.info("Bridge disabled")
+
+        def work() -> None:
+            try:
+                self.agent.stop(join=True)
+            except Exception:  # noqa: BLE001
+                log.exception("agent.stop failed")
+            # Don't launch a disabled Bridge at logon; preference stays in autostart_var.
+            try:
+                unregister_autostart()
+            except Exception:  # noqa: BLE001
+                log.exception("unregister_autostart failed")
+            log.info("Bridge disabled")
+
+        threading.Thread(target=work, name="bridge-disable", daemon=True).start()
 
     def _set_ui_enabled(self, enabled: bool) -> None:
         self.enabled_var.set(enabled)

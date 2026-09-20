@@ -73,6 +73,11 @@ class SwitchButton(tk.Canvas):
 
     def _on_click(self, _event: Any = None) -> None:
         self._var.set(not bool(self._var.get()))
+        # Flush paint before any heavy command (registry / schtasks / agent).
+        try:
+            self.update_idletasks()
+        except Exception:  # noqa: BLE001
+            pass
         if self._command is not None:
             self._command()
 
