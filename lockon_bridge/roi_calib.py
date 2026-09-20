@@ -1,4 +1,9 @@
-"""Calibrated RP/SL ROI fractions — shipped for all users, editable in dev mode."""
+"""Calibrated RP/SL ROI fractions — shipped for all users, editable in dev mode.
+
+Schema v2: each premium column holds an ordered list of RP+SL pairs. OCR tries
+pair 0, then 1, … until both cells read as usable numbers (UI layout can shift
+when WT shows bonus banners, etc.). Legacy v1 ``{rp,sl}`` still loads as one pair.
+"""
 
 from __future__ import annotations
 
@@ -14,12 +19,76 @@ from .roi_layout import NormRect
 log = logging.getLogger("lockon_bridge.roi_calib")
 
 _CALIB_NAME = "roi_calibrated.json"
+_SCHEMA_VERSION = 2
+
+
+@dataclass(frozen=True)
+class RoiPair:
+    rp: NormRect
+    sl: NormRect
 
 
 @dataclass(frozen=True)
 class ColumnRois:
-    rp: NormRect
-    sl: NormRect
+    """Ordered fallback stack: ``pairs[0]`` is primary, then alternatives."""
+
+    pairs: tuple[RoiPair, ...]
+
+    def __post_init__(self) -> None:
+        if not self.pairs:
+            raise ValueError("ColumnRois requires at least one RP/SL pair")
+
+    @property
+    def rp(self) -> NormRect:
+        return self.pairs[0].rp
+
+    @property
+    def sl(self) -> NormRect:
+        return self.pairs[0].sl
+
+    def pair_at(self, index: int) -> RoiPair:
+        return self.pairs[index]
+
+    def replace_pair(self, index: int, pair: RoiPair) -> ColumnRois:
+        items = list(self.pairs)
+        items[index] = pair
+        return ColumnRois(pairs=tuple(items))
+
+    def replace_cell(self, index: int, *, kind: str, rect: NormRect) -> ColumnRois:
+        cur = self.pairs[index]
+        if kind == "rp":
+            return self.replace_pair(index, RoiPair(rp=rect, sl=cur.sl))
+        if kind == "sl":
+            return self.replace_pair(index, RoiPair(rp=cur.rp, sl=rect))
+        raise ValueError(f"kind must be rp|sl, got {kind!r}")
+
+    def add_pair(self, pair: RoiPair | None = None) -> ColumnRois:
+        if pair is None:
+            # Clone primary, nudged slightly so boxes are visible as distinct.
+            base = self.pairs[0]
+            pair = RoiPair(
+                rp=NormRect(
+                    min(0.95, base.rp.left + 0.02),
+                    min(0.95, base.rp.top + 0.02),
+                    min(0.99, base.rp.right + 0.02),
+                    min(0.99, base.rp.bottom + 0.02),
+                    base.rp.tag,
+                ).clamp(),
+                sl=NormRect(
+                    min(0.95, base.sl.left + 0.02),
+                    min(0.95, base.sl.top + 0.02),
+                    min(0.99, base.sl.right + 0.02),
+                    min(0.99, base.sl.bottom + 0.02),
+                    base.sl.tag,
+                ).clamp(),
+            )
+        return ColumnRois(pairs=self.pairs + (pair,))
+
+    def remove_pair(self, index: int) -> ColumnRois:
+        if len(self.pairs) <= 1:
+            return self
+        items = [p for i, p in enumerate(self.pairs) if i != index]
+        return ColumnRois(pairs=tuple(items))
 
 
 @dataclass(frozen=True)
@@ -50,14 +119,52 @@ def _norm_from_dict(raw: Any, tag: str) -> NormRect | None:
     return rect
 
 
+def _pair_from_dict(raw: Any, *, prefix: str, index: int) -> RoiPair | None:
+    if not isinstance(raw, dict):
+        return None
+    rp = _norm_from_dict(raw.get("rp"), f"{prefix}-p{index}-rp")
+    sl = _norm_from_dict(raw.get("sl"), f"{prefix}-p{index}-sl")
+    if rp is None or sl is None:
+        return None
+    return RoiPair(rp=rp, sl=sl)
+
+
 def _column_from_dict(raw: Any, *, prefix: str) -> ColumnRois | None:
     if not isinstance(raw, dict):
         return None
-    rp = _norm_from_dict(raw.get("rp"), f"{prefix}-rp")
-    sl = _norm_from_dict(raw.get("sl"), f"{prefix}-sl")
-    if rp is None or sl is None:
+    pairs_raw = raw.get("pairs")
+    pairs: list[RoiPair] = []
+    if isinstance(pairs_raw, list) and pairs_raw:
+        for i, item in enumerate(pairs_raw):
+            pair = _pair_from_dict(item, prefix=prefix, index=i)
+            if pair is not None:
+                pairs.append(pair)
+    else:
+        # Legacy v1: flat {rp, sl}
+        legacy = _pair_from_dict(raw, prefix=prefix, index=0)
+        if legacy is not None:
+            # Retag to primary-style tags expected by older tests / debug.
+            pairs.append(
+                RoiPair(
+                    rp=NormRect(
+                        legacy.rp.left,
+                        legacy.rp.top,
+                        legacy.rp.right,
+                        legacy.rp.bottom,
+                        f"{prefix}-rp",
+                    ),
+                    sl=NormRect(
+                        legacy.sl.left,
+                        legacy.sl.top,
+                        legacy.sl.right,
+                        legacy.sl.bottom,
+                        f"{prefix}-sl",
+                    ),
+                )
+            )
+    if not pairs:
         return None
-    return ColumnRois(rp=rp, sl=sl)
+    return ColumnRois(pairs=tuple(pairs))
 
 
 def _rect_to_dict(rect: NormRect) -> dict[str, float]:
@@ -69,17 +176,15 @@ def _rect_to_dict(rect: NormRect) -> dict[str, float]:
     }
 
 
+def _pair_to_dict(pair: RoiPair) -> dict[str, Any]:
+    return {"rp": _rect_to_dict(pair.rp), "sl": _rect_to_dict(pair.sl)}
+
+
 def calibrated_to_dict(calib: CalibratedRois) -> dict[str, Any]:
     return {
         "version": int(calib.version),
-        "with": {
-            "rp": _rect_to_dict(calib.with_premium.rp),
-            "sl": _rect_to_dict(calib.with_premium.sl),
-        },
-        "without": {
-            "rp": _rect_to_dict(calib.without_premium.rp),
-            "sl": _rect_to_dict(calib.without_premium.sl),
-        },
+        "with": {"pairs": [_pair_to_dict(p) for p in calib.with_premium.pairs]},
+        "without": {"pairs": [_pair_to_dict(p) for p in calib.without_premium.pairs]},
     }
 
 
@@ -94,6 +199,9 @@ def calibrated_from_dict(raw: Any) -> CalibratedRois | None:
     without_col = _column_from_dict(raw.get("without"), prefix="without")
     if with_col is None or without_col is None:
         return None
+    with_raw = raw.get("with")
+    if isinstance(with_raw, dict) and isinstance(with_raw.get("pairs"), list):
+        version = max(version, _SCHEMA_VERSION)
     return CalibratedRois(
         version=version,
         with_premium=with_col,
@@ -112,14 +220,22 @@ def user_calib_path() -> Path:
 def default_calibrated_rois() -> CalibratedRois:
     """Seed fractions from the live summary bands (dev will refine by dragging)."""
     return CalibratedRois(
-        version=1,
+        version=_SCHEMA_VERSION,
         with_premium=ColumnRois(
-            rp=NormRect(0.200, 0.150, 0.320, 0.205, "with-rp"),
-            sl=NormRect(0.200, 0.210, 0.320, 0.265, "with-sl"),
+            pairs=(
+                RoiPair(
+                    rp=NormRect(0.200, 0.150, 0.320, 0.205, "with-rp"),
+                    sl=NormRect(0.200, 0.210, 0.320, 0.265, "with-sl"),
+                ),
+            )
         ),
         without_premium=ColumnRois(
-            rp=NormRect(0.330, 0.150, 0.435, 0.205, "without-rp"),
-            sl=NormRect(0.330, 0.210, 0.435, 0.265, "without-sl"),
+            pairs=(
+                RoiPair(
+                    rp=NormRect(0.330, 0.150, 0.435, 0.205, "without-rp"),
+                    sl=NormRect(0.330, 0.210, 0.435, 0.265, "without-sl"),
+                ),
+            )
         ),
     )
 
@@ -162,7 +278,13 @@ def save_calibrated_rois(
     Always writes LocalAppData. When ``also_package`` (source tree), also writes
     the repo file so the next release ships it.
     """
-    payload = json.dumps(calibrated_to_dict(calib), indent=2, ensure_ascii=False) + "\n"
+    # Always persist as schema v2 with pairs[].
+    to_save = CalibratedRois(
+        version=_SCHEMA_VERSION,
+        with_premium=calib.with_premium,
+        without_premium=calib.without_premium,
+    )
+    payload = json.dumps(calibrated_to_dict(to_save), indent=2, ensure_ascii=False) + "\n"
     written: list[Path] = []
     user = user_calib_path()
     user.parent.mkdir(parents=True, exist_ok=True)
@@ -184,11 +306,27 @@ def calibrated_rects_for(
     image,
     *,
     prefer_with: bool,
+    pair_index: int = 0,
 ) -> list[NormRect] | None:
-    """Return [rp, sl] NormRects for the active column, or None."""
+    """Return [rp, sl] for one pair (default primary), or None."""
     del image  # fractions are resolution-independent; image kept for API symmetry
     calib = load_calibrated_rois()
     if calib is None:
         return None
     col = calib.column(prefer_with=prefer_with)
-    return [col.rp, col.sl]
+    if pair_index < 0 or pair_index >= len(col.pairs):
+        return None
+    pair = col.pairs[pair_index]
+    return [pair.rp, pair.sl]
+
+
+def calibrated_all_pair_rects(
+    *,
+    prefer_with: bool,
+) -> list[tuple[int, NormRect, NormRect]] | None:
+    """``[(pair_index, rp, sl), ...]`` for sequential OCR fallback."""
+    calib = load_calibrated_rois()
+    if calib is None:
+        return None
+    col = calib.column(prefer_with=prefer_with)
+    return [(i, p.rp, p.sl) for i, p in enumerate(col.pairs)]

@@ -61,11 +61,13 @@ def _debug_roi_boxes(
             ("with", calib.with_premium),
             ("without", calib.without_premium),
         ):
-            for kind, rect in (("rp", col.rp), ("sl", col.sl)):
-                boxed = pixel_box(image, rect)
-                if boxed is None:
-                    continue
-                out.append((f"{prefix}-{kind}", boxed, True))
+            for i, pair in enumerate(col.pairs):
+                for kind, rect in (("rp", pair.rp), ("sl", pair.sl)):
+                    boxed = pixel_box(image, rect)
+                    if boxed is None:
+                        continue
+                    tag = f"{prefix}-p{i}-{kind}" if len(col.pairs) > 1 else f"{prefix}-{kind}"
+                    out.append((tag, boxed, i == 0))
         if out:
             return out
     return iter_roi_pixel_boxes(image, dense=False)

@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 from lockon_bridge.roi_calib import (
+    CalibratedRois,
     calibrated_from_dict,
     calibrated_to_dict,
     default_calibrated_rois,
@@ -25,6 +26,8 @@ def test_dev_passphrase_rejects_wrong_and_empty():
 def test_default_calib_roundtrip(tmp_path: Path, monkeypatch):
     calib = default_calibrated_rois()
     raw = calibrated_to_dict(calib)
+    assert "pairs" in raw["with"]
+    assert len(raw["with"]["pairs"]) >= 1
     again = calibrated_from_dict(raw)
     assert again is not None
     assert again.without_premium.rp.left == calib.without_premium.rp.left
@@ -43,6 +46,45 @@ def test_default_calib_roundtrip(tmp_path: Path, monkeypatch):
     loaded = load_calibrated_rois()
     assert loaded is not None
     assert loaded.without_premium.rp.tag.endswith("rp")
+
+
+def test_legacy_v1_loads_as_single_pair():
+    raw = {
+        "version": 1,
+        "with": {
+            "rp": {"left": 0.1, "top": 0.1, "right": 0.2, "bottom": 0.15},
+            "sl": {"left": 0.1, "top": 0.16, "right": 0.2, "bottom": 0.21},
+        },
+        "without": {
+            "rp": {"left": 0.3, "top": 0.1, "right": 0.4, "bottom": 0.15},
+            "sl": {"left": 0.3, "top": 0.16, "right": 0.4, "bottom": 0.21},
+        },
+    }
+    calib = calibrated_from_dict(raw)
+    assert calib is not None
+    assert len(calib.with_premium.pairs) == 1
+    assert calib.with_premium.rp.left == 0.1
+
+
+def test_multi_pair_roundtrip():
+    from lockon_bridge.roi_calib import ColumnRois, RoiPair
+    from lockon_bridge.roi_layout import NormRect
+
+    base = default_calibrated_rois()
+    extra = RoiPair(
+        rp=NormRect(0.5, 0.2, 0.6, 0.25, "with-p1-rp"),
+        sl=NormRect(0.5, 0.26, 0.6, 0.31, "with-p1-sl"),
+    )
+    calib = CalibratedRois(
+        version=2,
+        with_premium=base.with_premium.add_pair(extra),
+        without_premium=base.without_premium,
+    )
+    assert len(calib.with_premium.pairs) == 2
+    again = calibrated_from_dict(calibrated_to_dict(calib))
+    assert again is not None
+    assert len(again.with_premium.pairs) == 2
+    assert again.with_premium.pairs[1].rp.left == 0.5
 
 
 def test_lean_rects_use_calibrated_when_present():

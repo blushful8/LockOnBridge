@@ -2,7 +2,6 @@
 
 Sources:
   • War Thunder client (live)
-  • Any other top-level window (click under cursor)
   • Image file / чужий скріншот (open dialog)
 """
 
@@ -24,6 +23,7 @@ from .capture import find_war_thunder_hwnd
 from .roi_calib import (
     CalibratedRois,
     ColumnRois,
+    RoiPair,
     default_calibrated_rois,
     load_calibrated_rois,
     save_calibrated_rois,
@@ -49,7 +49,6 @@ user32 = ctypes.windll.user32
 
 # Source modes
 _SRC_WT = "wt"
-_SRC_HWND = "hwnd"
 _SRC_IMAGE = "image"
 
 
@@ -62,12 +61,6 @@ def _window_rect(hwnd: int):
     from .capture import _window_rect as _cap_rect
 
     return _cap_rect(hwnd)
-
-
-def _window_title(hwnd: int) -> str:
-    buf = ctypes.create_unicode_buffer(512)
-    user32.GetWindowTextW(hwnd, buf, 512)
-    return (buf.value or "").strip()
 
 
 def _toplevel_hwnd(win: tk.Misc) -> int:
@@ -88,21 +81,6 @@ def _style_tool_topmost(hwnd: int) -> None:
     )
 
 
-def _hwnd_under_cursor() -> int | None:
-    class POINT(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-    pt = POINT()
-    if not user32.GetCursorPos(ctypes.byref(pt)):
-        return None
-    hwnd = int(user32.WindowFromPoint(pt) or 0)
-    if not hwnd:
-        return None
-    # Climb to the top-level owner/root.
-    root = int(user32.GetAncestor(hwnd, 2) or 0)  # GA_ROOT = 2
-    return root or hwnd
-
-
 @dataclass
 class _DragState:
     kind: str
@@ -112,7 +90,7 @@ class _DragState:
 
 
 class RoiCalibrator:
-    """Interactive 2-box calibrator — WT, any window, or a screenshot image."""
+    """Interactive 2-box calibrator — WT live window or a screenshot image."""
 
     def __init__(
         self,
@@ -124,8 +102,8 @@ class RoiCalibrator:
         self._on_closed = on_closed
         self._calib = load_calibrated_rois() or default_calibrated_rois()
         self._edit_with = False
+        self._pair_index = 0
         self._source = _SRC_WT
-        self._target_hwnd: int | None = None
         self._image: Image.Image | None = None
         self._image_path: Path | None = None
         self._photo: ImageTk.PhotoImage | None = None
@@ -136,9 +114,9 @@ class RoiCalibrator:
         self._canvas: tk.Canvas | None = None
         self._panel: tk.Toplevel | None = None
         self._status: tk.Label | None = None
+        self._pair_label: tk.Label | None = None
         self._src_var: tk.StringVar | None = None
         self._job: str | None = None
-        self._pick_job: str | None = None
         # (left, top, width, height) of overlay/canvas in screen or local coords.
         # For image mode left/top are 0 and width/height are canvas size.
         self._last_geom: tuple[int, int, int, int] | None = None
@@ -170,12 +148,6 @@ class RoiCalibrator:
             except Exception:
                 pass
             self._job = None
-        if self._pick_job is not None:
-            try:
-                self.master.after_cancel(self._pick_job)
-            except Exception:
-                pass
-            self._pick_job = None
         for attr in ("_overlay", "_panel"):
             win = getattr(self, attr)
             if win is not None:
@@ -231,6 +203,12 @@ class RoiCalibrator:
     def _active_column(self) -> ColumnRois:
         return self._calib.with_premium if self._edit_with else self._calib.without_premium
 
+    def _active_pair(self) -> RoiPair:
+        col = self._active_column()
+        idx = min(self._pair_index, len(col.pairs) - 1)
+        self._pair_index = idx
+        return col.pairs[idx]
+
     def _set_active_column(self, col: ColumnRois) -> None:
         if self._edit_with:
             self._calib = CalibratedRois(
@@ -244,6 +222,16 @@ class RoiCalibrator:
                 with_premium=self._calib.with_premium,
                 without_premium=col,
             )
+        self._pair_index = min(self._pair_index, len(col.pairs) - 1)
+        self._refresh_pair_label()
+
+    def _refresh_pair_label(self) -> None:
+        if self._pair_label is None:
+            return
+        n = len(self._active_column().pairs)
+        self._pair_label.configure(
+            text=f"Пара {self._pair_index + 1} / {n}  (OCR: 1→2→… поки є числа)"
+        )
 
     def _ensure_panel(self) -> None:
         if self._panel is not None:
@@ -255,7 +243,8 @@ class RoiCalibrator:
         win = tk.Toplevel(self.master)
         win.title("ROI calibrator (dev)")
         win.configure(bg="#12141a")
-        win.geometry("460x360+80+80")
+        win.geometry("480x420+40+40")
+        win.attributes("-topmost", True)
         win.protocol("WM_DELETE_WINDOW", self.close)
 
         self._status = tk.Label(
@@ -264,7 +253,7 @@ class RoiCalibrator:
             font=("Segoe UI", 10),
             fg="#c8ccd4",
             bg="#12141a",
-            wraplength=430,
+            wraplength=450,
             justify="left",
             anchor="w",
         )
@@ -282,8 +271,7 @@ class RoiCalibrator:
         self._src_var = tk.StringVar(value=_SRC_WT)
         for value, label in (
             (_SRC_WT, "War Thunder"),
-            (_SRC_HWND, "Інше вікно"),
-            (_SRC_IMAGE, "Скріншот / зображення"),
+            (_SRC_IMAGE, "Скріншот / зображення (fullscreen)"),
         ):
             tk.Radiobutton(
                 src,
@@ -301,19 +289,6 @@ class RoiCalibrator:
 
         src_btns = tk.Frame(src, bg="#12141a")
         src_btns.pack(fill="x", padx=8, pady=(4, 8))
-        tk.Button(
-            src_btns,
-            text="Вибрати вікно…",
-            command=self._start_pick_window,
-            font=("Segoe UI", 9),
-            fg="#e8eaed",
-            bg="#2a2f38",
-            activebackground="#3a414d",
-            relief="flat",
-            padx=8,
-            pady=4,
-            cursor="hand2",
-        ).pack(side="left", padx=(0, 8))
         tk.Button(
             src_btns,
             text="Відкрити зображення…",
@@ -358,6 +333,47 @@ class RoiCalibrator:
             font=("Segoe UI", 10),
         ).pack(side="left")
 
+        pair_box = tk.LabelFrame(
+            win,
+            text="Запасні пари ROI",
+            font=("Segoe UI", 9),
+            fg="#8b909a",
+            bg="#12141a",
+            labelanchor="nw",
+        )
+        pair_box.pack(fill="x", padx=12, pady=4)
+        self._pair_label = tk.Label(
+            pair_box,
+            text="",
+            font=("Segoe UI", 10),
+            fg="#e8eaed",
+            bg="#12141a",
+            anchor="w",
+        )
+        self._pair_label.pack(fill="x", padx=8, pady=(4, 2))
+        pair_btns = tk.Frame(pair_box, bg="#12141a")
+        pair_btns.pack(fill="x", padx=8, pady=(0, 8))
+        for text, cmd in (
+            ("◀", self._prev_pair),
+            ("▶", self._next_pair),
+            ("+ пара", self._add_pair),
+            ("− пара", self._remove_pair),
+        ):
+            tk.Button(
+                pair_btns,
+                text=text,
+                command=cmd,
+                font=("Segoe UI", 9),
+                fg="#e8eaed",
+                bg="#2a2f38",
+                activebackground="#3a414d",
+                relief="flat",
+                padx=8,
+                pady=4,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 6))
+        self._refresh_pair_label()
+
         btns = tk.Frame(win, bg="#12141a")
         btns.pack(fill="x", padx=12, pady=(10, 8))
         for text, cmd in (
@@ -382,17 +398,53 @@ class RoiCalibrator:
         tk.Label(
             win,
             text=(
-                "Дроби 0..1 від кадру (вікно або зображення) — масштабуються на будь-який "
-                "екран. Чужий скріншот: відкрий файл і вирівняй RP/SL по цифрах."
+                "Скріншот відкривається на весь екран без рамок (як WT). "
+                "Пари 2+ — запасні: якщо в парі 1 OCR бачить букви замість чисел, "
+                "береться наступна. Esc — закрити overlay."
             ),
             font=("Segoe UI", 9),
             fg="#8b909a",
             bg="#12141a",
-            wraplength=430,
+            wraplength=450,
             justify="left",
             anchor="w",
         ).pack(fill="x", padx=12, pady=(0, 10))
         self._panel = win
+
+    def _prev_pair(self) -> None:
+        if self._pair_index <= 0:
+            return
+        self._pair_index -= 1
+        self._refresh_pair_label()
+        self._redraw_overlay(force_boxes=True)
+
+    def _next_pair(self) -> None:
+        if self._pair_index >= len(self._active_column().pairs) - 1:
+            return
+        self._pair_index += 1
+        self._refresh_pair_label()
+        self._redraw_overlay(force_boxes=True)
+
+    def _add_pair(self) -> None:
+        col = self._active_column().add_pair()
+        self._set_active_column(col)
+        self._pair_index = len(col.pairs) - 1
+        self._refresh_pair_label()
+        self._redraw_overlay(force_boxes=True)
+        if self._status is not None:
+            self._status.configure(
+                text=f"Додано запасну пару #{self._pair_index + 1}. Вирівняй RP/SL."
+            )
+
+    def _remove_pair(self) -> None:
+        col = self._active_column()
+        if len(col.pairs) <= 1:
+            if self._status is not None:
+                self._status.configure(text="Потрібна хоча б одна пара.")
+            return
+        col = col.remove_pair(self._pair_index)
+        self._set_active_column(col)
+        self._redraw_overlay(force_boxes=True)
 
     def _on_source_toggle(self) -> None:
         self._source = (self._src_var.get() if self._src_var else _SRC_WT) or _SRC_WT
@@ -407,61 +459,10 @@ class RoiCalibrator:
             return
         if self._source == _SRC_WT:
             self._status.configure(text="Джерело: War Thunder (живе вікно).")
-        elif self._source == _SRC_HWND:
-            title = _window_title(self._target_hwnd) if self._target_hwnd else "—"
-            self._status.configure(
-                text=f"Джерело: інше вікно — {title or hex(self._target_hwnd or 0)}"
-            )
         else:
             name = self._image_path.name if self._image_path else "—"
             size = f"{self._image.size[0]}x{self._image.size[1]}" if self._image else "?"
             self._status.configure(text=f"Джерело: зображення {name} ({size})")
-
-    def _start_pick_window(self) -> None:
-        if self._src_var is not None:
-            self._src_var.set(_SRC_HWND)
-        self._source = _SRC_HWND
-        if self._status is not None:
-            self._status.configure(
-                text="Наведи курсор на потрібне вікно… захват через 2 с"
-            )
-        if self._pick_job is not None:
-            try:
-                self.master.after_cancel(self._pick_job)
-            except Exception:
-                pass
-        self._pick_job = self.master.after(2000, self._finish_pick_window)
-
-    def _finish_pick_window(self) -> None:
-        self._pick_job = None
-        hwnd = _hwnd_under_cursor()
-        if not hwnd or not user32.IsWindow(hwnd):
-            if self._status is not None:
-                self._status.configure(text="Не вдалося захопити вікно під курсором.")
-            return
-        # Don't pick our own calibrator / Bridge windows.
-        skip: set[int] = set()
-        for win in (self._panel, self._overlay, self.master):
-            if win is None:
-                continue
-            try:
-                skip.add(_toplevel_hwnd(win))
-            except Exception:
-                pass
-        if hwnd in skip:
-            if self._status is not None:
-                self._status.configure(
-                    text="Курсор був над Bridge — наведи на чуже вікно і знову «Вибрати вікно»."
-                )
-            return
-        self._target_hwnd = int(hwnd)
-        self._image = None
-        self._image_path = None
-        self._photo = None
-        self._last_geom = None
-        self._rebuild_overlay_shell()
-        self._redraw_overlay(force_boxes=True)
-        self._update_status_source()
 
     def _open_image(self) -> None:
         path = filedialog.askopenfilename(
@@ -485,7 +486,6 @@ class RoiCalibrator:
         self._source = _SRC_IMAGE
         self._image = image
         self._image_path = Path(path)
-        self._target_hwnd = None
         self._last_geom = None
         self._logic_size = image.size
         self._rebuild_overlay_shell()
@@ -494,6 +494,8 @@ class RoiCalibrator:
 
     def _on_column_toggle(self) -> None:
         self._edit_with = bool(self._col_var and self._col_var.get() == "with")
+        self._pair_index = min(self._pair_index, len(self._active_column().pairs) - 1)
+        self._refresh_pair_label()
         self._redraw_overlay(force_boxes=True)
         if self._status is not None:
             which = "З преміумом" if self._edit_with else "Без преміуму"
@@ -501,6 +503,7 @@ class RoiCalibrator:
 
     def _reset_column(self) -> None:
         defaults = default_calibrated_rois()
+        self._pair_index = 0
         self._set_active_column(
             defaults.with_premium if self._edit_with else defaults.without_premium
         )
@@ -534,9 +537,14 @@ class RoiCalibrator:
         win = tk.Toplevel(self.master)
         win.attributes("-topmost", True)
         if self._source == _SRC_IMAGE:
-            win.title("ROI calibrator — screenshot")
-            win.configure(bg="#0a0b0e")
-            canvas = tk.Canvas(win, bg="#0a0b0e", highlightthickness=0, bd=0, cursor="crosshair")
+            # Borderless fullscreen — same idea as WT overlay (no chrome).
+            win.overrideredirect(True)
+            win.configure(bg="#000000")
+            canvas = tk.Canvas(
+                win, bg="#000000", highlightthickness=0, bd=0, cursor="crosshair"
+            )
+            win.bind("<Escape>", lambda _e: self.close())
+            canvas.bind("<Escape>", lambda _e: self.close())
         else:
             win.overrideredirect(True)
             try:
@@ -552,19 +560,20 @@ class RoiCalibrator:
         self._overlay = win
         self._canvas = canvas
         win.update_idletasks()
-        if self._source != _SRC_IMAGE:
+        try:
+            _style_tool_topmost(_toplevel_hwnd(win))
+        except Exception:
+            pass
+        if self._panel is not None:
             try:
-                _style_tool_topmost(_toplevel_hwnd(win))
+                self._panel.lift()
+                self._panel.attributes("-topmost", True)
             except Exception:
                 pass
 
     def _resolve_target_hwnd(self) -> int | None:
         if self._source == _SRC_WT:
             return find_war_thunder_hwnd()
-        if self._source == _SRC_HWND:
-            if self._target_hwnd and user32.IsWindow(self._target_hwnd):
-                return self._target_hwnd
-            return None
         return None
 
     def _redraw_overlay(self, *, force_boxes: bool) -> None:
@@ -584,12 +593,13 @@ class RoiCalibrator:
             canvas.delete("all")
             win.geometry("520x40+60+60")
             canvas.create_rectangle(0, 0, 520, 40, fill="#000000", outline="")
-            hint = {
-                _SRC_WT: "Відкрий War Thunder (windowed/borderless)",
-                _SRC_HWND: "Натисни «Вибрати вікно…» і наведи курсор на ціль",
-            }.get(self._source, "Немає цілі")
             canvas.create_text(
-                8, 10, anchor="nw", fill="#ffffff", font=("Segoe UI", 11), text=hint
+                8,
+                10,
+                anchor="nw",
+                fill="#ffffff",
+                font=("Segoe UI", 11),
+                text="Відкрий War Thunder (windowed/borderless)",
             )
             self._last_geom = None
             self._logic_size = None
@@ -622,10 +632,16 @@ class RoiCalibrator:
     ) -> None:
         if self._image is None:
             canvas.delete("all")
-            win.geometry("520x80+100+120")
+            sw = max(800, int(win.winfo_screenwidth()))
+            sh = max(600, int(win.winfo_screenheight()))
+            win.geometry(f"{sw}x{sh}+0+0")
             canvas.create_text(
-                12, 24, anchor="nw", fill="#ffffff", font=("Segoe UI", 11),
-                text="Відкрий скріншот (Відкрити зображення…)",
+                sw // 2,
+                sh // 2,
+                anchor="center",
+                fill="#ffffff",
+                font=("Segoe UI", 14),
+                text="Відкрий скріншот (Відкрити зображення…)\nEsc — закрити",
             )
             self._last_geom = None
             self._logic_size = None
@@ -634,48 +650,52 @@ class RoiCalibrator:
         iw, ih = self._image.size
         self._logic_size = (iw, ih)
 
-        # Fit into ~90% of screen while keeping aspect.
-        sw = max(640, int(win.winfo_screenwidth() * 0.9))
-        sh = max(480, int(win.winfo_screenheight() * 0.85))
-        scale = min(sw / float(iw), sh / float(ih), 1.0)
+        # Full monitor, borderless; letterbox the screenshot (preserve aspect).
+        sw = max(640, int(win.winfo_screenwidth()))
+        sh = max(480, int(win.winfo_screenheight()))
+        scale = min(sw / float(iw), sh / float(ih))
         dw = max(1, int(round(iw * scale)))
         dh = max(1, int(round(ih * scale)))
         self._img_scale = scale
-        self._img_ox = 0
-        self._img_oy = 28  # HUD strip
+        self._img_ox = (sw - dw) // 2
+        self._img_oy = (sh - dh) // 2
 
-        geom = (0, 0, dw, dh + 28)
+        geom = (0, 0, sw, sh)
         geom_changed = geom != self._last_geom or self._photo is None
         if geom_changed:
-            win.geometry(f"{dw}x{dh + 28}+40+40")
+            win.geometry(f"{sw}x{sh}+0+0")
             self._last_geom = geom
-            display = self._image if scale >= 0.999 else self._image.resize(
-                (dw, dh), Image.Resampling.LANCZOS
+            display = (
+                self._image
+                if abs(scale - 1.0) < 1e-3
+                else self._image.resize((dw, dh), Image.Resampling.LANCZOS)
             )
             self._photo = ImageTk.PhotoImage(display)
             win.update_idletasks()
+            try:
+                _style_tool_topmost(_toplevel_hwnd(win))
+            except Exception:
+                pass
+            if self._panel is not None:
+                try:
+                    self._panel.lift()
+                except Exception:
+                    pass
 
         if not force_boxes and not geom_changed and canvas.find_withtag("box"):
             return
 
         canvas.delete("all")
-        canvas.create_rectangle(0, 0, dw, 28, fill="#000000", outline="", tags="hud")
-        which = "WITH" if self._edit_with else "WITHOUT"
-        name = self._image_path.name if self._image_path else "image"
-        canvas.create_text(
-            8, 6, anchor="nw", fill="#ffffff", font=("Segoe UI", 11),
-            text=f"Calibrator  {which}  {iw}x{ih}  {name}  scale={scale:.2f}",
-            tags="hud",
-        )
+        canvas.create_rectangle(0, 0, sw, sh, fill="#000000", outline="")
         if self._photo is not None:
             canvas.create_image(
                 self._img_ox, self._img_oy, anchor="nw", image=self._photo, tags="bg"
             )
-        # Boxes in canvas coords = image pixels * scale + offset.
-        probe = self._image
-        col = self._active_column()
-        self._draw_box_scaled(canvas, probe, col.rp, _RP_COLOR, "RP", "rp")
-        self._draw_box_scaled(canvas, probe, col.sl, _SL_COLOR, "SL", "sl")
+        pair = self._active_pair()
+        n = len(self._active_column().pairs)
+        suffix = f"  pair {self._pair_index + 1}/{n}"
+        self._draw_box_scaled(canvas, self._image, pair.rp, _RP_COLOR, f"RP{suffix}", "rp")
+        self._draw_box_scaled(canvas, self._image, pair.sl, _SL_COLOR, f"SL{suffix}", "sl")
 
     def _paint_boxes(
         self,
@@ -686,14 +706,18 @@ class RoiCalibrator:
         *,
         label_suffix: str,
     ) -> None:
-        col = self._active_column()
-        self._draw_box(canvas, probe, col.rp, _RP_COLOR, "RP", "rp")
-        self._draw_box(canvas, probe, col.sl, _SL_COLOR, "SL", "sl")
+        pair = self._active_pair()
+        n = len(self._active_column().pairs)
+        self._draw_box(canvas, probe, pair.rp, _RP_COLOR, "RP", "rp")
+        self._draw_box(canvas, probe, pair.sl, _SL_COLOR, "SL", "sl")
         which = "WITH" if self._edit_with else "WITHOUT"
         canvas.create_rectangle(0, 0, width, 28, fill="#000000", outline="", tags="hud")
         canvas.create_text(
             8, 6, anchor="nw", fill="#ffffff", font=("Segoe UI", 11),
-            text=f"Calibrator  {which}  {width}x{height}{label_suffix}  drag box / corner",
+            text=(
+                f"Calibrator  {which}  pair {self._pair_index + 1}/{n}  "
+                f"{width}x{height}{label_suffix}  drag box / corner"
+            ),
             tags="hud",
         )
 
@@ -755,10 +779,10 @@ class RoiCalibrator:
             if self._source == _SRC_IMAGE and self._image is not None
             else Image.new("RGB", (iw, ih), (0, 0, 0))
         )
-        col = self._active_column()
+        pair = self._active_pair()
         # Hit slop in logical pixels (scale-aware for image mode).
         handle = max(8.0, _HANDLE / max(1e-6, self._img_scale if self._source == _SRC_IMAGE else 1.0))
-        for key, rect in (("rp", col.rp), ("sl", col.sl)):
+        for key, rect in (("rp", pair.rp), ("sl", pair.sl)):
             box = pixel_box(probe, rect, min_width=4, min_height=4)
             if box is None:
                 continue
@@ -774,8 +798,8 @@ class RoiCalibrator:
         if not kind:
             return
         key = kind.split("-", 1)[1]
-        col = self._active_column()
-        orig = col.rp if key == "rp" else col.sl
+        pair = self._active_pair()
+        orig = pair.rp if key == "rp" else pair.sl
         mapped = self._canvas_to_logic(int(event.x), int(event.y))
         if mapped is None:
             return
@@ -817,11 +841,8 @@ class RoiCalibrator:
             right = min(1.0, max(o.left + 0.02, o.right + dx))
             bottom = min(1.0, max(o.top + 0.015, o.bottom + dy))
             new = NormRect(o.left, o.top, right, bottom, o.tag).clamp()
-        col = self._active_column()
-        if key == "rp":
-            self._set_active_column(ColumnRois(rp=new, sl=col.sl))
-        else:
-            self._set_active_column(ColumnRois(rp=col.rp, sl=new))
+        col = self._active_column().replace_cell(self._pair_index, kind=key, rect=new)
+        self._set_active_column(col)
         self._redraw_overlay(force_boxes=True)
 
     def _on_release(self, _event) -> None:

@@ -265,7 +265,9 @@ def _read_roi_pair(crop: Image.Image) -> tuple[str, tuple[int, int] | None]:
         return rapid, pair_from_digit_text(rapid)
     if text:
         return text, pair_from_digit_text(text)
-    return digits, pair_from_digit_text(digits) if digits else (digits, None)
+    if digits:
+        return digits, pair_from_digit_text(digits)
+    return "", None
 
 
 def _read_roi_amount(crop: Image.Image) -> tuple[str, int | None]:
@@ -273,11 +275,59 @@ def _read_roi_amount(crop: Image.Image) -> tuple[str, int | None]:
     text, pair = _read_roi_pair(crop)
     if pair is not None:
         # Prefer the first of a pair when a cell accidentally covers both.
-        return text, pair[0]
-    amounts = [a for a in _amounts_in(text, min_value=50) if a <= 250_000]
+        return text, int(pair[0])
+    amounts = [a for a in _amounts_in(text or "", min_value=50) if a <= 250_000]
     if not amounts:
-        return text, None
-    return text, amounts[0]
+        return text or "", None
+    return text or "", int(amounts[0])
+
+
+def try_calibrated_column_pair(
+    image: Image.Image,
+    *,
+    prefer_with: bool,
+) -> tuple[int, int, int] | None:
+    """
+    Walk calibrated fallback pairs in order until RP+SL both read as usable numbers.
+
+    Returns ``(pair_index, rp, sl)`` or None if every pair fails (letters / junk).
+    """
+    from .roi_calib import calibrated_all_pair_rects
+    from .roi_layout import crop_norm
+
+    stack = calibrated_all_pair_rects(prefer_with=prefer_with)
+    if not stack:
+        return None
+    prefix = "with" if prefer_with else "without"
+    for index, rp_rect, sl_rect in stack:
+        rp_crop = crop_norm(image, rp_rect)
+        sl_crop = crop_norm(image, sl_rect)
+        if rp_crop is None or sl_crop is None:
+            log.debug("calib pair %s-p%s: crop missing", prefix, index)
+            continue
+        rp_text, rp_amt = _read_roi_amount(rp_crop)
+        sl_text, sl_amt = _read_roi_amount(sl_crop)
+        if rp_amt is None or sl_amt is None:
+            log.debug(
+                "calib pair %s-p%s rejected (non-numeric): rp=%r sl=%r",
+                prefix,
+                index,
+                (rp_text or "")[:40],
+                (sl_text or "")[:40],
+            )
+            continue
+        if not _column_pair_usable(rp_amt, sl_amt):
+            log.debug(
+                "calib pair %s-p%s rejected (unusable): %s/%s",
+                prefix,
+                index,
+                rp_amt,
+                sl_amt,
+            )
+            continue
+        log.info("calib pair %s-p%s OK → %s / %s", prefix, index, rp_amt, sl_amt)
+        return index, rp_amt, sl_amt
+    return None
 
 
 # --- Landmark path (WinRT word boxes) ---
@@ -579,9 +629,35 @@ def extract_roi_reward_variants(
     total_band_pairs: list[tuple[int, int]] = []
 
     def _ingest_digit_rois(*, use_dense: bool) -> None:
+        # Calibrated stack: try pair0 → pair1 → … until RP+SL are real numbers.
+        if not use_dense:
+            from .roi_calib import has_usable_calibration
+
+            if has_usable_calibration():
+                hit = try_calibrated_column_pair(image, prefer_with=bool(prefer_with))
+                if hit is not None:
+                    index, rp, sl = hit
+                    label = "З преміумом" if prefer_with else "Без преміума"
+                    variants.insert(0, (f"roi:calib-p{index}", f"{label} {rp} {sl}"))
+                    bucket = with_digit_pairs if prefer_with else without_digit_pairs
+                    bucket.extend([(rp, sl), (rp, sl), (rp, sl)])
+                    return
+                # All pairs failed (letters/junk) — fall through to catalogue ROIs.
+
         for tag, crop in iter_reward_digit_rois(
             image, dense=use_dense, prefer_with=prefer_with
         ):
+            # When calib exists, lean calibrated cells were already tried above.
+            if (
+                not use_dense
+                and (tag.endswith("-rp") or tag.endswith("-sl"))
+                and (tag.startswith("with") or tag.startswith("without"))
+            ):
+                from .roi_calib import has_usable_calibration
+
+                if has_usable_calibration():
+                    continue
+
             # Calibrated single-cell tags: with-rp / with-sl / without-rp / without-sl
             if tag.endswith("-rp") or tag.endswith("-sl"):
                 text, amount = _read_roi_amount(crop)
