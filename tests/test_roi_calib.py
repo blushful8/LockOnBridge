@@ -116,35 +116,61 @@ def test_lean_rects_use_calibrated_when_present():
     assert any(t.endswith("sl") for t in tags)
 
 
-def test_frozen_prefers_packaged_over_user(tmp_path: Path, monkeypatch):
-    """Release builds must pick up auto-update calib, not a stale LocalAppData draft."""
+def test_higher_packaged_version_beats_user(tmp_path: Path, monkeypatch):
+    """Shipped update (higher version) replaces stale LocalAppData calib."""
     packaged = tmp_path / "packaged.json"
     user = tmp_path / "user.json"
     packaged.write_text(
-        '{"version":1,"with":{"rp":{"left":0.1,"top":0.1,"right":0.2,"bottom":0.15},'
-        '"sl":{"left":0.1,"top":0.16,"right":0.2,"bottom":0.21}},'
-        '"without":{"rp":{"left":0.3,"top":0.1,"right":0.4,"bottom":0.15},'
-        '"sl":{"left":0.3,"top":0.16,"right":0.4,"bottom":0.21}}}\n',
+        '{"version":3,"with":{"pairs":[{"rp":{"left":0.1,"top":0.1,"right":0.2,"bottom":0.15},'
+        '"sl":{"left":0.1,"top":0.16,"right":0.2,"bottom":0.21}}]},'
+        '"without":{"pairs":[{"rp":{"left":0.3,"top":0.1,"right":0.4,"bottom":0.15},'
+        '"sl":{"left":0.3,"top":0.16,"right":0.4,"bottom":0.21}}]}}\n',
         encoding="utf-8",
     )
     user.write_text(
-        '{"version":1,"with":{"rp":{"left":0.5,"top":0.5,"right":0.6,"bottom":0.55},'
-        '"sl":{"left":0.5,"top":0.56,"right":0.6,"bottom":0.61}},'
-        '"without":{"rp":{"left":0.7,"top":0.5,"right":0.8,"bottom":0.55},'
-        '"sl":{"left":0.7,"top":0.56,"right":0.8,"bottom":0.61}}}\n',
+        '{"version":2,"with":{"pairs":[{"rp":{"left":0.5,"top":0.5,"right":0.6,"bottom":0.55},'
+        '"sl":{"left":0.5,"top":0.56,"right":0.6,"bottom":0.61}}]},'
+        '"without":{"pairs":[{"rp":{"left":0.7,"top":0.5,"right":0.8,"bottom":0.55},'
+        '"sl":{"left":0.7,"top":0.56,"right":0.8,"bottom":0.61}}]}}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("lockon_bridge.roi_calib.packaged_calib_path", lambda: packaged)
     monkeypatch.setattr("lockon_bridge.roi_calib.user_calib_path", lambda: user)
-    monkeypatch.setattr("lockon_bridge.roi_calib.is_frozen", lambda: True)
     loaded = load_calibrated_rois()
     assert loaded is not None
+    assert loaded.version == 3
     assert loaded.with_premium.rp.left == 0.1
 
-    monkeypatch.setattr("lockon_bridge.roi_calib.is_frozen", lambda: False)
-    loaded_dev = load_calibrated_rois()
-    assert loaded_dev is not None
-    assert loaded_dev.with_premium.rp.left == 0.5
+
+def test_user_more_pairs_beats_same_version_packaged(tmp_path: Path, monkeypatch):
+    """Local Save with extra fallback pairs must stick after reopen (.exe)."""
+    packaged = tmp_path / "packaged.json"
+    user = tmp_path / "user.json"
+    packaged.write_text(
+        '{"version":2,"with":{"pairs":[{"rp":{"left":0.1,"top":0.1,"right":0.2,"bottom":0.15},'
+        '"sl":{"left":0.1,"top":0.16,"right":0.2,"bottom":0.21}}]},'
+        '"without":{"pairs":[{"rp":{"left":0.3,"top":0.1,"right":0.4,"bottom":0.15},'
+        '"sl":{"left":0.3,"top":0.16,"right":0.4,"bottom":0.21}}]}}\n',
+        encoding="utf-8",
+    )
+    user.write_text(
+        '{"version":2,"with":{"pairs":['
+        '{"rp":{"left":0.5,"top":0.5,"right":0.6,"bottom":0.55},"sl":{"left":0.5,"top":0.56,"right":0.6,"bottom":0.61}},'
+        '{"rp":{"left":0.55,"top":0.5,"right":0.65,"bottom":0.55},"sl":{"left":0.55,"top":0.56,"right":0.65,"bottom":0.61}},'
+        '{"rp":{"left":0.6,"top":0.5,"right":0.7,"bottom":0.55},"sl":{"left":0.6,"top":0.56,"right":0.7,"bottom":0.61}}'
+        ']},"without":{"pairs":['
+        '{"rp":{"left":0.7,"top":0.5,"right":0.8,"bottom":0.55},"sl":{"left":0.7,"top":0.56,"right":0.8,"bottom":0.61}},'
+        '{"rp":{"left":0.72,"top":0.5,"right":0.82,"bottom":0.55},"sl":{"left":0.72,"top":0.56,"right":0.82,"bottom":0.61}},'
+        '{"rp":{"left":0.74,"top":0.5,"right":0.84,"bottom":0.55},"sl":{"left":0.74,"top":0.56,"right":0.84,"bottom":0.61}}'
+        ']}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("lockon_bridge.roi_calib.packaged_calib_path", lambda: packaged)
+    monkeypatch.setattr("lockon_bridge.roi_calib.user_calib_path", lambda: user)
+    loaded = load_calibrated_rois()
+    assert loaded is not None
+    assert loaded.pair_count == 3
+    assert loaded.with_premium.rp.left == 0.5
 
 
 def test_norm_rects_scale_across_resolutions():

@@ -204,6 +204,15 @@ class BridgeApp:
         measure packed content and grow (within the screen work area).
         """
         self.root.update_idletasks()
+        # Match tip wrap to upcoming width so wrapped text does not force overflow.
+        try:
+            tip_w = max(MIN_WINDOW_W - 48, int(self.root.winfo_width()) - 48)
+            if tip_w < 200:
+                tip_w = DEFAULT_WINDOW_W - 48
+            self.tip_label.configure(wraplength=tip_w)
+            self.root.update_idletasks()
+        except Exception:  # noqa: BLE001
+            pass
         req_w, req_h = self._content_req_size()
         need_w = max(MIN_WINDOW_W, req_w, DEFAULT_WINDOW_W if initial else 0)
         need_h = max(MIN_WINDOW_H, req_h, DEFAULT_WINDOW_H if initial else 0)
@@ -228,6 +237,13 @@ class BridgeApp:
 
         if initial or cur_w < 50 or cur_h < 50:
             self.root.geometry(f"{final_w}x{final_h}")
+            try:
+                self.tip_label.configure(wraplength=max(280, final_w - 48))
+                self.phone_banner.configure(wraplength=max(280, final_w - 56))
+                self.phone_url_label.configure(wraplength=max(280, final_w - 56))
+                self.status_label.configure(wraplength=max(280, final_w - 48))
+            except Exception:  # noqa: BLE001
+                pass
             return
         # Grow when content needs more room; never shrink below the fitted size
         # if the user already enlarged the window.
@@ -239,6 +255,13 @@ class BridgeApp:
             target_h = max(cur_h, final_h)
         if target_w != cur_w or target_h != cur_h:
             self.root.geometry(f"{target_w}x{target_h}")
+        try:
+            self.tip_label.configure(wraplength=max(280, target_w - 48))
+            self.phone_banner.configure(wraplength=max(280, target_w - 56))
+            self.phone_url_label.configure(wraplength=max(280, target_w - 56))
+            self.status_label.configure(wraplength=max(280, target_w - 48))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _apply_window_icon(self) -> None:
         ico = _asset_path("lockon_bridge.ico")

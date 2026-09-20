@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .paths import data_root, is_frozen
+from .paths import data_root
 from .roi_layout import NormRect
 
 log = logging.getLogger("lockon_bridge.roi_calib")
@@ -295,31 +295,42 @@ def default_calibrated_rois() -> CalibratedRois:
     )
 
 
+def _try_read_calib(path: Path) -> CalibratedRois | None:
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("ROI calib read failed (%s): %s", path, exc)
+        return None
+    calib = calibrated_from_dict(raw)
+    if calib is None:
+        log.warning("ROI calib invalid: %s", path)
+    return calib
+
+
 def load_calibrated_rois() -> CalibratedRois | None:
     """
     Load RP/SL fractions (0..1 of WT content_frame — scales across resolutions).
 
-    - Source tree: LocalAppData first (live Save), then packaged repo file.
-    - Frozen release: packaged (shipped in update) first, so auto-update applies
-      for everyone; LocalAppData only if the package file is missing.
+    Prefer the richer / newer calibration:
+    - Higher ``version`` wins (so a shipped update can replace stale LocalAppData).
+    - Same version → more pairs wins (local Save with extra fallbacks sticks).
+    - Still tied → LocalAppData over packaged (dev edits keep working in .exe).
     """
-    if is_frozen():
-        candidates = (packaged_calib_path(), user_calib_path())
-    else:
-        candidates = (user_calib_path(), packaged_calib_path())
-    for path in candidates:
-        if not path.is_file():
-            continue
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            log.warning("ROI calib read failed (%s): %s", path, exc)
-            continue
-        calib = calibrated_from_dict(raw)
+    candidates: list[tuple[CalibratedRois, int]] = []
+    # Prefer-user tie-break: user=1, packaged=0
+    for path, tie in ((user_calib_path(), 1), (packaged_calib_path(), 0)):
+        calib = _try_read_calib(path)
         if calib is not None:
-            return calib
-        log.warning("ROI calib invalid: %s", path)
-    return None
+            candidates.append((calib, tie))
+    if not candidates:
+        return None
+    best, _ = max(
+        candidates,
+        key=lambda item: (item[0].version, item[0].pair_count, item[1]),
+    )
+    return best
 
 
 def save_calibrated_rois(

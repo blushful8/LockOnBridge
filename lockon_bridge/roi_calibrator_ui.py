@@ -20,6 +20,7 @@ from tkinter import filedialog
 from PIL import Image, ImageTk
 
 from .capture import find_war_thunder_hwnd
+from .dpi import fit_toplevel
 from .roi_calib import (
     CalibratedRois,
     ColumnRois,
@@ -144,7 +145,13 @@ class RoiCalibrator:
         return self._running
 
     def open(self) -> None:
+        # Always reload from disk so LocalAppData Save (extra pairs) is not lost.
+        self._calib = (load_calibrated_rois() or default_calibrated_rois()).with_synced_pair_counts()
+        self._pair_index = min(self._pair_index, max(0, self._calib.pair_count - 1))
         if self._running:
+            self._refresh_pair_label()
+            self._redraw_overlay(force_boxes=True)
+            self._fit_panel()
             self._lift()
             return
         self._running = True
@@ -277,7 +284,6 @@ class RoiCalibrator:
         win = tk.Toplevel(self.master)
         win.title("ROI calibrator (dev)")
         win.configure(bg="#12141a")
-        win.geometry("480x420+40+40")
         win.attributes("-topmost", True)
         win.protocol("WM_DELETE_WINDOW", self.close)
         # If focus leaves the panel (click on overlay / other apps), pin it back.
@@ -290,7 +296,7 @@ class RoiCalibrator:
             font=("Segoe UI", 10),
             fg="#c8ccd4",
             bg="#12141a",
-            wraplength=450,
+            wraplength=440,
             justify="left",
             anchor="w",
         )
@@ -448,6 +454,32 @@ class RoiCalibrator:
             anchor="w",
         ).pack(fill="x", padx=12, pady=(0, 10))
         self._panel = win
+        self._fit_panel()
+        self._ensure_panel_on_top()
+
+    def _fit_panel(self) -> None:
+        """Resize control panel so all buttons / wrapped text stay visible."""
+        win = self._panel
+        if win is None:
+            return
+        try:
+            win.update_idletasks()
+            # Keep label wrap in sync with fitted width.
+            width = max(440, int(win.winfo_reqwidth()))
+            for widget in (self._status,):
+                if widget is not None:
+                    widget.configure(wraplength=max(360, width - 40))
+            # Also widen the bottom tip label if present.
+            for child in win.winfo_children():
+                if isinstance(child, tk.Label) and child is not self._status and child is not self._pair_label:
+                    try:
+                        child.configure(wraplength=max(360, width - 40))
+                    except tk.TclError:
+                        pass
+            win.update_idletasks()
+        except Exception:
+            pass
+        fit_toplevel(win, min_w=460, min_h=400, pad_w=20, pad_h=40, x=40, y=40)
         self._ensure_panel_on_top()
 
     def _prev_pair(self) -> None:
@@ -562,7 +594,10 @@ class RoiCalibrator:
         also_pkg = not bool(getattr(sys, "frozen", False))
         paths = save_calibrated_rois(self._calib, also_package=also_pkg)
         if self._status is not None:
-            self._status.configure(text="Збережено:\n" + "\n".join(str(p) for p in paths))
+            self._status.configure(
+                text="Збережено:\n" + "\n".join(str(p) for p in paths)
+            )
+        self._fit_panel()
 
     def _rebuild_overlay_shell(self) -> None:
         """Recreate overlay: transparent-on-window vs image canvas."""
