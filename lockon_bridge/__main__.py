@@ -149,6 +149,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Capture the screen once, OCR, print RP/SL (open a results screenshot first)",
     )
     parser.add_argument(
+        "--test-clipboard-results",
+        action="store_true",
+        help="Dev: envelope → Ctrl+C → parse Messages battle dump (WT hangar)",
+    )
+    parser.add_argument(
         "--ocr-worker",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -234,6 +239,20 @@ def main(argv: list[str] | None = None) -> int:
         from .selftest import run_ocr_once_cli
 
         return run_ocr_once_cli()
+
+    if args.test_clipboard_results:
+        from .wt_messages_ui import capture_clipboard_battle_report
+
+        report, reason = capture_clipboard_battle_report()
+        if report is None:
+            print(f"clipboard results failed: {reason}", file=sys.stderr)
+            return 1
+        print(
+            f"clipboard results OK RP={report.research_points} "
+            f"SL={report.silver_lions} outcome={report.outcome} "
+            f"conf={report.confidence:.2f}"
+        )
+        return 0
 
     if args.serve_test:
         from .selftest import run_serve_test

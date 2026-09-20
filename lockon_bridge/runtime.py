@@ -195,6 +195,49 @@ class BridgeRuntime:
                 self._watch_wait(hangar)
 
     def _capture_burst(self) -> None:
+        """Clipboard Messages path first; grab-first OCR as fallback."""
+        from .crashguard import breadcrumb
+
+        try:
+            from .settings import load_settings as _ls
+
+            use_clip = bool(_ls().use_clipboard_results)
+        except Exception:  # noqa: BLE001
+            use_clip = True
+
+        if use_clip:
+            breadcrumb("capture_burst clipboard-msg begin")
+            log.info("battle ended — trying Messages clipboard results")
+            try:
+                from .wt_messages_ui import capture_clipboard_battle_report
+
+                report, reason = capture_clipboard_battle_report()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("clipboard results error: %s", exc)
+                report, reason = None, f"error:{exc}"
+            if report is not None:
+                if self.store.publish(report):
+                    log.info(
+                        "clipboard results published RP=%s SL=%s conf=%.2f",
+                        report.research_points,
+                        report.silver_lions,
+                        report.confidence,
+                    )
+                else:
+                    log.info(
+                        "clipboard results duplicate RP=%s SL=%s",
+                        report.research_points,
+                        report.silver_lions,
+                    )
+                return
+            log.info(
+                "clipboard results unavailable (%s) — OCR grab-first fallback",
+                reason,
+            )
+
+        self._capture_burst_ocr()
+
+    def _capture_burst_ocr(self) -> None:
         """Grab-first burst: snapshot WT quickly, then OCR the buffer offline."""
         from .crashguard import breadcrumb
         from .ocr_isolate import PersistentOcrWorker

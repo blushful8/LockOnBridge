@@ -73,6 +73,10 @@ class Strings:
     test_ocr_ok: str
     test_ocr_fail: str
     test_ocr_error: str
+    test_clipboard: str
+    test_clipboard_busy: str
+    test_clipboard_ok: str
+    test_clipboard_fail: str
     replay_log: str
     replay_ok: str
     replay_fail: str
@@ -224,6 +228,20 @@ EN = Strings(
         "OCR preview:\n{preview}"
     ),
     test_ocr_error="OCR failed:\n{error}",
+    test_clipboard="Test clipboard results",
+    test_clipboard_busy="Opening Messages → Ctrl+C…",
+    test_clipboard_ok=(
+        "Clipboard results OK\n\n"
+        "Research Points: {rp}\n"
+        "Silver Lions: {sl}\n"
+        "Outcome: {outcome}\n"
+        "Confidence: {conf:.0%}"
+    ),
+    test_clipboard_fail=(
+        "Clipboard results failed ({reason}).\n\n"
+        "Focus War Thunder hangar so the Messages envelope is visible,\n"
+        "then try again. OCR remains the fallback after battles."
+    ),
     replay_log="Replay last OCR dump",
     replay_ok="Replayed last OCR dump:\nResearch Points: {rp}\nSilver Lions: {sl}",
     replay_fail="Could not parse last OCR dump (or file missing).",
@@ -385,6 +403,20 @@ UK = Strings(
         "Фрагмент OCR:\n{preview}"
     ),
     test_ocr_error="Помилка OCR:\n{error}",
+    test_clipboard="Перевірити clipboard-результати",
+    test_clipboard_busy="Відкриваю Повідомлення → Ctrl+C…",
+    test_clipboard_ok=(
+        "Clipboard-результати OK\n\n"
+        "Очки досліджень: {rp}\n"
+        "Срібні леви: {sl}\n"
+        "Результат бою: {outcome}\n"
+        "Впевненість: {conf:.0%}"
+    ),
+    test_clipboard_fail=(
+        "Clipboard-результати не вдалося ({reason}).\n\n"
+        "Зроби War Thunder активним у ангарі з видимою іконкою повідомлень,\n"
+        "потім спробуй ще. OCR лишається запасним шляхом після бою."
+    ),
     replay_log="Повторити останній OCR",
     replay_ok="Останній OCR-дамп:\nОчки досліджень: {rp}\nСрібні леви: {sl}",
     replay_fail="Не вдалося розпарсити останній OCR-дамп (або файлу немає).",

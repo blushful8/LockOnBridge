@@ -464,6 +464,8 @@ class BridgeApp:
         btns.pack(fill="x", padx=20, pady=(8, 4))
         self.btn_test_ocr = self._btn(btns, t.test_ocr, self._test_ocr)
         self.btn_test_ocr.pack(fill="x", pady=3)
+        self.btn_test_clipboard = self._btn(btns, t.test_clipboard, self._test_clipboard)
+        self.btn_test_clipboard.pack(fill="x", pady=3)
 
         more_row = tk.Frame(btns, bg=BG)
         more_row.pack(fill="x", pady=3)
@@ -1101,6 +1103,64 @@ class BridgeApp:
             self.root.after(0, apply)
         except tk.TclError:
             pass
+
+    def _test_clipboard(self) -> None:
+        if getattr(self, "_ocr_busy", False):
+            return
+        self._ocr_busy = True
+        t = self.strings
+        try:
+            self.status_var.set(t.test_clipboard_busy)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.root.withdraw()
+        except tk.TclError:
+            pass
+
+        def work() -> None:
+            report = None
+            reason = "error"
+            try:
+                from .wt_messages_ui import capture_clipboard_battle_report
+
+                report, reason = capture_clipboard_battle_report()
+            except Exception as exc:  # noqa: BLE001
+                reason = str(exc)
+
+            def show() -> None:
+                self._ocr_busy = False
+                try:
+                    self.root.deiconify()
+                    self.root.lift()
+                except tk.TclError:
+                    pass
+                if report is None:
+                    messagebox.showerror(
+                        PRODUCT_NAME,
+                        t.test_clipboard_fail.format(reason=reason),
+                    )
+                    return
+                outcome = {
+                    "victory": t.outcome_victory,
+                    "defeat": t.outcome_defeat,
+                }.get(report.outcome, t.outcome_undecided)
+                messagebox.showinfo(
+                    PRODUCT_NAME,
+                    t.test_clipboard_ok.format(
+                        rp=report.research_points,
+                        sl=report.silver_lions,
+                        outcome=outcome,
+                        conf=report.confidence,
+                    ),
+                )
+
+            try:
+                self.root.after(0, show)
+            except tk.TclError:
+                self._ocr_busy = False
+
+        threading.Thread(target=work, name="clipboard-test", daemon=True).start()
 
     def _test_ocr(self) -> None:
         if getattr(self, "_ocr_busy", False):

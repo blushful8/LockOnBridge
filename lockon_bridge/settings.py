@@ -29,6 +29,8 @@ class BridgeSettings:
     has_premium_account: bool = False
     # Developer: live transparent ROI overlay + annotated dumps.
     debug_show_rois: bool = False
+    # After battle: open Messages → Ctrl+C → parse (OCR is fallback).
+    use_clipboard_results: bool = True
     # Launch Bridge at Windows logon (scheduled task). Independent of agent run.
     autostart_with_windows: bool = True
 
@@ -72,6 +74,7 @@ class BridgeSettings:
             ocr_setup_done=bool(raw.get("ocr_setup_done", False)),
             has_premium_account=bool(raw.get("has_premium_account", False)),
             debug_show_rois=bool(raw.get("debug_show_rois", False)),
+            use_clipboard_results=bool(raw.get("use_clipboard_results", True)),
             autostart_with_windows=autostart,
         )
 
