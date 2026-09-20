@@ -157,15 +157,28 @@ def select_reward_digit_rects(
     image: Image.Image,
     *,
     dense: bool = False,
+    prefer_with: bool | None = None,
 ) -> list[NormRect]:
     """
     Digit ROI rectangles for reward OCR (no crops).
 
-    Lean (default): as few as possible —
-      full client → summary 4-cell + one «Всього» row
-      chat crop   → mid without + one total
-    Dense: full ROI catalogue only when lean cannot bank a pair.
+    When ``roi_calibrated.json`` is present, lean path uses exactly RP+SL for the
+    premium column. Dense / missing calib keeps the legacy catalogue.
     """
+    if not dense:
+        from .roi_calib import calibrated_rects_for
+
+        if prefer_with is None:
+            try:
+                from .settings import load_settings
+
+                prefer_with = bool(load_settings().has_premium_account)
+            except Exception:  # noqa: BLE001
+                prefer_with = False
+        calibrated = calibrated_rects_for(image, prefer_with=bool(prefer_with))
+        if calibrated:
+            return list(calibrated)
+
     full = is_full_client_frame(image)
     rects: list[NormRect] = []
 
@@ -236,10 +249,11 @@ def iter_reward_digit_rois(
     image: Image.Image,
     *,
     dense: bool = False,
+    prefer_with: bool | None = None,
 ) -> list[tuple[str, Image.Image]]:
     """Digit crops for reward OCR (see ``select_reward_digit_rects``)."""
     out: list[tuple[str, Image.Image]] = []
-    for rect in select_reward_digit_rects(image, dense=dense):
+    for rect in select_reward_digit_rects(image, dense=dense, prefer_with=prefer_with):
         crop = crop_norm(image, rect)
         if crop is not None:
             out.append((rect.tag, crop))

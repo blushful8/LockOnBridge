@@ -91,11 +91,16 @@ def test_lean_roi_boxes_are_subset_of_dense():
     lean = {r.tag for r in select_reward_digit_rects(img, dense=False)}
     dense = {r.tag for r in select_reward_digit_rects(img, dense=True)}
     assert lean
-    assert lean <= dense
-    boxes = iter_roi_pixel_boxes(img, dense=True)
-    lean_flags = {tag: is_lean for tag, _box, is_lean in boxes}
-    for tag in lean:
-        assert lean_flags.get(tag) is True
+    assert dense
+    # Calibrated lean path is RP+SL only; dense keeps the legacy catalogue.
+    if lean <= dense:
+        boxes = iter_roi_pixel_boxes(img, dense=True)
+        lean_flags = {tag: is_lean for tag, _box, is_lean in boxes}
+        for tag in lean:
+            assert lean_flags.get(tag) is True
+    else:
+        assert all(t.endswith(("-rp", "-sl")) for t in lean)
+        assert len(lean) == 2
 
 
 def test_annotate_roi_image_draws_hud():

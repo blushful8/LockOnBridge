@@ -90,6 +90,11 @@ class Strings:
     outcome_undecided: str
     menu_more: str
     debug_show_rois: str
+    roi_calibrator: str
+    dev_unlock_title: str
+    dev_unlock_prompt: str
+    dev_unlock_bad: str
+    dev_unlocked: str
 
 
 EN = Strings(
@@ -243,7 +248,12 @@ EN = Strings(
     outcome_defeat="defeat",
     outcome_undecided="undecided",
     menu_more="More ▾",
-    debug_show_rois="Show OCR regions (dev)",
+    debug_show_rois="Show OCR regions continuously (dev)",
+    roi_calibrator="ROI calibrator…",
+    dev_unlock_title="Developer unlock",
+    dev_unlock_prompt="Enter developer passphrase:",
+    dev_unlock_bad="Wrong passphrase.",
+    dev_unlocked="Developer tools unlocked for this session.",
 )
 
 UK = Strings(
@@ -399,7 +409,12 @@ UK = Strings(
     outcome_defeat="поразка",
     outcome_undecided="невідомо",
     menu_more="Ще ▾",
-    debug_show_rois="Показати OCR-області (dev)",
+    debug_show_rois="Показувати OCR-області постійно (dev)",
+    roi_calibrator="Калібратор ROI…",
+    dev_unlock_title="Розблокування розробника",
+    dev_unlock_prompt="Введіть пароль розробника:",
+    dev_unlock_bad="Невірний пароль.",
+    dev_unlocked="Інструменти розробника розблоковано на цю сесію.",
 )
 
 

@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
+import sys
 import threading
 from typing import Any
+
+from PIL import Image
 
 log = logging.getLogger("lockon_bridge.rapid")
 
 _engine: Any | None = None
 _engine_lock = threading.Lock()
 _engine_failed = False
+_probe_done = False
 
 
 def rapidocr_available() -> bool:
@@ -24,8 +30,55 @@ def rapidocr_available() -> bool:
         return False
 
 
+def _probe_rapidocr_subprocess() -> bool:
+    """
+    onnxruntime can AV-crash the whole process on some GPUs/drivers.
+    Probe in a child so the Bridge UI survives.
+    """
+    env = os.environ.copy()
+    env["LOCKON_RAPIDOCR_PROBE"] = "1"
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--rapidocr-probe"]
+        else:
+            cmd = [sys.executable, "-m", "lockon_bridge", "--rapidocr-probe"]
+        proc = subprocess.run(
+            cmd,
+            timeout=90,
+            env=env,
+            creationflags=creationflags,
+            capture_output=True,
+        )
+        ok = proc.returncode == 0
+        if not ok:
+            log.warning(
+                "RapidOCR probe failed (code=%s): %s",
+                proc.returncode,
+                (proc.stderr or proc.stdout or b"")[:400],
+            )
+        return ok
+    except Exception as exc:  # noqa: BLE001
+        log.warning("RapidOCR probe error: %s", exc)
+        return False
+
+
+def run_rapidocr_probe_main() -> int:
+    """Entry for ``--rapidocr-probe`` — exit 0 if engine constructs cleanly."""
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+
+        RapidOCR()
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"rapidocr probe failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def _get_engine() -> Any | None:
-    global _engine, _engine_failed
+    global _engine, _engine_failed, _probe_done
     if _engine_failed:
         return None
     if _engine is not None:
@@ -35,6 +88,15 @@ def _get_engine() -> Any | None:
             return _engine
         if _engine_failed:
             return None
+        if not _probe_done:
+            _probe_done = True
+            # Skip nested probe when we ARE the probe child.
+            if os.environ.get("LOCKON_RAPIDOCR_PROBE") == "1":
+                pass
+            elif not _probe_rapidocr_subprocess():
+                _engine_failed = True
+                log.warning("RapidOCR disabled after unsafe probe — using Win/Tess only")
+                return None
         try:
             from rapidocr_onnxruntime import RapidOCR
 

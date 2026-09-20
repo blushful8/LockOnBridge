@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from typing import Optional
 
-from .capture import ocr_screen_capture
+from .capture import last_ocr_frame, ocr_screen_capture
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .paths import log_dir
 from .phase import read_phase
 from .report_store import ReportStore
 from .server import serve
-from .settle import SettleConfig, SettleTracker
+from .settle import LeanRoiFrameGate, SettleConfig, SettleTracker
 
 log = logging.getLogger("lockon_bridge")
 
@@ -39,6 +39,8 @@ class RuntimeConfig:
     capture_delay_sec: float = 0.2
     # Consecutive near-identical OCR pairs required before publish (never publish frame 1 alone).
     settle_stable_frames: int = 2
+    # Also require lean ROI pixels to match this many times (count-up animation gate).
+    settle_frame_stable: int = 2
     # Hangar/battle phase poll — only while War Thunder is running.
     poll_sec: float = 1.0
 
@@ -131,19 +133,26 @@ class BridgeRuntime:
         cfg = self.config
         log.info(
             "battle ended — waiting %.2fs then capturing up to %s frame(s) "
-            "(early gap %.2fs × %s, then %.2fs; publish after %s stable reads)",
+            "(early gap %.2fs × %s, then %.2fs; publish after %s OCR + %s pixel-stable)",
             cfg.capture_delay_sec,
             cfg.frames,
             cfg.early_frame_gap,
             cfg.early_frames,
             cfg.frame_gap,
             cfg.settle_stable_frames,
+            cfg.settle_frame_stable,
         )
         if cfg.capture_delay_sec > 0:
             self._stop.wait(cfg.capture_delay_sec)
 
-        tracker = SettleTracker(
-            cfg=SettleConfig(stable_required=max(2, cfg.settle_stable_frames)),
+        settle_cfg = SettleConfig(stable_required=max(2, cfg.settle_stable_frames))
+        tracker = SettleTracker(cfg=settle_cfg)
+        frame_gate = LeanRoiFrameGate(
+            cfg=SettleConfig(
+                stable_required=max(2, cfg.settle_frame_stable),
+                frame_mae_max=settle_cfg.frame_mae_max,
+                frame_sig_size=settle_cfg.frame_sig_size,
+            )
         )
         last_preview = ""
         saw_confident = False
@@ -155,12 +164,18 @@ class BridgeRuntime:
             try:
                 # After the first confident ROI read, confirm settle with digit ROIs only.
                 png, variants = ocr_screen_capture(roi_only=saw_confident)
+                frame = last_ocr_frame()
+                pixels_stable = False
+                if frame is not None:
+                    pixels_stable = frame_gate.observe(frame)
                 if not variants:
                     last_preview = "(empty OCR)"
                     log.info(
-                        "frame %s/%s: no OCR text | engines empty",
+                        "frame %s/%s: no OCR text | engines empty | pix_stable=%s mae=%s",
                         index + 1,
                         cfg.frames,
+                        pixels_stable,
+                        None if frame_gate.last_mae is None else f"{frame_gate.last_mae:.1f}",
                     )
                     self._write_ocr_dump("", png=png)
                     self._stop.wait(gap)
@@ -185,10 +200,12 @@ class BridgeRuntime:
                 if best is None:
                     last_preview = summarize_ocr_text(variants[0][1])
                     log.info(
-                        "frame %s/%s: no RP/SL yet | engines=%s | ocr=%s",
+                        "frame %s/%s: no RP/SL yet | engines=%s | pix=%s/%s | ocr=%s",
                         index + 1,
                         cfg.frames,
                         ",".join(tag for tag, _ in variants),
+                        frame_gate.stable_count,
+                        frame_gate.cfg.stable_required,
                         last_preview,
                     )
                 else:
@@ -210,7 +227,7 @@ class BridgeRuntime:
                         if settled is None:
                             log.info(
                                 "frame %s/%s: RP=%s SL=%s conf=%.2f "
-                                "(waiting settle %s/%s)",
+                                "(ocr settle %s/%s, pix %s/%s mae=%s)",
                                 index + 1,
                                 cfg.frames,
                                 report.research_points,
@@ -218,11 +235,32 @@ class BridgeRuntime:
                                 report.confidence,
                                 tracker.stable_count,
                                 tracker.cfg.stable_required,
+                                frame_gate.stable_count,
+                                frame_gate.cfg.stable_required,
+                                None
+                                if frame_gate.last_mae is None
+                                else f"{frame_gate.last_mae:.1f}",
+                            )
+                        elif not pixels_stable:
+                            log.info(
+                                "frame %s/%s: RP=%s SL=%s conf=%.2f "
+                                "(OCR settled — waiting lean ROI pixels %s/%s mae=%s)",
+                                index + 1,
+                                cfg.frames,
+                                settled.research_points,
+                                settled.silver_lions,
+                                settled.confidence,
+                                frame_gate.stable_count,
+                                frame_gate.cfg.stable_required,
+                                None
+                                if frame_gate.last_mae is None
+                                else f"{frame_gate.last_mae:.1f}",
                             )
                         else:
                             if self.store.publish(settled):
                                 log.info(
-                                    "frame %s/%s: settled RP=%s SL=%s conf=%.2f",
+                                    "frame %s/%s: settled RP=%s SL=%s conf=%.2f "
+                                    "(OCR+pixels stable)",
                                     index + 1,
                                     cfg.frames,
                                     settled.research_points,
@@ -265,13 +303,18 @@ class BridgeRuntime:
             path = log_dir() / "last_ocr.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text or "", encoding="utf-8")
-            if png:
-                (log_dir() / "last_capture.png").write_bytes(png)
             from .capture import last_ocr_frame
-            from .roi_debug import save_annotated_rois
+            from .roi_debug import save_ocr_crop_dumps
+            from .settings import load_settings
 
             frame = last_ocr_frame()
             if frame is not None:
-                save_annotated_rois(frame, log_dir() / "last_capture_rois.png")
+                save_ocr_crop_dumps(
+                    frame,
+                    log_dir(),
+                    debug_full=bool(load_settings().debug_show_rois),
+                )
+            elif png:
+                (log_dir() / "last_capture.png").write_bytes(png)
         except OSError:
             pass

@@ -268,6 +268,18 @@ def _read_roi_pair(crop: Image.Image) -> tuple[str, tuple[int, int] | None]:
     return digits, pair_from_digit_text(digits) if digits else (digits, None)
 
 
+def _read_roi_amount(crop: Image.Image) -> tuple[str, int | None]:
+    """Single reward cell (RP or SL) — first plausible amount."""
+    text, pair = _read_roi_pair(crop)
+    if pair is not None:
+        # Prefer the first of a pair when a cell accidentally covers both.
+        return text, pair[0]
+    amounts = [a for a in _amounts_in(text, min_value=50) if a <= 250_000]
+    if not amounts:
+        return text, None
+    return text, amounts[0]
+
+
 # --- Landmark path (WinRT word boxes) ---
 
 
@@ -567,7 +579,19 @@ def extract_roi_reward_variants(
     total_band_pairs: list[tuple[int, int]] = []
 
     def _ingest_digit_rois(*, use_dense: bool) -> None:
-        for tag, crop in iter_reward_digit_rois(image, dense=use_dense):
+        for tag, crop in iter_reward_digit_rois(
+            image, dense=use_dense, prefer_with=prefer_with
+        ):
+            # Calibrated single-cell tags: with-rp / with-sl / without-rp / without-sl
+            if tag.endswith("-rp") or tag.endswith("-sl"):
+                text, amount = _read_roi_amount(crop)
+                if amount is None:
+                    if text:
+                        variants.append((f"roi:{tag}", text))
+                    continue
+                variants.append((f"roi:{tag}", str(amount)))
+                continue
+
             text, pair = _read_roi_pair(crop)
             if not text:
                 continue
@@ -615,6 +639,25 @@ def extract_roi_reward_variants(
                 total_digit_pairs.extend([pair, pair])
                 labeled = f"Всього {rp} {sl}"
             variants.append((f"roi:{tag}", labeled))
+
+        # Assemble calibrated RP+SL cells into a column pair.
+        rp_hits = [
+            int(text)
+            for tag, text in variants
+            if tag.endswith("-rp") and text.isdigit()
+        ]
+        sl_hits = [
+            int(text)
+            for tag, text in variants
+            if tag.endswith("-sl") and text.isdigit()
+        ]
+        if rp_hits and sl_hits:
+            pair = (rp_hits[0], sl_hits[0])
+            if _column_pair_usable(*pair):
+                label = "З преміумом" if prefer_with else "Без преміума"
+                bucket = with_digit_pairs if prefer_with else without_digit_pairs
+                bucket.extend([pair, pair, pair])
+                variants.insert(0, ("roi:calibrated", f"{label} {pair[0]} {pair[1]}"))
 
     _ingest_digit_rois(use_dense=dense)
 

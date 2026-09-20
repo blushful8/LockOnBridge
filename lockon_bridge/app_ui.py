@@ -123,13 +123,19 @@ class BridgeApp:
         self.wt_language_var = tk.StringVar(value="")
         self.ocr_backend_var = tk.StringVar(value="")
         self._ocr_backend_by_label: dict[str, str] = {}
-        self.debug_rois_var = tk.BooleanVar(value=self.settings.debug_show_rois)
-        self._roi_overlay = RoiDebugOverlay(self.root)
+        self.debug_rois_var = tk.BooleanVar(value=False)
+        self._dev_unlocked = False
+        self._version_clicks = 0
+        self._roi_calibrator = None
+        self._roi_overlay = RoiDebugOverlay(
+            self.root,
+            on_disabled=self._on_roi_preview_closed,
+        )
 
         self._build_ui()
         self.agent.set_status_callback(self._on_agent_status)
-        if self.settings.debug_show_rois:
-            self.root.after(200, lambda: self._roi_overlay.set_enabled(True))
+        # Dev ROI overlay only if previously enabled AND unlocked this session.
+        # Never auto-start for normal users.
 
         if self.settings.enabled:
             self._start_enabled(persist=False)
@@ -250,13 +256,24 @@ class BridgeApp:
 
         header = tk.Frame(self.root, bg=BG)
         header.pack(fill="x", **pad)
-        tk.Label(
+        title = tk.Label(
             header,
             text=PRODUCT_NAME,
             font=("Segoe UI Semibold", 18),
             fg=FG,
             bg=BG,
-        ).pack(anchor="w")
+        )
+        title.pack(anchor="w")
+        self._version_label = tk.Label(
+            header,
+            text=f"v{__version__}",
+            font=("Segoe UI", 9),
+            fg=MUTED,
+            bg=BG,
+            cursor="hand2",
+        )
+        self._version_label.pack(anchor="w")
+        self._version_label.bind("<Button-1>", self._on_version_clicked)
         self.subtitle_label = tk.Label(
             header,
             text=t.subtitle,
@@ -469,12 +486,14 @@ class BridgeApp:
         more_menu.add_command(label=t.open_logs, command=self._open_logs)
         more_menu.add_command(label=t.firewall_menu, command=self._allow_phone_access)
         more_menu.add_command(label=t.check_updates, command=self._check_updates)
-        more_menu.add_separator()
-        more_menu.add_checkbutton(
-            label=t.debug_show_rois,
-            variable=self.debug_rois_var,
-            command=self._on_debug_rois_toggle,
-        )
+        if self._dev_unlocked:
+            more_menu.add_separator()
+            more_menu.add_command(label=t.roi_calibrator, command=self._open_roi_calibrator)
+            more_menu.add_checkbutton(
+                label=t.debug_show_rois,
+                variable=self.debug_rois_var,
+                command=self._on_debug_rois_toggle,
+            )
         more_menu.add_separator()
         more_menu.add_command(label=t.uninstall, command=self._uninstall)
         self.btn_more.configure(menu=more_menu)
@@ -560,10 +579,54 @@ class BridgeApp:
             return
         self.settings = update_settings(ocr_backend=code)
 
+    def _on_version_clicked(self, _event=None) -> None:
+        self._version_clicks += 1
+        if self._version_clicks < 7:
+            return
+        self._version_clicks = 0
+        if self._dev_unlocked:
+            messagebox.showinfo(PRODUCT_NAME, self.strings.dev_unlocked)
+            return
+        from tkinter import simpledialog
+
+        from .roi_calibrator_ui import verify_dev_passphrase
+
+        raw = simpledialog.askstring(
+            self.strings.dev_unlock_title,
+            self.strings.dev_unlock_prompt,
+            show="*",
+            parent=self.root,
+        )
+        if raw is None:
+            return
+        if not verify_dev_passphrase(raw):
+            messagebox.showerror(PRODUCT_NAME, self.strings.dev_unlock_bad)
+            return
+        self._dev_unlocked = True
+        messagebox.showinfo(PRODUCT_NAME, self.strings.dev_unlocked)
+        # Rebuild More menu so calibrator appears.
+        self._build_ui()
+
+    def _open_roi_calibrator(self) -> None:
+        if not self._dev_unlocked:
+            return
+        from .roi_calibrator_ui import RoiCalibrator
+
+        if self._roi_calibrator is None or not self._roi_calibrator.running:
+            self._roi_calibrator = RoiCalibrator(self.root)
+        self._roi_calibrator.open()
+
     def _on_debug_rois_toggle(self) -> None:
+        if not self._dev_unlocked:
+            self.debug_rois_var.set(False)
+            return
         on = bool(self.debug_rois_var.get())
         self.settings = update_settings(debug_show_rois=on)
         self._roi_overlay.set_enabled(on)
+
+    def _on_roi_preview_closed(self) -> None:
+        self.debug_rois_var.set(False)
+        self.settings = load_settings()
 
     def _setup_tesseract(self) -> None:
         from .ocr_backends import (
@@ -925,7 +988,11 @@ class BridgeApp:
             return
         self._ocr_busy = True
         countdown = 5
-        # Fully hide Bridge so its own UI is never OCR'd.
+        # Pause ROI preview; fully hide Bridge so its own UI is never OCR'd.
+        try:
+            self._roi_overlay.pause()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.root.withdraw()
         except tk.TclError:
@@ -937,24 +1004,107 @@ class BridgeApp:
         def tick(left: int) -> None:
             if left > 0:
                 # Status is hidden with the window; still advance the timer.
-                self.root.after(1000, lambda: tick(left - 1))
+                try:
+                    self.root.after(1000, lambda: tick(left - 1))
+                except tk.TclError:
+                    self._ocr_busy = False
+                    try:
+                        self._roi_overlay.resume()
+                    except Exception:  # noqa: BLE001
+                        pass
                 return
 
             def work() -> None:
+                error: str | None = None
+                text = ""
+                report = None
                 try:
-                    from .selftest import ocr_once
-
-                    text, report, _dump = ocr_once(save_dump=True)
-                    self.root.after(0, lambda: self._show_ocr_result(text, report, None))
+                    text, report, error = self._run_ocr_once_isolated()
                 except Exception as exc:  # noqa: BLE001
-                    self.root.after(0, lambda: self._show_ocr_result("", None, str(exc)))
+                    error = str(exc)
+                try:
+                    self.root.after(
+                        0,
+                        lambda t=text, r=report, e=error: self._show_ocr_result(t, r, e),
+                    )
+                except tk.TclError:
+                    self._ocr_busy = False
 
             threading.Thread(target=work, name="ocr-test", daemon=True).start()
 
         tick(countdown)
 
+    def _run_ocr_once_isolated(self):
+        """
+        Run OCR in a child process so a RapidOCR/onnxruntime AV cannot kill the UI.
+        Returns (text, report, error).
+        """
+        import subprocess
+        import sys
+
+        from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
+        from .paths import log_dir
+
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--ocr-once"]
+        else:
+            cmd = [sys.executable, "-m", "lockon_bridge", "--ocr-once"]
+        try:
+            proc = subprocess.run(
+                cmd,
+                timeout=180,
+                creationflags=creationflags,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except subprocess.TimeoutExpired:
+            return "", None, "OCR timed out (180s)"
+        except Exception as exc:  # noqa: BLE001
+            return "", None, str(exc)
+
+        dump = log_dir() / "last_ocr.txt"
+        text = ""
+        if dump.is_file():
+            try:
+                text = dump.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+        if not text:
+            text = (proc.stdout or "").strip()
+
+        if proc.returncode != 0 and not text:
+            err = (proc.stderr or proc.stdout or f"OCR exited {proc.returncode}").strip()
+            return "", None, err or f"OCR exited {proc.returncode}"
+
+        report = parse_rewards_from_ocr_text(text) if text else None
+        if report is None and text:
+            blocks = [b.strip() for b in text.split("\n\n---OCR---\n\n") if b.strip()]
+            candidates = []
+            for block in blocks:
+                body = block
+                if body.startswith("[") and "]\n" in body:
+                    body = body.split("]\n", 1)[1]
+                if "\n=>" in body:
+                    body = body.split("\n=>", 1)[0]
+                parsed = parse_rewards_from_ocr_text(body)
+                if parsed is not None:
+                    candidates.append((body, parsed))
+            best = choose_best_report(candidates) if candidates else None
+            if best is not None:
+                text, report = best
+        return text, report, None
+
     def _show_ocr_result(self, text: str, report, error: str | None) -> None:
         self._ocr_busy = False
+        try:
+            self._roi_overlay.resume()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.root.deiconify()
             self.root.lift()
@@ -1209,6 +1359,11 @@ class BridgeApp:
 
     def _exit_clean(self) -> None:
         self._closing = True
+        try:
+            if self._roi_calibrator is not None:
+                self._roi_calibrator.close()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self._roi_overlay.shutdown()
         except Exception:  # noqa: BLE001

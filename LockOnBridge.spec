@@ -38,7 +38,11 @@ a = Analysis(
     ["run_bridge.py"],
     pathex=[],
     binaries=binaries,
-    datas=datas + [("assets/lockon_bridge.png", "assets"), ("assets/lockon_bridge.ico", "assets")],
+    datas=datas + [
+        ("assets/lockon_bridge.png", "assets"),
+        ("assets/lockon_bridge.ico", "assets"),
+        ("lockon_bridge/roi_calibrated.json", "lockon_bridge"),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

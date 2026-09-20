@@ -207,7 +207,8 @@ def make_test_report(
 
 def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path | None]:
     from .capture import last_ocr_frame, ocr_screen_capture
-    from .roi_debug import save_annotated_rois
+    from .roi_debug import save_ocr_crop_dumps
+    from .settings import load_settings
 
     png, variants = ocr_screen_capture()
     candidates = [(text, parse_rewards_from_ocr_text(text)) for _tag, text in variants]
@@ -227,10 +228,13 @@ def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path 
         dump_dir = log_dir()
         dump_dir.mkdir(parents=True, exist_ok=True)
         (dump_dir / "last_ocr.txt").write_text(dump_text or "", encoding="utf-8")
-        (dump_dir / "last_capture.png").write_bytes(png)
         frame = last_ocr_frame()
         if frame is not None:
-            save_annotated_rois(frame, dump_dir / "last_capture_rois.png")
+            debug_full = bool(load_settings().debug_show_rois)
+            save_ocr_crop_dumps(frame, dump_dir, debug_full=debug_full)
+        else:
+            # No frame handle — keep legacy panel PNG only as last resort.
+            (dump_dir / "last_capture.png").write_bytes(png)
     if best is None:
         preview = variants[0][1] if variants else ""
         return preview, None, dump_dir
@@ -313,7 +317,8 @@ def run_ocr_once_cli() -> int:
         return 1
     if dump_dir is not None:
         print(f"OCR dump → {dump_dir / 'last_ocr.txt'}")
-        print(f"PNG dump → {dump_dir / 'last_capture.png'}")
+        print(f"Lean ROI collage → {dump_dir / 'last_capture.png'}")
+        print(f"Per-crop PNGs → {dump_dir / 'roi_crops'}")
     print(f"Best OCR preview: {summarize_ocr_text(text)}")
     if report is None:
         print("Parse: no RP/SL found")

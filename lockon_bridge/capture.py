@@ -162,6 +162,43 @@ def _window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
 
+def grab_wt_client_image(*, focus: bool = True) -> Image.Image | None:
+    """
+    Full War Thunder client bitmap (screen pixels), or None.
+
+    ``focus=False`` skips restore/foreground — for ROI preview so the game stays put.
+    """
+    hwnd = find_war_thunder_hwnd()
+    if hwnd is None:
+        return None
+    if focus:
+        try:
+            user32.ShowWindow(wintypes.HWND(hwnd), 9)  # SW_RESTORE
+            user32.SetForegroundWindow(wintypes.HWND(hwnd))
+        except Exception:  # noqa: BLE001
+            pass
+    bounds = _window_rect(hwnd)
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    if width < 400 or height < 300:
+        return None
+    try:
+        with mss.MSS() as sct:
+            shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
+            return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("WT client grab failed: %s", exc)
+        return None
+
+
+def _grab_wt_client_image() -> Image.Image | None:
+    """Full War Thunder client bitmap (screen pixels), or None."""
+    return grab_wt_client_image(focus=True)
+
+
 def find_war_thunder_hwnd() -> int | None:
     """Largest visible top-level window owned by aces.exe (War Thunder client)."""
     pids = set(war_thunder_pids())
@@ -270,34 +307,6 @@ def _crop_results_rois(image: Image.Image) -> list[tuple[str, Image.Image]]:
     if band.width >= 200 and band.height >= 120:
         rois.append(("totals", band))
     return rois
-
-
-def _grab_wt_client_image() -> Image.Image | None:
-    """Full War Thunder client bitmap (screen pixels), or None."""
-    hwnd = find_war_thunder_hwnd()
-    if hwnd is None:
-        return None
-    try:
-        user32.ShowWindow(wintypes.HWND(hwnd), 9)  # SW_RESTORE
-        user32.SetForegroundWindow(wintypes.HWND(hwnd))
-    except Exception:  # noqa: BLE001
-        pass
-    # Re-read bounds after restore (minimized → normal desktop rect).
-    bounds = _window_rect(hwnd)
-    if bounds is None:
-        return None
-    left, top, right, bottom = bounds
-    width = max(1, right - left)
-    height = max(1, bottom - top)
-    if width < 400 or height < 300:
-        return None
-    try:
-        with mss.MSS() as sct:
-            shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
-            return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    except Exception as exc:  # noqa: BLE001
-        log.debug("WT client grab failed: %s", exc)
-        return None
 
 
 def _grab_primary_image() -> Image.Image:
