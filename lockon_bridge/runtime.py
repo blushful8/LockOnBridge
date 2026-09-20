@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from typing import Optional
 
-from .capture import last_ocr_frame, ocr_screen_capture
+from .capture import last_capture_meta, last_ocr_frame, ocr_screen_capture
 from .capture_archive import archive_capture_frame
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .paths import log_dir
@@ -188,6 +188,7 @@ class BridgeRuntime:
 
     def _capture_burst(self) -> None:
         from .crashguard import breadcrumb
+        from .ocr_isolate import PersistentOcrWorker
 
         cfg = self.config
         breadcrumb(
@@ -218,15 +219,85 @@ class BridgeRuntime:
         )
         last_preview = ""
         saw_confident = False
+        sticky_pair: int | None = None
+        sticky_ceiling: tuple[int, int] | None = None
+        worker: PersistentOcrWorker | None
+        try:
+            worker = PersistentOcrWorker()
+            worker.start()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "persistent OCR worker unavailable (%s) — one-shot fallback", exc
+            )
+            worker = None
 
+        try:
+            self._capture_burst_frames(
+                tracker=tracker,
+                frame_gate=frame_gate,
+                worker=worker,
+                sticky_pair_ref=[sticky_pair],
+                sticky_ceiling_ref=[sticky_ceiling],
+                saw_confident_ref=[saw_confident],
+                last_preview_ref=[last_preview],
+            )
+        finally:
+            if worker is not None:
+                try:
+                    worker.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _capture_burst_frames(
+        self,
+        *,
+        tracker: SettleTracker,
+        frame_gate: LeanRoiFrameGate,
+        worker,
+        sticky_pair_ref: list,
+        sticky_ceiling_ref: list,
+        saw_confident_ref: list,
+        last_preview_ref: list,
+    ) -> None:
+        from .crashguard import breadcrumb
+
+        cfg = self.config
         for index in range(cfg.frames):
             if self._stop.is_set():
                 return
             gap = cfg.early_frame_gap if index < cfg.early_frames else cfg.frame_gap
             try:
                 breadcrumb(f"capture_burst frame {index + 1}/{cfg.frames} grab+ocr")
+                try:
+                    from .settings import load_settings as _ls
+
+                    prefer = bool(_ls().has_premium_account)
+                except Exception:  # noqa: BLE001
+                    prefer = False
                 # After the first confident ROI read, confirm settle with digit ROIs only.
-                png, variants = ocr_screen_capture(roi_only=saw_confident)
+                png, variants = ocr_screen_capture(
+                    roi_only=bool(saw_confident_ref[0]),
+                    worker=worker,
+                    pair_hint=sticky_pair_ref[0],
+                    prefer_with=prefer,
+                    premium_ceiling=sticky_ceiling_ref[0],
+                )
+                meta = last_capture_meta()
+                if isinstance(meta, dict) and "pair_index" in meta:
+                    sticky_pair_ref[0] = int(meta["pair_index"])
+                    ceiling = meta.get("premium_ceiling")
+                    if (
+                        isinstance(ceiling, (list, tuple))
+                        and len(ceiling) >= 2
+                        and ceiling[0] is not None
+                        and ceiling[1] is not None
+                    ):
+                        sticky_ceiling_ref[0] = (int(ceiling[0]), int(ceiling[1]))
+                    log.info(
+                        "sticky calib hint pair=%s ceiling=%s",
+                        sticky_pair_ref[0],
+                        sticky_ceiling_ref[0],
+                    )
                 if not png and not variants:
                     # WT not foreground / minimized — do not screenshot the desktop.
                     log.info(
@@ -260,12 +331,6 @@ class BridgeRuntime:
                     self._stop.wait(gap)
                     continue
 
-                try:
-                    from .settings import load_settings as _ls
-
-                    prefer = bool(_ls().has_premium_account)
-                except Exception:  # noqa: BLE001
-                    prefer = False
                 candidates = [
                     (text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer))
                     for _tag, text in variants
@@ -286,7 +351,7 @@ class BridgeRuntime:
                 self._write_ocr_dump("\n\n---OCR---\n\n".join(dump_parts), png=png)
 
                 if best is None:
-                    last_preview = summarize_ocr_text(variants[0][1])
+                    last_preview_ref[0] = summarize_ocr_text(variants[0][1])
                     log.info(
                         "frame %s/%s: no RP/SL yet | engines=%s | pix=%s/%s | ocr=%s",
                         index + 1,
@@ -294,11 +359,11 @@ class BridgeRuntime:
                         ",".join(tag for tag, _ in variants),
                         frame_gate.stable_count,
                         frame_gate.cfg.stable_required,
-                        last_preview,
+                        last_preview_ref[0],
                     )
                 else:
                     text, report = best
-                    last_preview = summarize_ocr_text(text)
+                    last_preview_ref[0] = summarize_ocr_text(text)
                     if report.confidence < _MIN_CONFIDENT_REPORT:
                         log.info(
                             "frame %s/%s: RP=%s SL=%s conf=%.2f (below %.2f — keep capturing)",
@@ -310,7 +375,7 @@ class BridgeRuntime:
                             _MIN_CONFIDENT_REPORT,
                         )
                     else:
-                        saw_confident = True
+                        saw_confident_ref[0] = True
                         settled = tracker.observe(report)
                         if settled is None:
                             log.info(
@@ -410,7 +475,7 @@ class BridgeRuntime:
                     fallback.silver_lions,
                     tracker.stable_count,
                     tracker.cfg.stable_required,
-                    last_preview or "(none)",
+                    last_preview_ref[0] or "(none)",
                 )
                 try:
                     from .settings import load_settings as _ls
@@ -435,7 +500,7 @@ class BridgeRuntime:
                 return
         log.info(
             "burst finished without a confident report | last_ocr=%s",
-            last_preview or "(none)",
+            last_preview_ref[0] or "(none)",
         )
         try:
             frame = last_ocr_frame()

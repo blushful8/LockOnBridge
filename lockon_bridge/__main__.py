@@ -19,16 +19,26 @@ from .runtime import BridgeRuntime, RuntimeConfig
 from .settings import load_settings
 
 
-def _configure_logging(log_path: Path | None, verbose: bool) -> None:
+def _configure_logging(
+    log_path: Path | None,
+    verbose: bool,
+    *,
+    stream=None,
+) -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     # Avoid console spam for frozen GUI / background agent.
-    if not getattr(sys, "frozen", False) or verbose:
-        stream = logging.StreamHandler(sys.stdout)
-        stream.setFormatter(formatter)
-        root.addHandler(stream)
+    # Worker-loop keeps stdout JSON-only — logs go to stderr (or file).
+    if stream is not None:
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+    elif not getattr(sys, "frozen", False) or verbose:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = FlushingRotatingFileHandler(
@@ -143,11 +153,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--ocr-worker-loop",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--image", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--out", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--roi-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--lang", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--backend", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--pair-hint", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--prefer-with", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--premium-ceiling", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--skip-expensive-fallback",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--serve-test",
         action="store_true",
@@ -158,7 +181,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     log_path = Path(args.log_file) if args.log_file else None
-    _configure_logging(log_path, verbose=args.verbose)
+    # Persistent OCR worker speaks JSON on stdout — never mix logs there.
+    log_stream = sys.stderr if args.ocr_worker_loop else None
+    _configure_logging(log_path, verbose=args.verbose, stream=log_stream)
     install_crash_guard()
     breadcrumb(f"main argv={argv or sys.argv[1:]}")
 
@@ -168,18 +193,35 @@ def main(argv: list[str] | None = None) -> int:
         full_uninstall()
         return 0
 
+    if args.ocr_worker_loop:
+        from .ocr_isolate import ocr_worker_loop_main
+
+        return ocr_worker_loop_main()
+
     if args.ocr_worker:
         from .ocr_isolate import ocr_worker_main
 
         if not args.image or not args.out:
             print("--ocr-worker requires --image and --out", file=sys.stderr)
             return 2
+        prefer_with = None
+        if args.prefer_with is not None:
+            prefer_with = str(args.prefer_with).strip() in ("1", "true", "True", "yes")
+        ceiling = None
+        if args.premium_ceiling:
+            parts = str(args.premium_ceiling).split(",")
+            if len(parts) >= 2:
+                ceiling = (int(parts[0]), int(parts[1]))
         return ocr_worker_main(
             image_path=Path(args.image),
             out_path=Path(args.out),
             roi_only=bool(args.roi_only),
             lang=args.lang,
             backend=args.backend,
+            pair_hint=args.pair_hint,
+            prefer_with=prefer_with,
+            premium_ceiling=ceiling,
+            skip_expensive_fallback=bool(args.skip_expensive_fallback),
         )
 
     if args.self_test:

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from lockon_bridge.ocr_parse import choose_best_report, parse_rewards_from_ocr_text
@@ -27,6 +28,15 @@ FULL = FIXTURES / "results_uk_full_1025_7262.jpg"
 CROPPED = FIXTURES / "results_uk_1025_7262.jpg"
 LAST_BATTLE = FIXTURES / "last_battle_capture.png"
 UNFINISHED = FIXTURES / "results_unfinished_383_4052.jpg"
+
+
+@pytest.fixture(autouse=True)
+def _ignore_live_user_calibration(monkeypatch):
+    """Fixture images must not use the developer's LocalAppData calib pairs."""
+    monkeypatch.setattr(
+        "lockon_bridge.roi_calib.has_usable_calibration",
+        lambda: False,
+    )
 
 
 def _load(path: Path) -> Image.Image:
@@ -385,3 +395,103 @@ def test_without_rejected_when_ge_premium():
     assert ">= преміум" in text
     assert "<- first" in text
     assert "#5 [OK]" in text or "#5" in text
+
+
+def test_pair_hint_tried_before_other_pairs(monkeypatch):
+    """Sticky pair_hint must OCR the hinted index first."""
+    from lockon_bridge.roi_layout import NormRect
+    from lockon_bridge.roi_rewards import (
+        PairProbeRow,
+        clear_calib_hit_hint,
+        last_calib_hit_hint,
+        try_calibrated_column_pair,
+    )
+
+    clear_calib_hit_hint()
+    order: list[int] = []
+    a = NormRect(0.1, 0.1, 0.2, 0.2, "a")
+    b = NormRect(0.3, 0.1, 0.4, 0.2, "b")
+
+    def _fake_probe(image, rp_rect, sl_rect, *, pair_index, prefix):
+        order.append(pair_index)
+        if pair_index == 2:
+            return PairProbeRow(2, "100", "500", 100, 500, True, "ok")
+        return PairProbeRow(pair_index, "", "", None, None, False, "letters")
+
+    monkeypatch.setattr(
+        "lockon_bridge.roi_calib.calibrated_all_pair_rects",
+        lambda *, prefer_with, calib=None: [
+            (0, a, b),
+            (1, a, b),
+            (2, a, b),
+        ],
+    )
+    monkeypatch.setattr(
+        "lockon_bridge.roi_rewards._probe_one_pair_rects",
+        _fake_probe,
+    )
+    hit = try_calibrated_column_pair(
+        Image.new("RGB", (64, 64), (0, 0, 0)),
+        prefer_with=True,
+        pair_hint=2,
+        record_failure=False,
+    )
+    assert hit == (2, 100, 500)
+    assert order[0] == 2
+    hint = last_calib_hit_hint()
+    assert hint is not None
+    assert hint.pair_index == 2
+    assert hint.prefer_with is True
+
+
+def test_premium_ceiling_skips_with_walk(monkeypatch):
+    """When ceiling is provided for without, do not recurse into WITH stack."""
+    from lockon_bridge.roi_layout import NormRect
+    from lockon_bridge.roi_rewards import PairProbeRow, try_calibrated_column_pair
+
+    calls: list[bool] = []
+    a = NormRect(0.1, 0.1, 0.2, 0.2, "a")
+    b = NormRect(0.3, 0.1, 0.4, 0.2, "b")
+
+    def _fake_probe(image, rp_rect, sl_rect, *, pair_index, prefix):
+        calls.append(prefix == "with")
+        if prefix == "without":
+            return PairProbeRow(0, "80", "400", 80, 400, True, "ok")
+        return PairProbeRow(pair_index, "200", "900", 200, 900, True, "ok")
+
+    monkeypatch.setattr(
+        "lockon_bridge.roi_calib.calibrated_all_pair_rects",
+        lambda *, prefer_with, calib=None: [(0, a, b)],
+    )
+    monkeypatch.setattr(
+        "lockon_bridge.roi_rewards._probe_one_pair_rects",
+        _fake_probe,
+    )
+    hit = try_calibrated_column_pair(
+        Image.new("RGB", (64, 64), (0, 0, 0)),
+        prefer_with=False,
+        premium_ceiling=(200, 900),
+        record_failure=False,
+    )
+    assert hit == (0, 80, 400)
+    assert calls == [False]
+
+
+def test_calib_hint_payload_roundtrip():
+    from lockon_bridge.ocr_isolate import _calib_hint_from_payload
+
+    assert _calib_hint_from_payload({}) is None
+    hint = _calib_hint_from_payload(
+        {
+            "calib_hint": {
+                "prefer_with": False,
+                "pair_index": 4,
+                "premium_ceiling": [6004, 18989],
+            }
+        }
+    )
+    assert hint == {
+        "prefer_with": False,
+        "pair_index": 4,
+        "premium_ceiling": [6004, 18989],
+    }

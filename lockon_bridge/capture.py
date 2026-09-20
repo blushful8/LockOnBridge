@@ -620,6 +620,7 @@ def ocr_screen_variants(
 
 
 _LAST_OCR_FRAME: Image.Image | None = None
+_LAST_CAPTURE_META: dict | None = None
 
 
 def last_ocr_frame() -> Image.Image | None:
@@ -627,11 +628,21 @@ def last_ocr_frame() -> Image.Image | None:
     return _LAST_OCR_FRAME
 
 
+def last_capture_meta() -> dict | None:
+    """Calib sticky hint from the most recent ``ocr_screen_capture`` worker result."""
+    return _LAST_CAPTURE_META
+
+
 def ocr_screen_capture(
     *,
     wt_ui_language: str | None = None,
     backend: str | None = None,
     roi_only: bool = False,
+    worker=None,
+    pair_hint: int | None = None,
+    prefer_with: bool | None = None,
+    premium_ceiling: tuple[int, int] | None = None,
+    skip_expensive_fallback: bool = False,
 ) -> tuple[bytes, list[tuple[str, str]]]:
     """Return (primary_png, variants) so callers can dump the frame that was OCR'd.
 
@@ -646,7 +657,7 @@ def ocr_screen_capture(
     Never falls back to the primary monitor — if WT is missing or not foreground,
     returns empty bytes / no variants (privacy).
     """
-    global _LAST_OCR_FRAME
+    global _LAST_OCR_FRAME, _LAST_CAPTURE_META
     import os
 
     from .crashguard import breadcrumb
@@ -655,11 +666,17 @@ def ocr_screen_capture(
     settings = load_settings()
     lang = wt_ui_language or settings.wt_ui_language or settings.language
     mode = backend or getattr(settings, "ocr_backend", "auto") or "auto"
+    prefer = (
+        bool(prefer_with)
+        if prefer_with is not None
+        else bool(settings.has_premium_account)
+    )
 
     breadcrumb("ocr_screen_capture grab")
     frame = _grab_wt_client_image()
     if frame is None:
         _LAST_OCR_FRAME = None
+        _LAST_CAPTURE_META = None
         log.info("OCR capture skipped: no War Thunder foreground frame")
         breadcrumb("ocr_screen_capture skipped no-wt-foreground")
         return b"", []
@@ -667,6 +684,12 @@ def ocr_screen_capture(
     source = "wt"
     log.info("OCR capture: War Thunder window + scale-safe digit ROIs")
     _LAST_OCR_FRAME = frame
+    contrast = _panel_contrast_score(frame)
+    # Washed / pre-results frames: skip dense+panel unless settle already has a hit.
+    low_contrast = contrast < 32.0
+    skip_expensive = bool(skip_expensive_fallback) or (
+        low_contrast and not roi_only and pair_hint is None
+    )
 
     # Primary dump = results panel (readable in last_capture.png).
     panel = _crop_results_rois(frame)[0][1]
@@ -674,23 +697,49 @@ def ocr_screen_capture(
 
     # Already inside the OCR worker → run engines in-process.
     if os.environ.get("LOCKON_OCR_WORKER") == "1":
+        _LAST_CAPTURE_META = None
         return primary, _ocr_variants_inprocess(
             frame,
             source=source,
             lang=lang,
             mode=mode,
             roi_only=roi_only,
+            prefer_with=prefer,
+            pair_hint=pair_hint,
+            premium_ceiling=premium_ceiling,
+            skip_expensive_fallback=skip_expensive,
         )
 
-    from .ocr_isolate import run_ocr_worker_on_image
-
-    breadcrumb(f"ocr_screen_capture isolate source={source} roi_only={roi_only}")
-    variants = run_ocr_worker_on_image(
-        frame,
-        roi_only=roi_only,
-        wt_ui_language=lang,
-        backend=mode,
+    breadcrumb(
+        f"ocr_screen_capture isolate source={source} roi_only={roi_only} "
+        f"skip_expensive={skip_expensive} contrast={contrast:.1f}"
     )
+    hint = None
+    if worker is not None:
+        variants, hint = worker.process(
+            frame,
+            roi_only=roi_only,
+            wt_ui_language=lang,
+            backend=mode,
+            pair_hint=pair_hint,
+            prefer_with=prefer,
+            premium_ceiling=premium_ceiling,
+            skip_expensive_fallback=skip_expensive,
+        )
+    else:
+        from .ocr_isolate import run_ocr_worker_on_image
+
+        variants, hint = run_ocr_worker_on_image(
+            frame,
+            roi_only=roi_only,
+            wt_ui_language=lang,
+            backend=mode,
+            pair_hint=pair_hint,
+            prefer_with=prefer,
+            premium_ceiling=premium_ceiling,
+            skip_expensive_fallback=skip_expensive,
+        )
+    _LAST_CAPTURE_META = hint
     return primary, variants
 
 
@@ -701,14 +750,27 @@ def _ocr_variants_inprocess(
     lang: str,
     mode: str,
     roi_only: bool,
+    prefer_with: bool | None = None,
+    pair_hint: int | None = None,
+    premium_ceiling: tuple[int, int] | None = None,
+    skip_expensive_fallback: bool = False,
 ) -> list[tuple[str, str]]:
     """ROI + optional panel OCR — only called inside the OCR worker process."""
     from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
     from .roi_rewards import extract_roi_reward_variants
 
+    del source  # kept for call-site clarity / future logging
     variants: list[tuple[str, str]] = []
     try:
-        variants.extend(extract_roi_reward_variants(frame))
+        variants.extend(
+            extract_roi_reward_variants(
+                frame,
+                prefer_with=prefer_with,
+                pair_hint=pair_hint,
+                premium_ceiling=premium_ceiling,
+                skip_expensive_fallback=skip_expensive_fallback,
+            )
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("ROI digit extract failed: %s", exc)
 
@@ -728,6 +790,10 @@ def _ocr_variants_inprocess(
                 roi_best[1].silver_lions,
                 roi_best[1].confidence,
             )
+        return variants
+
+    if skip_expensive_fallback:
+        log.info("OCR in-process: skip panel engines (expensive fallback disabled)")
         return variants
 
     for roi_tag, crop in _crop_results_rois(frame):

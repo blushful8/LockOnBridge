@@ -327,6 +327,23 @@ def _read_roi_pair(
     return first_text, first_pair
 
 
+def _append_amount_candidates(
+    out: list[tuple[str, int]], text: str, amount: int
+) -> None:
+    if amount > 250_000:
+        return
+    out.append((text, int(amount)))
+    # Weak icon-ghost alternate (lion/bulb as trailing digit).
+    trimmed = _ocr_ghost_trim(int(amount))
+    if trimmed is not None:
+        out.append((str(trimmed), trimmed))
+    elif 10_000 <= int(amount) <= 99_999:
+        # Any trailing junk digit on a 5-digit cell (58694 → 5869).
+        soft = int(amount) // 10
+        if 200 <= soft <= 45_000:
+            out.append((str(soft), soft))
+
+
 def _digit_amount_candidates(crop: Image.Image) -> list[tuple[str, int]]:
     """All plausible single-cell amounts from digit-focus OCR variants."""
     from .ocr_preprocess import digit_focus_variants
@@ -345,17 +362,7 @@ def _digit_amount_candidates(crop: Image.Image) -> list[tuple[str, int]]:
             if not text:
                 continue
             for amount in _amounts_in(text, min_value=50):
-                if amount <= 250_000:
-                    out.append((text, int(amount)))
-                    # Weak icon-ghost alternate (lion/bulb as trailing digit).
-                    trimmed = _ocr_ghost_trim(int(amount))
-                    if trimmed is not None:
-                        out.append((str(trimmed), trimmed))
-                    elif 10_000 <= int(amount) <= 99_999:
-                        # Any trailing junk digit on a 5-digit cell (58694 → 5869).
-                        soft = int(amount) // 10
-                        if 200 <= soft <= 45_000:
-                            out.append((str(soft), soft))
+                _append_amount_candidates(out, text, int(amount))
     return out
 
 
@@ -476,6 +483,7 @@ def _probe_one_pair_rects(
 
     rp_crop = blank_trailing_reward_icon(rp_crop)
     sl_crop = blank_trailing_reward_icon(sl_crop)
+    # Sequential: WinRT/COM is not reliably safe across threads on one cell pair.
     rp_text, rp_amt = _read_roi_amount(rp_crop, prefer_stable=True)
     sl_text, sl_amt = _read_roi_amount(sl_crop, prefer_stable=True)
     if rp_amt is not None:
@@ -555,6 +563,28 @@ def _without_invalid_vs_premium(
     return rp >= prem_rp or sl >= prem_sl
 
 
+@dataclass(frozen=True)
+class CalibHitHint:
+    """Sticky hint so settle frames re-OCR the winning pair first."""
+
+    prefer_with: bool
+    pair_index: int
+    premium_ceiling: tuple[int, int] | None = None
+
+
+_LAST_CALIB_HINT: CalibHitHint | None = None
+
+
+def last_calib_hit_hint() -> CalibHitHint | None:
+    """Winning calib pair from the most recent ``try_calibrated_column_pair``."""
+    return _LAST_CALIB_HINT
+
+
+def clear_calib_hit_hint() -> None:
+    global _LAST_CALIB_HINT
+    _LAST_CALIB_HINT = None
+
+
 def try_calibrated_column_pair(
     image: Image.Image,
     *,
@@ -562,6 +592,7 @@ def try_calibrated_column_pair(
     record_failure: bool = True,
     calib=None,
     premium_ceiling: tuple[int, int] | None = None,
+    pair_hint: int | None = None,
 ) -> tuple[int, int, int] | None:
     """
     Walk calibrated fallback pairs in order.
@@ -571,7 +602,9 @@ def try_calibrated_column_pair(
     Without-premium also rejects values ≥ known with-premium RP/SL.
     When every pair fails and ``record_failure``, overwrite error_parse.png.
     ``calib`` — optional in-memory CalibratedRois (calibrator preview).
+    ``pair_hint`` — try this pair index first (settle frames after a hit).
     """
+    global _LAST_CALIB_HINT
     from .roi_calib import calibrated_all_pair_rects
 
     ceiling = premium_ceiling
@@ -583,6 +616,7 @@ def try_calibrated_column_pair(
             record_failure=False,
             calib=calib,
             premium_ceiling=None,
+            pair_hint=None,
         )
         if with_hit is not None:
             ceiling = (int(with_hit[1]), int(with_hit[2]))
@@ -590,6 +624,10 @@ def try_calibrated_column_pair(
     stack = calibrated_all_pair_rects(prefer_with=prefer_with, calib=calib)
     if not stack:
         return None
+    if pair_hint is not None:
+        preferred = [row for row in stack if int(row[0]) == int(pair_hint)]
+        rest = [row for row in stack if int(row[0]) != int(pair_hint)]
+        stack = preferred + rest
     prefix = "with" if prefer_with else "without"
     for index, rp_rect, sl_rect in stack:
         row = _probe_one_pair_rects(
@@ -621,6 +659,13 @@ def try_calibrated_column_pair(
                 row.silver_lions,
             )
             continue
+        _LAST_CALIB_HINT = CalibHitHint(
+            prefer_with=bool(prefer_with),
+            pair_index=int(index),
+            premium_ceiling=(
+                (int(ceiling[0]), int(ceiling[1])) if ceiling is not None else None
+            ),
+        )
         return index, row.research_points, row.silver_lions
     if record_failure:
         save_error_parse_frame(image)
@@ -1148,6 +1193,9 @@ def extract_roi_reward_variants(
     *,
     prefer_with: bool | None = None,
     dense: bool = False,
+    pair_hint: int | None = None,
+    premium_ceiling: tuple[int, int] | None = None,
+    skip_expensive_fallback: bool = False,
 ) -> list[tuple[str, str]]:
     """
     Synthetic OCR texts for choose_best / parse_rewards_from_ocr_text.
@@ -1157,6 +1205,10 @@ def extract_roi_reward_variants(
 
     Digit-backed header beats «Всього». Band/landmark-only header never beats a
     strong total vote (avoids 2946/7399 junk over live 1473/11834).
+
+    ``pair_hint`` / ``premium_ceiling`` — sticky settle path (skip full stack).
+    ``skip_expensive_fallback`` — after lean calib fails, do not run dense /
+    landmarks (washed pre-results frames).
     """
     if prefer_with is None:
         try:
@@ -1180,7 +1232,12 @@ def extract_roi_reward_variants(
             from .roi_calib import has_usable_calibration
 
             if has_usable_calibration():
-                hit = try_calibrated_column_pair(image, prefer_with=bool(prefer_with))
+                hit = try_calibrated_column_pair(
+                    image,
+                    prefer_with=bool(prefer_with),
+                    pair_hint=pair_hint,
+                    premium_ceiling=premium_ceiling,
+                )
                 if hit is not None:
                     index, rp, sl = hit
                     label = "З преміумом" if prefer_with else "Без преміума"
@@ -1298,17 +1355,22 @@ def extract_roi_reward_variants(
     # Bankable if header OR total already works — skip dense/landmarks.
     lean_ok = _usable(preferred_digit) or _usable(total_early)
     if not lean_ok and not dense:
-        _ingest_digit_rois(use_dense=True)
-        preferred_digit = _vote_pair(with_digit_pairs if prefer_with else without_digit_pairs)
-        total_early = _vote_pair(total_digit_pairs)
-        lean_ok = _usable(preferred_digit) or _usable(total_early)
+        if skip_expensive_fallback:
+            log.info("ROI extract: skip dense ROIs (expensive fallback disabled)")
+        else:
+            _ingest_digit_rois(use_dense=True)
+            preferred_digit = _vote_pair(with_digit_pairs if prefer_with else without_digit_pairs)
+            total_early = _vote_pair(total_digit_pairs)
+            lean_ok = _usable(preferred_digit) or _usable(total_early)
 
     if not lean_ok:
         # Landmark WinRT over the full frame is slow; skip when calibrated pairs
         # already covered the preferred column (fallback dense ROIs are enough).
         from .roi_calib import has_usable_calibration
 
-        if not has_usable_calibration():
+        if skip_expensive_fallback:
+            log.info("ROI extract: skip landmarks (expensive fallback disabled)")
+        elif not has_usable_calibration():
             try:
                 landmark_variants = pairs_from_landmarks(image)
                 variants.extend(landmark_variants)
