@@ -162,21 +162,109 @@ def _window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
 
-def grab_wt_client_image(*, focus: bool = True) -> Image.Image | None:
-    """
-    Full War Thunder client bitmap (screen pixels), or None.
-
-    ``focus=False`` skips restore/foreground — for ROI preview so the game stays put.
-    """
+def is_war_thunder_foreground() -> bool:
+    """True when the foreground window belongs to the War Thunder client."""
     hwnd = find_war_thunder_hwnd()
     if hwnd is None:
+        return False
+    try:
+        if user32.IsIconic(wintypes.HWND(hwnd)):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    fg = int(user32.GetForegroundWindow() or 0)
+    if fg <= 0:
+        return False
+    if fg == int(hwnd):
+        return True
+    # Overlay / child owned by the same aces.exe process still counts.
+    fg_pid = wintypes.DWORD()
+    wt_pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(wintypes.HWND(fg), ctypes.byref(fg_pid))
+    user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(wt_pid))
+    if int(fg_pid.value) == 0 or int(fg_pid.value) != int(wt_pid.value):
+        return False
+    return int(fg_pid.value) in set(war_thunder_pids())
+
+
+def _grab_hwnd_gdi(hwnd: int) -> Image.Image | None:
+    """
+    BitBlt / PrintWindow the window client — avoids DXGI Desktop Duplication, which
+    can leave fullscreen games in a low-FPS state until the user Alt+Tabs once.
+    """
+    gdi32 = ctypes.windll.gdi32
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
         return None
-    if focus:
+    width = int(rect.right - rect.left)
+    height = int(rect.bottom - rect.top)
+    if width < 400 or height < 300:
+        return None
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wintypes.DWORD),
+            ("biWidth", wintypes.LONG),
+            ("biHeight", wintypes.LONG),
+            ("biPlanes", wintypes.WORD),
+            ("biBitCount", wintypes.WORD),
+            ("biCompression", wintypes.DWORD),
+            ("biSizeImage", wintypes.DWORD),
+            ("biXPelsPerMeter", wintypes.LONG),
+            ("biYPelsPerMeter", wintypes.LONG),
+            ("biClrUsed", wintypes.DWORD),
+            ("biClrImportant", wintypes.DWORD),
+        ]
+
+    hdc_win = user32.GetDC(wintypes.HWND(hwnd))
+    if not hdc_win:
+        return None
+    hdc_mem = gdi32.CreateCompatibleDC(hdc_win)
+    hbmp = gdi32.CreateCompatibleBitmap(hdc_win, width, height)
+    if not hdc_mem or not hbmp:
+        if hbmp:
+            gdi32.DeleteObject(hbmp)
+        if hdc_mem:
+            gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(wintypes.HWND(hwnd), hdc_win)
+        return None
+
+    old = gdi32.SelectObject(hdc_mem, hbmp)
+    ok = bool(gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, 0, 0, 0x00CC0020))
+    if not ok:
+        # PW_RENDERFULLCONTENT=2 — helps some fullscreen / flip-model clients.
         try:
-            user32.ShowWindow(wintypes.HWND(hwnd), 9)  # SW_RESTORE
-            user32.SetForegroundWindow(wintypes.HWND(hwnd))
+            ok = bool(user32.PrintWindow(wintypes.HWND(hwnd), hdc_mem, 2))
         except Exception:  # noqa: BLE001
-            pass
+            ok = False
+    gdi32.SelectObject(hdc_mem, old)
+
+    image: Image.Image | None = None
+    if ok:
+        bmi = BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.biWidth = width
+        bmi.biHeight = -height  # top-down
+        bmi.biPlanes = 1
+        bmi.biBitCount = 32
+        bmi.biCompression = 0  # BI_RGB
+        buf = (ctypes.c_ubyte * (width * height * 4))()
+        got = gdi32.GetDIBits(hdc_win, hbmp, 0, height, buf, ctypes.byref(bmi), 0)
+        if got:
+            raw = bytes(buf)
+            # Reject near-black frames (failed exclusive-fullscreen BitBlt).
+            sample = raw[:: 4 * max(1, (width * height) // 64)]
+            if any(sample) or any(raw[i] for i in range(0, min(len(raw), 4096), 17)):
+                image = Image.frombytes("RGB", (width, height), raw, "raw", "BGRX")
+
+    gdi32.DeleteObject(hbmp)
+    gdi32.DeleteDC(hdc_mem)
+    user32.ReleaseDC(wintypes.HWND(hwnd), hdc_win)
+    return image
+
+
+def _grab_hwnd_mss(hwnd: int) -> Image.Image | None:
+    """Screen-region grab via mss (DXGI). Fallback only — can hitch fullscreen games."""
     bounds = _window_rect(hwnd)
     if bounds is None:
         return None
@@ -190,13 +278,52 @@ def grab_wt_client_image(*, focus: bool = True) -> Image.Image | None:
             shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
             return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
     except Exception as exc:  # noqa: BLE001
-        log.debug("WT client grab failed: %s", exc)
+        log.debug("WT mss grab failed: %s", exc)
         return None
 
 
+def grab_wt_client_image(
+    *,
+    focus: bool = False,
+    require_foreground: bool = True,
+) -> Image.Image | None:
+    """
+    Full War Thunder client bitmap, or None.
+
+    Never captures the desktop / other apps. When ``require_foreground`` is set
+    (default), returns None unless WT is the active window — privacy + no junk OCR.
+
+    ``focus=True`` is legacy and **avoided**: ``ShowWindow(SW_RESTORE)`` on a
+    fullscreen client is a common cause of FPS staying low until Alt+Tab.
+    """
+    hwnd = find_war_thunder_hwnd()
+    if hwnd is None:
+        return None
+    try:
+        if user32.IsIconic(wintypes.HWND(hwnd)):
+            log.info("OCR capture skipped: War Thunder is minimized")
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+    if require_foreground and not is_war_thunder_foreground():
+        log.info("OCR capture skipped: War Thunder is not in the foreground")
+        return None
+    if focus:
+        # Soft raise only — never SW_RESTORE (breaks exclusive/borderless flip).
+        try:
+            user32.SetForegroundWindow(wintypes.HWND(hwnd))
+        except Exception:  # noqa: BLE001
+            pass
+
+    image = _grab_hwnd_gdi(hwnd)
+    if image is None:
+        image = _grab_hwnd_mss(hwnd)
+    return image
+
+
 def _grab_wt_client_image() -> Image.Image | None:
-    """Full War Thunder client bitmap (screen pixels), or None."""
-    return grab_wt_client_image(focus=True)
+    """Battle/Test OCR grab — WT foreground only, no focus steal."""
+    return grab_wt_client_image(focus=False, require_foreground=True)
 
 
 def find_war_thunder_hwnd() -> int | None:
@@ -393,32 +520,32 @@ def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
     """
     Grab nearly the full primary monitor.
 
-    Prefer this only when the WT window cannot be found. Keep the whole results
-    area for future parsing; reward extraction currently uses only RP/SL.
+    **Not used for battle/Test OCR** — privacy: personal desktop must never be
+    saved as OCR dumps. Kept for rare offline tooling only.
     """
     image = _grab_primary_image()
     rois = _crop_results_rois(image)
     return _png_from_image(rois[0][1], max_width=max_width)
 
 
-def grab_for_ocr_png(max_width: int = 1920) -> bytes:
-    """Prefer the War Thunder window; fall back to the primary monitor."""
+def grab_for_ocr_png(max_width: int = 1920) -> bytes | None:
+    """Capture WT results panel only — never the whole desktop."""
     wt = grab_war_thunder_png(max_width=max_width)
     if wt is not None:
         log.info("OCR capture: War Thunder window (results panel)")
         return wt
-    log.info("OCR capture: primary monitor (WT window not found)")
-    return grab_primary_monitor_png(max_width=max_width)
+    log.info("OCR capture skipped: War Thunder window not available / not foreground")
+    return None
 
 
 def grab_for_ocr_png_variants(max_width: int = 1920) -> list[tuple[str, bytes]]:
-    """Multi-ROI capture for better reward-digit OCR."""
+    """Multi-ROI capture for better reward-digit OCR (WT only)."""
     wt = grab_war_thunder_png_variants(max_width=max_width)
     if wt:
         log.info("OCR capture: War Thunder window (%s ROI)", len(wt))
         return wt
-    log.info("OCR capture: primary monitor single ROI (WT window not found)")
-    return [("panel", grab_primary_monitor_png(max_width=max_width))]
+    log.info("OCR capture skipped: War Thunder window not available / not foreground")
+    return []
 
 
 def ocr_png_variants_windows(png: bytes) -> list[tuple[str, str]]:
@@ -455,7 +582,7 @@ _LAST_OCR_FRAME: Image.Image | None = None
 
 
 def last_ocr_frame() -> Image.Image | None:
-    """Full client/monitor frame from the most recent ``ocr_screen_capture``."""
+    """Full WT client frame from the most recent ``ocr_screen_capture`` (never desktop)."""
     return _LAST_OCR_FRAME
 
 
@@ -474,6 +601,9 @@ def ocr_screen_capture(
     Heavy OCR (WinRT / Tesseract) runs in an isolated child process so a native
     crash cannot kill the Bridge UI/agent. The parent only grabs the
     frame and reads the worker JSON.
+
+    Never falls back to the primary monitor — if WT is missing or not foreground,
+    returns empty bytes / no variants (privacy).
     """
     global _LAST_OCR_FRAME
     import os
@@ -487,14 +617,14 @@ def ocr_screen_capture(
 
     breadcrumb("ocr_screen_capture grab")
     frame = _grab_wt_client_image()
-    source = "wt"
     if frame is None:
-        frame = _grab_primary_image()
-        source = "monitor"
-        log.info("OCR capture: primary monitor (WT window not found)")
-    else:
-        log.info("OCR capture: War Thunder window + scale-safe digit ROIs")
+        _LAST_OCR_FRAME = None
+        log.info("OCR capture skipped: no War Thunder foreground frame")
+        breadcrumb("ocr_screen_capture skipped no-wt-foreground")
+        return b"", []
 
+    source = "wt"
+    log.info("OCR capture: War Thunder window + scale-safe digit ROIs")
     _LAST_OCR_FRAME = frame
 
     # Primary dump = results panel (readable in last_capture.png).
@@ -520,8 +650,6 @@ def ocr_screen_capture(
         wt_ui_language=lang,
         backend=mode,
     )
-    if not variants and source == "monitor":
-        log.warning("OCR worker returned no variants (monitor fallback already inside worker)")
     return primary, variants
 
 
@@ -565,10 +693,6 @@ def _ocr_variants_inprocess(
         png = _png_from_image(crop)
         for eng_tag, text in ocr_png_variants(png, wt_ui_language=lang, backend=mode):
             variants.append((f"{eng_tag}/{roi_tag}", text))
-
-    if source == "monitor" and not variants:
-        png = grab_primary_monitor_png()
-        variants.extend(ocr_png_variants(png, wt_ui_language=lang, backend=mode))
 
     return variants
 

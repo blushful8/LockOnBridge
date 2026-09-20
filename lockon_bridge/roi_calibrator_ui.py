@@ -176,6 +176,7 @@ class RoiCalibrator:
                 except Exception:
                     pass
                 setattr(self, attr, None)
+        self._panel_size_locked = False
         self._canvas = None
         self._status = None
         self._last_geom = None
@@ -454,13 +455,16 @@ class RoiCalibrator:
             anchor="w",
         ).pack(fill="x", padx=12, pady=(0, 10))
         self._panel = win
+        self._panel_size_locked = False
         self._fit_panel()
         self._ensure_panel_on_top()
 
     def _fit_panel(self) -> None:
-        """Resize control panel so all buttons / wrapped text stay visible."""
+        """Measure control panel once so all buttons / text fit, then lock size."""
         win = self._panel
         if win is None:
+            return
+        if getattr(self, "_panel_size_locked", False):
             return
         try:
             win.update_idletasks()
@@ -479,7 +483,8 @@ class RoiCalibrator:
             win.update_idletasks()
         except Exception:
             pass
-        fit_toplevel(win, min_w=460, min_h=400, pad_w=20, pad_h=40, x=40, y=40)
+        fit_toplevel(win, min_w=460, min_h=400, pad_w=20, pad_h=40, x=40, y=40, fixed=True)
+        self._panel_size_locked = True
         self._ensure_panel_on_top()
 
     def _prev_pair(self) -> None:
@@ -597,6 +602,8 @@ class RoiCalibrator:
             self._status.configure(
                 text="Збережено:\n" + "\n".join(str(p) for p in paths)
             )
+        # Status text grew — remeasure once, then lock again.
+        self._panel_size_locked = False
         self._fit_panel()
 
     def _rebuild_overlay_shell(self) -> None:

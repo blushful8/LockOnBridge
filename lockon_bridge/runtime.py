@@ -225,6 +225,18 @@ class BridgeRuntime:
                 breadcrumb(f"capture_burst frame {index + 1}/{cfg.frames} grab+ocr")
                 # After the first confident ROI read, confirm settle with digit ROIs only.
                 png, variants = ocr_screen_capture(roi_only=saw_confident)
+                if not png and not variants:
+                    # WT not foreground / minimized — do not screenshot the desktop.
+                    log.info(
+                        "frame %s/%s: skipped (War Thunder not in foreground)",
+                        index + 1,
+                        cfg.frames,
+                    )
+                    breadcrumb(
+                        f"capture_burst frame {index + 1} skipped not-foreground"
+                    )
+                    self._stop.wait(gap)
+                    continue
                 breadcrumb(
                     f"capture_burst frame {index + 1}/{cfg.frames} "
                     f"variants={len(variants)}"

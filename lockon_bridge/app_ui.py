@@ -53,9 +53,11 @@ DANGER_BG = "#3f1515"
 MIN_WINDOW_W = 520
 MIN_WINDOW_H = 720
 DEFAULT_WINDOW_W = 540
-DEFAULT_WINDOW_H = 780
+DEFAULT_WINDOW_H = 820
 # Extra chrome so the last button is never flush against the bottom edge.
 _WINDOW_CHROME_PAD = 28
+# Reserved height so packing the phone-access banner never needs a resize.
+_PHONE_BANNER_RESERVE_H = 100
 
 
 def _asset_path(name: str) -> Path | None:
@@ -103,8 +105,8 @@ class BridgeApp:
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self._apply_window_icon()
-        self._apply_window_size(initial=True)
-        # Re-sync after the HWND exists (per-monitor DPI), then re-clamp size.
+        self._window_size_locked = False
+        # Re-sync after the HWND exists (per-monitor DPI), then lock size once.
         self.root.after(50, self._after_dpi_ready)
         self._ocr_busy = False
 
@@ -134,6 +136,7 @@ class BridgeApp:
         )
 
         self._build_ui()
+        self._apply_window_size(initial=True)
         self.agent.set_status_callback(self._on_agent_status)
         # Dev ROI overlay only if previously enabled AND unlocked this session.
         # Never auto-start for normal users.
@@ -150,8 +153,8 @@ class BridgeApp:
 
         self.root.after(400, self._refresh_phone_access_ui)
         self.root.after(5_000, self._poll_phone_access_loop)
-        # Second fit after fonts/DPI finish measuring wrapped labels.
-        self.root.after(200, lambda: self._apply_window_size(initial=False))
+        # Remeasure after fonts/DPI settle, then lock permanently.
+        self.root.after(200, self._lock_window_size_final)
 
         if start_hidden and self.settings.enabled:
             self.root.withdraw()
@@ -165,7 +168,13 @@ class BridgeApp:
 
     def _after_dpi_ready(self) -> None:
         sync_tk_scaling(self.root)
-        self._apply_window_size(initial=False)
+        self._window_size_locked = False
+        self._apply_window_size(initial=True)
+
+    def _lock_window_size_final(self) -> None:
+        """Final measure after fonts settle — then size stays fixed."""
+        self._window_size_locked = False
+        self._apply_window_size(initial=True)
 
     def _content_req_size(self) -> tuple[int, int]:
         """Required width/height for all packed root children (post-layout)."""
@@ -196,70 +205,55 @@ class BridgeApp:
             height = DEFAULT_WINDOW_H
         return width, height + _WINDOW_CHROME_PAD
 
+    def _lock_root_geometry(self, width: int, height: int) -> None:
+        """Fixed main window — no user or auto resize."""
+        self.root.resizable(False, False)
+        self.root.minsize(width, height)
+        self.root.maxsize(width, height)
+        self.root.geometry(f"{width}x{height}")
+        self._window_size_locked = True
+
     def _apply_window_size(self, *, initial: bool) -> None:
         """
-        Size the window so every control fits.
+        Size the window once so every control fits, then keep it fixed.
 
-        Fixed geometry alone fails on HiDPI / after the phone banner appears —
-        measure packed content and grow (within the screen work area).
+        Phone banner / status text may pack later — height reserves space for that
+        so the window does not grow or shrink on its own.
         """
+        del initial  # always measure + lock (or only refresh wrap if already locked)
         self.root.update_idletasks()
-        # Match tip wrap to upcoming width so wrapped text does not force overflow.
+        wrap_w = max(280, DEFAULT_WINDOW_W - 48)
         try:
-            tip_w = max(MIN_WINDOW_W - 48, int(self.root.winfo_width()) - 48)
-            if tip_w < 200:
-                tip_w = DEFAULT_WINDOW_W - 48
-            self.tip_label.configure(wraplength=tip_w)
+            self.tip_label.configure(wraplength=wrap_w)
+            self.phone_banner.configure(wraplength=max(280, DEFAULT_WINDOW_W - 56))
+            self.phone_url_label.configure(wraplength=max(280, DEFAULT_WINDOW_W - 56))
+            self.status_label.configure(wraplength=max(280, DEFAULT_WINDOW_W - 48))
             self.root.update_idletasks()
         except Exception:  # noqa: BLE001
             pass
+
+        if self._window_size_locked:
+            return
+
         req_w, req_h = self._content_req_size()
-        need_w = max(MIN_WINDOW_W, req_w, DEFAULT_WINDOW_W if initial else 0)
-        need_h = max(MIN_WINDOW_H, req_h, DEFAULT_WINDOW_H if initial else 0)
+        need_w = max(MIN_WINDOW_W, req_w, DEFAULT_WINDOW_W)
+        need_h = max(MIN_WINDOW_H, req_h + _PHONE_BANNER_RESERVE_H, DEFAULT_WINDOW_H)
 
         try:
             screen_w = int(self.root.winfo_screenwidth())
             screen_h = int(self.root.winfo_screenheight())
         except tk.TclError:
             screen_w, screen_h = 1920, 1080
-        # Leave room for taskbar / window chrome.
         max_w = max(MIN_WINDOW_W, screen_w - 48)
         max_h = max(MIN_WINDOW_H, screen_h - 96)
         final_w = min(need_w, max_w)
         final_h = min(need_h, max_h)
-
-        self.root.minsize(min(MIN_WINDOW_W, final_w), min(MIN_WINDOW_H, final_h))
+        self._lock_root_geometry(final_w, final_h)
         try:
-            cur_w = int(self.root.winfo_width())
-            cur_h = int(self.root.winfo_height())
-        except tk.TclError:
-            cur_w, cur_h = 1, 1
-
-        if initial or cur_w < 50 or cur_h < 50:
-            self.root.geometry(f"{final_w}x{final_h}")
-            try:
-                self.tip_label.configure(wraplength=max(280, final_w - 48))
-                self.phone_banner.configure(wraplength=max(280, final_w - 56))
-                self.phone_url_label.configure(wraplength=max(280, final_w - 56))
-                self.status_label.configure(wraplength=max(280, final_w - 48))
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        # Grow when content needs more room; never shrink below the fitted size
-        # if the user already enlarged the window.
-        target_w = max(cur_w, final_w) if cur_w >= MIN_WINDOW_W else final_w
-        target_h = max(cur_h, final_h) if cur_h >= MIN_WINDOW_H else final_h
-        # But if content grew past the current client area, always expand.
-        if cur_w < final_w or cur_h < final_h:
-            target_w = max(cur_w, final_w)
-            target_h = max(cur_h, final_h)
-        if target_w != cur_w or target_h != cur_h:
-            self.root.geometry(f"{target_w}x{target_h}")
-        try:
-            self.tip_label.configure(wraplength=max(280, target_w - 48))
-            self.phone_banner.configure(wraplength=max(280, target_w - 56))
-            self.phone_url_label.configure(wraplength=max(280, target_w - 56))
-            self.status_label.configure(wraplength=max(280, target_w - 48))
+            self.tip_label.configure(wraplength=max(280, final_w - 48))
+            self.phone_banner.configure(wraplength=max(280, final_w - 56))
+            self.phone_url_label.configure(wraplength=max(280, final_w - 56))
+            self.status_label.configure(wraplength=max(280, final_w - 48))
         except Exception:  # noqa: BLE001
             pass
 
@@ -543,7 +537,6 @@ class BridgeApp:
         except tk.TclError:
             pass
 
-        self._apply_window_size(initial=False)
         self._refresh_badge_for_status(self._last_agent_status)
         # _build_ui destroys Toplevel children — recreate overlay if still on.
         self._roi_overlay.on_ui_rebuilt()
@@ -598,7 +591,9 @@ class BridgeApp:
             self._ensure_tray()
         else:
             self.status_var.set(self.strings.status_disabled)
-        self._apply_window_size(initial=False)
+        # Language switch rebuilds widgets — unlock so we re-measure once, then lock.
+        self._window_size_locked = False
+        self._apply_window_size(initial=True)
         self._refresh_badge_for_status(self._last_agent_status)
 
     def _on_wt_language_chosen(self, _event=None) -> None:
@@ -853,7 +848,6 @@ class BridgeApp:
                 pass
             self.phone_url_label.configure(text="")
             self.status_label.configure(fg=MUTED)
-            self.root.after_idle(lambda: self._apply_window_size(initial=False))
             return
 
         # netsh / firewall queries are slow — never block the Tk thread.
@@ -902,7 +896,6 @@ class BridgeApp:
                 text=t.phone_test_hint.format(url=url),
                 fg="#fca5a5",
             )
-        self.root.after_idle(lambda: self._apply_window_size(initial=False))
 
     def _poll_phone_access_loop(self) -> None:
         if self._closing:

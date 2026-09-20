@@ -471,6 +471,9 @@ class RoiDebugOverlay:
         win.configure(bg="#12141a")
         win.attributes("-topmost", True)
         win.geometry("900x560+60+60")
+        win.resizable(False, False)
+        win.minsize(900, 560)
+        win.maxsize(900, 560)
         win.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
         status = tk.Label(

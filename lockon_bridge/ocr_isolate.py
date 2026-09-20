@@ -19,6 +19,13 @@ log = logging.getLogger("lockon_bridge.ocr_isolate")
 _WORKER_ENV = "LOCKON_OCR_WORKER"
 
 
+def _unlink_quiet(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _worker_cmd() -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, "--ocr-worker"]
@@ -91,10 +98,12 @@ def run_ocr_worker_on_image(
     except subprocess.TimeoutExpired:
         log.error("OCR worker timed out after %.0fs", timeout)
         breadcrumb("ocr-worker timeout")
+        _unlink_quiet(frame_path)
         return []
     except Exception as exc:  # noqa: BLE001
         log.error("OCR worker spawn failed: %s", exc)
         breadcrumb(f"ocr-worker spawn-error {exc}")
+        _unlink_quiet(frame_path)
         return []
 
     if proc.returncode != 0:
@@ -114,21 +123,25 @@ def run_ocr_worker_on_image(
             )
         except Exception:  # noqa: BLE001
             pass
+        _unlink_quiet(frame_path)
         return []
 
     if not result_path.is_file():
         log.error("OCR worker finished but result file missing")
         breadcrumb("ocr-worker missing-result")
+        _unlink_quiet(frame_path)
         return []
 
     try:
         payload = json.loads(result_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         log.error("OCR worker result unreadable: %s", exc)
+        _unlink_quiet(frame_path)
         return []
 
     variants_raw = payload.get("variants") if isinstance(payload, dict) else None
     if not isinstance(variants_raw, list):
+        _unlink_quiet(frame_path)
         return []
     out: list[tuple[str, str]] = []
     for item in variants_raw:
@@ -137,6 +150,8 @@ def run_ocr_worker_on_image(
         out.append((str(item[0]), str(item[1])))
     log.info("OCR worker ok — %s variant(s)", len(out))
     breadcrumb(f"ocr-worker ok variants={len(out)}")
+    # Drop the full-frame dump after OCR — privacy (never leave desktop/WT frame around).
+    _unlink_quiet(frame_path)
     return out
 
 

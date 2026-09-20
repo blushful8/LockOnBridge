@@ -73,11 +73,12 @@ def fit_toplevel(
     pad_h: int = 36,
     x: int | None = None,
     y: int | None = None,
+    fixed: bool = True,
 ) -> None:
     """
-    Grow a Toplevel so packed children (buttons, wrapped labels) all fit.
+    Size a Toplevel so packed children (buttons, wrapped labels) all fit.
 
-    Does not shrink an already-larger window the user resized.
+    When ``fixed`` (default), locks the window so it cannot be resized later.
     """
     try:
         win.update_idletasks()
@@ -88,8 +89,6 @@ def fit_toplevel(
         req_h = int(win.winfo_reqheight()) + pad_h
         screen_w = int(win.winfo_screenwidth())
         screen_h = int(win.winfo_screenheight())
-        cur_w = int(win.winfo_width())
-        cur_h = int(win.winfo_height())
     except Exception:  # noqa: BLE001
         return
     need_w = max(min_w, req_w)
@@ -98,18 +97,16 @@ def fit_toplevel(
     max_h = max(min_h, screen_h - 96)
     final_w = min(need_w, max_w)
     final_h = min(need_h, max_h)
-    # Keep user-enlarged size, but always expand if content overflows.
-    if cur_w >= 50 and cur_h >= 50:
-        final_w = max(cur_w, final_w) if cur_w >= min_w else final_w
-        final_h = max(cur_h, final_h) if cur_h >= min_h else final_h
-        if cur_w < need_w or cur_h < need_h:
-            final_w = max(cur_w, min(need_w, max_w))
-            final_h = max(cur_h, min(need_h, max_h))
     try:
-        win.minsize(min(min_w, final_w), min(min_h, final_h))
         if x is not None and y is not None:
             win.geometry(f"{final_w}x{final_h}+{x}+{y}")
         else:
             win.geometry(f"{final_w}x{final_h}")
+        if fixed:
+            win.resizable(False, False)
+            win.minsize(final_w, final_h)
+            win.maxsize(final_w, final_h)
+        else:
+            win.minsize(min(min_w, final_w), min(min_h, final_h))
     except Exception as exc:  # noqa: BLE001
         log.debug("fit_toplevel skipped: %s", exc)
