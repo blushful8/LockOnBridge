@@ -19,6 +19,36 @@ from .ocr_parse import (
 from .paths import log_dir
 
 
+def _cli_print(*args, **kwargs) -> None:
+    """Print that survives Windows cp1251 consoles (no UnicodeEncodeError)."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        file = kwargs.get("file", sys.stdout)
+        text = sep.join(str(a) for a in args) + end
+        raw = text.encode("utf-8", errors="replace")
+        buf = getattr(file, "buffer", None)
+        if buf is not None:
+            buf.write(raw)
+            buf.flush()
+        else:
+            encoding = getattr(file, "encoding", None) or "ascii"
+            file.write(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+            file.flush()
+
+
+def _configure_cli_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+
+
 FIXTURE_UA_FRAME1 = (
     "Bepciq 2.59.0.13 Micifl npoBaneHa APGAHi 60i, "
     "[nay-IYBaHH91 ryopu eH Haropona 3a yuacTb B Micii: +34% , +20%' "
@@ -243,19 +273,16 @@ def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path 
 
 
 def print_results(title: str, results: list[CaseResult]) -> int:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
-        pass
-    print(f"=== {title} ===")
+    _configure_cli_stdio()
+    _cli_print(f"=== {title} ===")
     failed = 0
     for item in results:
         mark = "OK  " if item.ok else "FAIL"
         detail = item.detail.encode("utf-8", errors="replace").decode("utf-8")
-        print(f"  [{mark}] {item.name}: {detail}")
+        _cli_print(f"  [{mark}] {item.name}: {detail}")
         if not item.ok:
             failed += 1
-    print(f"--- {len(results) - failed}/{len(results)} passed ---")
+    _cli_print(f"--- {len(results) - failed}/{len(results)} passed ---")
     return 0 if failed == 0 else 1
 
 
@@ -263,25 +290,26 @@ def run_self_test(*, include_log_replay: bool = True) -> int:
     from .ocr_backends import describe_ocr_status, tesseract_available
     from .settings import load_settings
 
+    _configure_cli_stdio()
     settings = load_settings()
     wt = settings.wt_ui_language or "uk"
     installed = list_installed_ocr_languages()
-    print("=== installed Windows OCR packs ===")
+    _cli_print("=== installed Windows OCR packs ===")
     if not installed:
-        print("  (none detected)")
+        _cli_print("  (none detected)")
     else:
         for tag, name in installed:
-            print(f"  {tag} — {name}")
-    print(f"=== OCR status (WT UI={wt}, backend={settings.ocr_backend}) ===")
-    print(describe_ocr_status(wt))
+            _cli_print(f"  {tag} - {name}")
+    _cli_print(f"=== OCR status (WT UI={wt}, backend={settings.ocr_backend}) ===")
+    _cli_print(describe_ocr_status(wt))
     if not tesseract_available():
-        print(
+        _cli_print(
             "TIP: Install Tesseract (winget install UB-Mannheim.TesseractOCR) "
-            "then use More → Setup Tesseract OCR for ukr/deu/… models."
+            "then use More -> Setup Tesseract OCR for ukr/deu models."
         )
     if wt == "uk":
-        print(
-            "NOTE: Windows has no Ukrainian OCR pack — UA UI is Latinized with EN packs. "
+        _cli_print(
+            "NOTE: Windows has no Ukrainian OCR pack - UA UI is Latinized with EN packs. "
             "Prefer Tesseract ukr, or Russian Windows OCR as a fallback."
         )
 
@@ -297,11 +325,11 @@ def run_self_test(*, include_log_replay: bool = True) -> int:
                         "Haropona 3a nepeMory: +100% , +47%' 1 148 2 732'"
                     )
                 if report is None and "be3 npeMi" in snippet:
-                    print("FAIL: UA premium OCR from log still does not parse")
+                    _cli_print("FAIL: UA premium OCR from log still does not parse")
                     code = 1
                 elif report is not None:
-                    print(
-                        f"OK: UA log-like sample → RP={report.research_points} "
+                    _cli_print(
+                        f"OK: UA log-like sample -> RP={report.research_points} "
                         f"SL={report.silver_lions}"
                     )
                 break
@@ -309,21 +337,22 @@ def run_self_test(*, include_log_replay: bool = True) -> int:
 
 
 def run_ocr_once_cli() -> int:
-    print("Capturing primary monitor + OCR (each installed pack separately)…")
+    _configure_cli_stdio()
+    _cli_print("Capturing primary monitor + OCR (each installed pack separately)...")
     try:
         text, report, dump_dir = ocr_once(save_dump=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"OCR failed: {exc}", file=sys.stderr)
+        _cli_print(f"OCR failed: {exc}", file=sys.stderr)
         return 1
     if dump_dir is not None:
-        print(f"OCR dump → {dump_dir / 'last_ocr.txt'}")
-        print(f"Lean ROI collage → {dump_dir / 'last_capture.png'}")
-        print(f"Per-crop PNGs → {dump_dir / 'roi_crops'}")
-    print(f"Best OCR preview: {summarize_ocr_text(text)}")
+        _cli_print(f"OCR dump -> {dump_dir / 'last_ocr.txt'}")
+        _cli_print(f"Lean ROI collage -> {dump_dir / 'last_capture.png'}")
+        _cli_print(f"Per-crop PNGs -> {dump_dir / 'roi_crops'}")
+    _cli_print(f"Best OCR preview: {summarize_ocr_text(text)}")
     if report is None:
-        print("Parse: no RP/SL found")
+        _cli_print("Parse: no RP/SL found")
         return 2
-    print(
+    _cli_print(
         f"Parse: RP={report.research_points} SL={report.silver_lions} "
         f"outcome={report.outcome} conf={report.confidence:.2f}"
     )
@@ -349,14 +378,15 @@ def run_serve_test(
     )
     store.publish(report)
     server = ThreadingHTTPServer((bind, port), make_handler(store))
-    print(f"Test report published: RP={research_points} SL={silver_lions}")
-    print(f"GET http://127.0.0.1:{port}/v1/latest-report")
-    print(f"GET http://127.0.0.1:{port}/v1/health")
-    print("Ctrl+C to stop")
+    _configure_cli_stdio()
+    _cli_print(f"Test report published: RP={research_points} SL={silver_lions}")
+    _cli_print(f"GET http://127.0.0.1:{port}/v1/latest-report")
+    _cli_print(f"GET http://127.0.0.1:{port}/v1/health")
+    _cli_print("Ctrl+C to stop")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("stopped")
+        _cli_print("stopped")
     finally:
         server.server_close()
     return 0
