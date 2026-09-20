@@ -142,10 +142,12 @@ def save_ocr_crop_dumps(
     Write what OCR actually reads: small lean ROI crops (+ optional full debug).
 
     - ``last_capture.png`` — collage of lean digit crops (not the whole client)
-    - ``roi_crops/*.png`` — each lean crop separately
+    - ``roi_crops/*.png`` — each lean crop separately (all calibrated pairs)
     - ``last_capture_rois.png`` / ``last_capture_full.png`` — only when ``debug_full``
     """
-    from .roi_layout import iter_reward_digit_rois
+    from .roi_calib import calibrated_all_pair_rects, has_usable_calibration
+    from .roi_layout import crop_norm, iter_reward_digit_rois
+    from .settings import load_settings
 
     try:
         dump_dir.mkdir(parents=True, exist_ok=True)
@@ -159,20 +161,40 @@ def save_ocr_crop_dumps(
         else:
             crops_dir.mkdir(parents=True, exist_ok=True)
 
-        lean = iter_reward_digit_rois(frame, dense=False)
-        if not lean:
+        saved: list[tuple[str, Image.Image]] = []
+
+        # Dump EVERY calibrated fallback pair (not only pair 0) so failures are visible.
+        if has_usable_calibration():
+            try:
+                prefer_with = bool(load_settings().has_premium_account)
+            except Exception:  # noqa: BLE001
+                prefer_with = False
+            prefix = "with" if prefer_with else "without"
+            stack = calibrated_all_pair_rects(prefer_with=prefer_with) or []
+            for index, rp_rect, sl_rect in stack:
+                for suffix, rect in (("rp", rp_rect), ("sl", sl_rect)):
+                    crop = crop_norm(frame, rect)
+                    if crop is None:
+                        continue
+                    tag = f"{prefix}-p{index}-{suffix}"
+                    crop_path = crops_dir / f"{tag}.png"
+                    crop.save(crop_path, format="PNG")
+                    saved.append((tag, crop))
+
+        if not saved:
+            lean = iter_reward_digit_rois(frame, dense=False)
+            for tag, crop in lean:
+                safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in tag)
+                crop_path = crops_dir / f"{safe}.png"
+                crop.save(crop_path, format="PNG")
+                saved.append((tag, crop))
+
+        if not saved:
             # Fallback: keep a downscaled full frame so logs are never empty.
             preview = frame.copy()
             preview.thumbnail((1280, 800), Image.Resampling.BILINEAR)
             preview.save(dump_dir / "last_capture.png", format="PNG")
             return dump_dir / "last_capture.png"
-
-        saved: list[tuple[str, Image.Image]] = []
-        for tag, crop in lean:
-            safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in tag)
-            crop_path = crops_dir / f"{safe}.png"
-            crop.save(crop_path, format="PNG")
-            saved.append((tag, crop))
 
         collage = _collage_crops(saved)
         collage_path = dump_dir / "last_capture.png"

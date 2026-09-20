@@ -239,40 +239,58 @@ def _vote_pair(pairs: list[tuple[int, int]]) -> tuple[int, int] | None:
     return max(counts.keys(), key=_rank)
 
 
-def _read_roi_pair(crop: Image.Image) -> tuple[str, tuple[int, int] | None]:
-    """RapidOCR soft first; Win/Tess only if Rapid has no usable pair."""
+def _read_roi_pair(
+    crop: Image.Image,
+    *,
+    prefer_stable: bool = False,
+) -> tuple[str, tuple[int, int] | None]:
+    """
+    Soft OCR for a digit crop.
+
+    Default: Rapid first (best digits when the worker is healthy).
+    ``prefer_stable=True`` (calibrated cells): WinRT → Tesseract only — never
+    RapidOCR, so onnxruntime ACCESS_VIOLATION cannot abort the pair walk.
+    """
     from .rapid_ocr import rapidocr_digits_text
 
-    rapid = rapidocr_digits_text(crop)
-    if rapid:
-        pair = pair_from_digit_text(rapid)
-        if pair is not None and _column_pair_usable(*pair):
-            return rapid, pair
+    engines: list[tuple[str, object]]
+    if prefer_stable:
+        engines = [
+            ("win", windows_roi_text),
+            ("tess", tesseract_digits_text),
+        ]
+    else:
+        engines = [
+            ("rapid", rapidocr_digits_text),
+            ("win", windows_roi_text),
+            ("tess", tesseract_digits_text),
+        ]
 
-    text = windows_roi_text(crop)
-    if text:
+    first_text = ""
+    first_pair: tuple[int, int] | None = None
+    for _name, reader in engines:
+        try:
+            text = str(reader(crop) or "")
+        except Exception:  # noqa: BLE001
+            continue
+        if not text:
+            continue
         pair = pair_from_digit_text(text)
         if pair is not None and _column_pair_usable(*pair):
             return text, pair
-
-    digits = tesseract_digits_text(crop)
-    if digits:
-        pair = pair_from_digit_text(digits)
-        if pair is not None and _column_pair_usable(*pair):
-            return digits, pair
-
-    if rapid:
-        return rapid, pair_from_digit_text(rapid)
-    if text:
-        return text, pair_from_digit_text(text)
-    if digits:
-        return digits, pair_from_digit_text(digits)
-    return "", None
+        if not first_text:
+            first_text = text
+            first_pair = pair
+    return first_text, first_pair
 
 
-def _read_roi_amount(crop: Image.Image) -> tuple[str, int | None]:
+def _read_roi_amount(
+    crop: Image.Image,
+    *,
+    prefer_stable: bool = False,
+) -> tuple[str, int | None]:
     """Single reward cell (RP or SL) — first plausible amount."""
-    text, pair = _read_roi_pair(crop)
+    text, pair = _read_roi_pair(crop, prefer_stable=prefer_stable)
     if pair is not None:
         # Prefer the first of a pair when a cell accidentally covers both.
         return text, int(pair[0])
@@ -338,12 +356,13 @@ def try_calibrated_column_pair(
         if rp_crop is None or sl_crop is None:
             log.debug("calib pair %s-p%s: crop missing", prefix, index)
             continue
-        rp_text, rp_amt = _read_roi_amount(rp_crop)
-        sl_text, sl_amt = _read_roi_amount(sl_crop)
+        # Stable engines first — RapidOCR AV would kill the worker mid-loop.
+        rp_text, rp_amt = _read_roi_amount(rp_crop, prefer_stable=True)
+        sl_text, sl_amt = _read_roi_amount(sl_crop, prefer_stable=True)
         rp_ok = _cell_is_clean_number(rp_text, rp_amt)
         sl_ok = _cell_is_clean_number(sl_text, sl_amt)
         if not rp_ok or not sl_ok:
-            log.debug(
+            log.info(
                 "calib pair %s-p%s rejected (need both numeric): rp=%r sl=%r",
                 prefix,
                 index,
@@ -352,8 +371,17 @@ def try_calibrated_column_pair(
             )
             continue
         assert rp_amt is not None and sl_amt is not None
-        if not _column_pair_usable(rp_amt, sl_amt):
-            log.debug(
+        sl_candidates = [sl_amt]
+        trimmed = _ocr_ghost_trim(sl_amt)
+        if trimmed is not None and trimmed not in sl_candidates:
+            sl_candidates.append(trimmed)
+        chosen_sl: int | None = None
+        for sl_try in sl_candidates:
+            if _column_pair_usable(rp_amt, sl_try):
+                chosen_sl = sl_try
+                break
+        if chosen_sl is None:
+            log.info(
                 "calib pair %s-p%s rejected (unusable): %s/%s",
                 prefix,
                 index,
@@ -361,8 +389,14 @@ def try_calibrated_column_pair(
                 sl_amt,
             )
             continue
-        log.info("calib pair %s-p%s OK → %s / %s", prefix, index, rp_amt, sl_amt)
-        return index, rp_amt, sl_amt
+        log.info(
+            "calib pair %s-p%s OK → %s / %s",
+            prefix,
+            index,
+            rp_amt,
+            chosen_sl,
+        )
+        return index, rp_amt, chosen_sl
     save_error_parse_frame(image)
     return None
 
