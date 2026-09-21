@@ -11,3 +11,44 @@ _release_backup/
 
 .idea/
 
+# Cursor local state — keep tracked project rules under .cursor/rules/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+
+# Secrets / credentials — never commit or ship in releases
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*
+*secret*
+secrets/
+tokens/
+**/settings.local.json
+
+# Local runtime data (lives under %LocalAppData%\LockOnBridge\, but
+# also ignore if anyone copies dumps into the repo tree)
+captures/
+**/captures/
+_debug_shots/
+**/_debug_shots/
+logs/
+**/logs/
+error_parse.png
+last_ocr*
+last_capture*
+*_rois.png
+ocr_worker_frame.png
+ocr_worker_result.json
+ocr_worker_stderr.log
+
+# Ad-hoc OCR / probe dumps under tools/
+tools/_*.txt
+tools/_*.png
+tools/_*.jpg
+tools/_*.jpeg
+tools/_*.webp
+tools/_*.json

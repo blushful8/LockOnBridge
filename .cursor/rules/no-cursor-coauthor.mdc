@@ -1,0 +1,12 @@
+---
+description: Forbid Co-authored-by Cursor on every LockOn Bridge commit/push.
+alwaysApply: true
+---
+
+# No Cursor co-author (LockOn Bridge)
+
+- **Never** include `Co-authored-by: Cursor` / `cursoragent@cursor.com` in commits.
+- After commit: `git log -1 --format=%B` must be clean before any push.
+- If Cursor injected a trailer: rewrite via `commit-tree` (not amend) or
+  `git filter-repo` message callback, then push only the cleaned history.
+- Author/committer stay `blushful8` only.
