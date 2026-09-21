@@ -24,7 +24,7 @@ _release_backup/
 *.p12
 *.pfx
 *credentials*
-*secret*
+*secrets*
 secrets/
 tokens/
 **/settings.local.json
