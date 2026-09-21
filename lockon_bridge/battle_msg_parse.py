@@ -182,6 +182,33 @@ def looks_like_battle_msg_clipboard(text: str) -> bool:
     return has_sl and has_frp and text.count("\n") >= 2
 
 
+def looks_like_messages_panel_clipboard(text: str) -> bool:
+    """True when Ctrl+C likely hit the hangar Messages panel (any tab)."""
+    if not text or len(text.strip()) < 40:
+        return False
+    if parse_battle_msg_clipboard(text) is not None:
+        return True
+    if _SESSION.search(text):
+        return True
+    lower = text.lower()
+    hints = (
+        "ctrl+c",
+        "ctrl + c",
+        "буфера обміну",
+        "буфер обмена",
+        "clipboard",
+        "зароблено",
+        "заработано",
+        "earned",
+        "сесія",
+        "сессия",
+        "session",
+        "битв",
+        "battle",
+    )
+    return sum(1 for h in hints if h in lower) >= 2
+
+
 def parse_battle_msg_clipboard(text: str) -> BattleReport | None:
     """
     Extract without-premium-equivalent SL + RP from a Messages clipboard dump.

@@ -211,7 +211,9 @@ class BridgeRuntime:
             try:
                 from .wt_messages_ui import capture_clipboard_battle_report
 
-                report, reason = capture_clipboard_battle_report()
+                report, reason = capture_clipboard_battle_report(
+                    hangar_settle_sec=0.45,
+                )
             except Exception as exc:  # noqa: BLE001
                 log.warning("clipboard results error: %s", exc)
                 report, reason = None, f"error:{exc}"

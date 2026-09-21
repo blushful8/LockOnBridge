@@ -8,6 +8,7 @@ import ctypes
 import logging
 import time
 from ctypes import wintypes
+from dataclasses import dataclass
 
 log = logging.getLogger("lockon_bridge.wt_input")
 
@@ -26,6 +27,7 @@ VK_ESCAPE = 0x1B
 VK_C = 0x43
 CF_UNICODETEXT = 13
 CF_TEXT = 1
+GMEM_MOVEABLE = 0x0002
 
 ULONG_PTR = ctypes.c_size_t
 
@@ -74,6 +76,18 @@ class INPUT(ctypes.Structure):
     ]
 
 
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
+@dataclass(frozen=True)
+class ClipboardSnapshot:
+    """User clipboard text captured before Bridge mutates it."""
+
+    text: str
+    had_text: bool
+
+
 def focus_war_thunder() -> bool:
     """Bring the WT client to the foreground without restoring a minimized window."""
     from .capture import find_war_thunder_hwnd, is_war_thunder_foreground
@@ -96,6 +110,17 @@ def focus_war_thunder() -> bool:
         return False
     time.sleep(0.05)
     return is_war_thunder_foreground()
+
+
+def get_client_size(hwnd: int) -> tuple[int, int] | None:
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+        return None
+    w = int(rect.right - rect.left)
+    h = int(rect.bottom - rect.top)
+    if w < 100 or h < 100:
+        return None
+    return w, h
 
 
 def _send_inputs(inputs: list[INPUT]) -> None:
@@ -137,6 +162,17 @@ def press_ctrl_c() -> None:
 
 def press_escape() -> None:
     _send_inputs([_key(VK_ESCAPE), _key(VK_ESCAPE, up=True)])
+
+
+def get_cursor_pos() -> tuple[int, int] | None:
+    pt = POINT()
+    if not user32.GetCursorPos(ctypes.byref(pt)):
+        return None
+    return int(pt.x), int(pt.y)
+
+
+def set_cursor_pos(x: int, y: int) -> None:
+    user32.SetCursorPos(int(x), int(y))
 
 
 def click_screen_xy(x: int, y: int) -> None:
@@ -188,13 +224,31 @@ def click_screen_xy(x: int, y: int) -> None:
 
 
 def client_to_screen(hwnd: int, x: int, y: int) -> tuple[int, int] | None:
-    class POINT(ctypes.Structure):
-        _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
-
     pt = POINT(x, y)
     if not user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(pt)):
         return None
     return int(pt.x), int(pt.y)
+
+
+def click_client_xy_restore_cursor(hwnd: int, x: int, y: int) -> bool:
+    """
+    Click a WT client-pixel point, then put the cursor back where it was.
+
+    Avoids leaving the user's mouse on the envelope / panel.
+    """
+    prev = get_cursor_pos()
+    screen = client_to_screen(hwnd, int(x), int(y))
+    if screen is None:
+        return False
+    try:
+        click_screen_xy(screen[0], screen[1])
+    finally:
+        if prev is not None:
+            try:
+                set_cursor_pos(prev[0], prev[1])
+            except Exception:  # noqa: BLE001
+                pass
+    return True
 
 
 def get_clipboard_text() -> str:
@@ -234,6 +288,52 @@ def clear_clipboard() -> bool:
         user32.CloseClipboard()
 
 
+def set_clipboard_text(text: str) -> bool:
+    """Replace clipboard with Unicode text (or empty)."""
+    if not text:
+        return clear_clipboard()
+    data = (text.replace("\0", "") + "\0").encode("utf-16-le")
+    handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not handle:
+        return False
+    ptr = kernel32.GlobalLock(handle)
+    if not ptr:
+        kernel32.GlobalFree(handle)
+        return False
+    try:
+        ctypes.memmove(ptr, data, len(data))
+    finally:
+        kernel32.GlobalUnlock(handle)
+    if not user32.OpenClipboard(None):
+        kernel32.GlobalFree(handle)
+        return False
+    try:
+        user32.EmptyClipboard()
+        if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+            kernel32.GlobalFree(handle)
+            return False
+        return True
+    finally:
+        user32.CloseClipboard()
+
+
+def snapshot_clipboard() -> ClipboardSnapshot:
+    text = get_clipboard_text()
+    return ClipboardSnapshot(text=text, had_text=bool(text))
+
+
+def restore_clipboard(snap: ClipboardSnapshot | None) -> None:
+    if snap is None:
+        return
+    try:
+        if snap.had_text:
+            set_clipboard_text(snap.text)
+        else:
+            clear_clipboard()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("restore_clipboard failed: %s", exc)
+
+
 def poll_clipboard_after_copy(
     *,
     accept,
@@ -264,4 +364,4 @@ def poll_clipboard_after_copy(
             if valued:
                 return text, valued
         time.sleep(interval_sec)
-    return None, None
+    return (last_text or None), None

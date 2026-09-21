@@ -31,6 +31,10 @@ class BridgeSettings:
     debug_show_rois: bool = False
     # After battle: open Messages → Ctrl+C → parse (OCR is fallback).
     use_clipboard_results: bool = True
+    # Optional calibrated Messages envelope click (0..1 of WT content frame).
+    # None / missing → use built-in multi-resolution NormPoint cluster.
+    envelope_nx: float | None = None
+    envelope_ny: float | None = None
     # Launch Bridge at Windows logon (scheduled task). Independent of agent run.
     autostart_with_windows: bool = True
 
@@ -61,6 +65,18 @@ class BridgeSettings:
             autostart = bool(raw.get("autostart_with_windows"))
         else:
             autostart = True
+
+        def _opt_norm(key: str) -> float | None:
+            if key not in raw or raw.get(key) is None:
+                return None
+            try:
+                v = float(raw.get(key))
+            except (TypeError, ValueError):
+                return None
+            if v < 0.0 or v > 1.0:
+                return None
+            return v
+
         return cls(
             enabled=bool(raw.get("enabled", False)),
             port=port,
@@ -75,6 +91,8 @@ class BridgeSettings:
             has_premium_account=bool(raw.get("has_premium_account", False)),
             debug_show_rois=bool(raw.get("debug_show_rois", False)),
             use_clipboard_results=bool(raw.get("use_clipboard_results", True)),
+            envelope_nx=_opt_norm("envelope_nx"),
+            envelope_ny=_opt_norm("envelope_ny"),
             autostart_with_windows=autostart,
         )
 
