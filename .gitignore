@@ -23,9 +23,13 @@ _release_backup/
 *.key
 *.p12
 *.pfx
-*credentials*
-*secrets*
+**/credentials.json
+**/credentials.*.json
+**/*_credentials.*
+**/*_token.txt
+**/*_token.json
 secrets/
+.secrets/
 tokens/
 **/settings.local.json
 
