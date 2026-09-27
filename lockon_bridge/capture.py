@@ -190,7 +190,7 @@ def is_war_thunder_foreground() -> bool:
 def _grab_hwnd_gdi(hwnd: int) -> Image.Image | None:
     """
     BitBlt / PrintWindow the window client — avoids DXGI Desktop Duplication, which
-    can leave fullscreen games in a low-FPS state until the user Alt+Tabs once.
+    can drop exclusive-fullscreen WT onto the desktop.
     """
     gdi32 = ctypes.windll.gdi32
     rect = wintypes.RECT()
@@ -216,6 +216,34 @@ def _grab_hwnd_gdi(hwnd: int) -> Image.Image | None:
             ("biClrImportant", wintypes.DWORD),
         ]
 
+    def _bitmap_to_image(hdc_src: int, hbmp_obj: int) -> Image.Image | None:
+        bmi = BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.biWidth = width
+        bmi.biHeight = -height  # top-down
+        bmi.biPlanes = 1
+        bmi.biBitCount = 32
+        bmi.biCompression = 0  # BI_RGB
+        buf = (ctypes.c_ubyte * (width * height * 4))()
+        got = gdi32.GetDIBits(hdc_src, hbmp_obj, 0, height, buf, ctypes.byref(bmi), 0)
+        if not got:
+            return None
+        raw = bytes(buf)
+        # Reject near-black frames (failed exclusive-fullscreen BitBlt).
+        sample = raw[:: 4 * max(1, (width * height) // 64)]
+        if not (any(sample) or any(raw[i] for i in range(0, min(len(raw), 4096), 17))):
+            return None
+        img = Image.frombytes("RGB", (width, height), raw, "raw", "BGRX")
+        # Extra guard: mean luminance too low ⇒ treat as failed grab.
+        try:
+            from PIL import ImageStat
+
+            if float(ImageStat.Stat(img.convert("L")).mean[0]) < 8.0:
+                return None
+        except Exception:  # noqa: BLE001
+            pass
+        return img
+
     hdc_win = user32.GetDC(wintypes.HWND(hwnd))
     if not hdc_win:
         return None
@@ -230,36 +258,23 @@ def _grab_hwnd_gdi(hwnd: int) -> Image.Image | None:
         return None
 
     old = gdi32.SelectObject(hdc_mem, hbmp)
-    ok = bool(gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, 0, 0, 0x00CC0020))
-    if not ok:
-        # PW_RENDERFULLCONTENT=2 — helps some fullscreen / flip-model clients.
-        try:
-            ok = bool(user32.PrintWindow(wintypes.HWND(hwnd), hdc_mem, 2))
-        except Exception:  # noqa: BLE001
-            ok = False
-    gdi32.SelectObject(hdc_mem, old)
-
     image: Image.Image | None = None
-    if ok:
-        bmi = BITMAPINFOHEADER()
-        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bmi.biWidth = width
-        bmi.biHeight = -height  # top-down
-        bmi.biPlanes = 1
-        bmi.biBitCount = 32
-        bmi.biCompression = 0  # BI_RGB
-        buf = (ctypes.c_ubyte * (width * height * 4))()
-        got = gdi32.GetDIBits(hdc_win, hbmp, 0, height, buf, ctypes.byref(bmi), 0)
-        if got:
-            raw = bytes(buf)
-            # Reject near-black frames (failed exclusive-fullscreen BitBlt).
-            sample = raw[:: 4 * max(1, (width * height) // 64)]
-            if any(sample) or any(raw[i] for i in range(0, min(len(raw), 4096), 17)):
-                image = Image.frombytes("RGB", (width, height), raw, "raw", "BGRX")
-
-    gdi32.DeleteObject(hbmp)
-    gdi32.DeleteDC(hdc_mem)
-    user32.ReleaseDC(wintypes.HWND(hwnd), hdc_win)
+    try:
+        # BitBlt often "succeeds" with a black buffer on exclusive fullscreen —
+        # always fall through to PrintWindow(PW_RENDERFULLCONTENT) when empty.
+        gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, 0, 0, 0x00CC0020)
+        image = _bitmap_to_image(hdc_win, hbmp)
+        if image is None:
+            try:
+                if user32.PrintWindow(wintypes.HWND(hwnd), hdc_mem, 2):
+                    image = _bitmap_to_image(hdc_win, hbmp)
+            except Exception:  # noqa: BLE001
+                image = None
+    finally:
+        gdi32.SelectObject(hdc_mem, old)
+        gdi32.DeleteObject(hbmp)
+        gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(wintypes.HWND(hwnd), hdc_win)
     return image
 
 
@@ -307,6 +322,7 @@ def grab_wt_client_image(
     *,
     focus: bool = False,
     require_foreground: bool = True,
+    allow_mss: bool = True,
 ) -> Image.Image | None:
     """
     Full War Thunder client bitmap, or None.
@@ -314,8 +330,11 @@ def grab_wt_client_image(
     Never captures the desktop / other apps. When ``require_foreground`` is set
     (default), returns None unless WT is the active window — privacy + no junk OCR.
 
-    Prefer DXGI/mss (real composited frame). GDI BitBlt often returns a washed /
-    semi-transparent HUD on fullscreen WT — OCR then sees nothing useful.
+    Prefer DXGI/mss (real composited frame) when ``allow_mss`` is True. GDI BitBlt
+    often returns a washed / semi-transparent HUD on fullscreen WT — OCR then sees
+    nothing useful — but mss/DXGI can drop exclusive fullscreen to the desktop.
+    Messages navigation therefore passes ``allow_mss=False``.
+
     Never use ``ShowWindow(SW_RESTORE)`` (FPS hitch until Alt+Tab).
     """
     hwnd = find_war_thunder_hwnd()
@@ -335,6 +354,15 @@ def grab_wt_client_image(
             user32.SetForegroundWindow(wintypes.HWND(hwnd))
         except Exception:  # noqa: BLE001
             pass
+
+    if not allow_mss:
+        gdi_only = _grab_hwnd_gdi(hwnd)
+        if gdi_only is not None:
+            log.debug(
+                "OCR grab via gdi-only contrast=%.1f",
+                _panel_contrast_score(gdi_only),
+            )
+        return gdi_only
 
     # mss first — matches what the user actually sees.
     mss_img = _grab_hwnd_mss(hwnd)
@@ -474,6 +502,18 @@ def _crop_results_rois(image: Image.Image) -> list[tuple[str, Image.Image]]:
     )
     if band.width >= 200 and band.height >= 120:
         rois.append(("totals", band))
+
+    # «Зароблено / Earned» line — primary OCR.space target after battle.
+    earned = image.crop(
+        (
+            int(width * 0.04),
+            int(height * 0.40),
+            int(width * 0.58),
+            int(height * 0.64),
+        )
+    )
+    if earned.width >= 200 and earned.height >= 80:
+        rois.append(("earned", earned))
     return rois
 
 
@@ -779,52 +819,45 @@ def _ocr_variants_inprocess(
     premium_ceiling: tuple[int, int] | None = None,
     skip_expensive_fallback: bool = False,
 ) -> list[tuple[str, str]]:
-    """ROI + optional panel OCR — only called inside the OCR worker process."""
-    from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
-    from .roi_rewards import extract_roi_reward_variants
+    """OCR.space on results ROIs (no local Tesseract / Windows panel engines)."""
+    del source
+    mode_l = (mode or "ocrspace").strip().lower()
+    if mode_l in ("ocr.space", "cloud", "auto", ""):
+        mode_l = "ocrspace"
 
-    del source  # kept for call-site clarity / future logging
     variants: list[tuple[str, str]] = []
+    if mode_l != "ocrspace":
+        from .roi_rewards import extract_roi_reward_variants
+
+        try:
+            variants.extend(
+                extract_roi_reward_variants(
+                    frame,
+                    prefer_with=prefer_with,
+                    pair_hint=pair_hint,
+                    premium_ceiling=premium_ceiling,
+                    skip_expensive_fallback=skip_expensive_fallback,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ROI digit extract failed: %s", exc)
+        if skip_expensive_fallback or roi_only:
+            return variants
+        for roi_tag, crop in _crop_results_rois(frame):
+            png = _png_from_image(crop)
+            for eng_tag, text in ocr_png_variants(
+                png, wt_ui_language=lang, backend=mode_l
+            ):
+                variants.append((f"{eng_tag}/{roi_tag}", text))
+        return variants
+
+    # OCR.space: one developer-shipped zone. No pair stack, no extra crops.
     try:
-        variants.extend(
-            extract_roi_reward_variants(
-                frame,
-                prefer_with=prefer_with,
-                pair_hint=pair_hint,
-                premium_ceiling=premium_ceiling,
-                skip_expensive_fallback=skip_expensive_fallback,
-            )
-        )
+        from .layout_ocr import ocrspace_layout_variants
+
+        variants.extend(ocrspace_layout_variants(frame, max_crops=1))
     except Exception as exc:  # noqa: BLE001
-        log.warning("ROI digit extract failed: %s", exc)
-
-    roi_best = choose_best_report(
-        [
-            (text, parse_rewards_from_ocr_text(text))
-            for tag, text in variants
-            if tag.startswith("roi:")
-        ]
-    )
-    roi_confident = roi_best is not None and roi_best[1].confidence >= 0.85
-    if roi_only or roi_confident:
-        if roi_confident:
-            log.info(
-                "OCR fast path: ROI confident RP=%s SL=%s conf=%.2f — skip panel engines",
-                roi_best[1].research_points,
-                roi_best[1].silver_lions,
-                roi_best[1].confidence,
-            )
-        return variants
-
-    if skip_expensive_fallback:
-        log.info("OCR in-process: skip panel engines (expensive fallback disabled)")
-        return variants
-
-    for roi_tag, crop in _crop_results_rois(frame):
-        png = _png_from_image(crop)
-        for eng_tag, text in ocr_png_variants(png, wt_ui_language=lang, backend=mode):
-            variants.append((f"{eng_tag}/{roi_tag}", text))
-
+        log.warning("parse-zone OCR failed: %s", exc)
     return variants
 
 

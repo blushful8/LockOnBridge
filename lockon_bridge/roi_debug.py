@@ -163,6 +163,16 @@ def save_ocr_crop_dumps(
 
         saved: list[tuple[str, Image.Image]] = []
 
+        backend = str(getattr(load_settings(), "ocr_backend", "ocrspace") or "ocrspace")
+        if backend.strip().lower() in ("ocrspace", "ocr.space", "cloud", "auto", ""):
+            from .layout_ocr import crop_parse_zone
+
+            zone = crop_parse_zone(frame)
+            zone_path = crops_dir / "parse-zone.png"
+            zone.save(zone_path, format="PNG")
+            zone.save(dump_dir / "last_capture.png", format="PNG")
+            return dump_dir / "last_capture.png"
+
         # Dump EVERY calibrated fallback pair (not only pair 0) so failures are visible.
         if has_usable_calibration():
             try:

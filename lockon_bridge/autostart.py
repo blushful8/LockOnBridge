@@ -124,6 +124,18 @@ def ensure_install_copy() -> Path | None:
         return src_exe
 
 
+def _shortcut_icon_location(exe: Path) -> str:
+    """Prefer a standalone .ico so Desktop .lnk survives exe replace / shell cache."""
+    candidates = [
+        exe.parent / "_internal" / "assets" / "lockon_bridge.ico",
+        exe.parent / "assets" / "lockon_bridge.ico",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return f"{path},0"
+    return f"{exe},0"
+
+
 def ensure_desktop_shortcut(target: Path | None = None) -> bool:
     """Create or refresh a Desktop shortcut that opens the Bridge control window."""
     exe = target
@@ -136,6 +148,13 @@ def ensure_desktop_shortcut(target: Path | None = None) -> bool:
         return False
 
     shortcut = desktop_shortcut_path()
+    icon = _shortcut_icon_location(exe)
+    # Delete first so Explorer drops a stale shell icon cache entry for this .lnk.
+    try:
+        if shortcut.is_file():
+            shortcut.unlink()
+    except OSError:
+        pass
     script = f"""
 $ErrorActionPreference = 'Stop'
 $shell = New-Object -ComObject WScript.Shell
@@ -145,14 +164,14 @@ $shortcut.TargetPath = '{_q(str(exe))}'
 $shortcut.WorkingDirectory = '{_q(str(exe.parent))}'
 $shortcut.WindowStyle = 1
 $shortcut.Description = '{_q(PRODUCT_NAME)}'
-$shortcut.IconLocation = '{_q(str(exe))},0'
+$shortcut.IconLocation = '{_q(icon)}'
 $shortcut.Save()
 """
     result = _run_ps(script)
     if result.returncode != 0:
         log.warning("desktop shortcut failed: %s", (result.stderr or result.stdout).strip())
         return False
-    log.info("Desktop shortcut → %s", shortcut)
+    log.info("Desktop shortcut → %s (icon %s)", shortcut, icon)
     return True
 
 

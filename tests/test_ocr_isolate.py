@@ -1,8 +1,16 @@
 """OCR process isolation (WinRT / Tesseract worker)."""
 
+import json
 from pathlib import Path
 
-from lockon_bridge.ocr_isolate import ocr_worker_main
+from lockon_bridge.ocr_isolate import _json_line, ocr_worker_main
+
+
+def test_worker_json_line_keeps_ukrainian_on_ascii_pipe():
+    line = _json_line({"variants": [["ocrspace:layout/zone", "Ваше місце в команді: 6"]]})
+    assert line.isascii()
+    restored = json.loads(line)
+    assert "місце" in restored["variants"][0][1]
 
 
 def test_ocr_worker_roundtrip_on_fixture(tmp_path, monkeypatch):

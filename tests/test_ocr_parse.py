@@ -345,3 +345,89 @@ def test_choose_best_ignores_bad_engine():
     # Either the latinized UA without-premium or Chinese fixture — both valid pairs.
     assert report.research_points in (1088, 1250)
     assert report.silver_lions in (6016, 8400)
+
+
+def test_ocrspace_garbled_earned_line():
+    """OCR.space often mangles «Зароблено» and glues icon digits onto amounts."""
+    text = "Бонус навичок\n3apooneH0:11 8490,3 0129\nАктивність: 93%"
+    report = parse_rewards_from_ocr_text(text)
+    assert report is not None
+    assert report.silver_lions == 11849
+    assert report.research_points == 3012
+    assert report.source == "ocrspace"
+    assert report.confidence >= 0.9
+
+
+def test_select_structured_prefers_earned_overlay():
+    from lockon_bridge.layout_ocr import Box, OverlayLine, select_structured_text
+
+    lines = [
+        OverlayLine("Бонус навичок", Box(0, 0, 10, 10)),
+        OverlayLine("Зароблено: 11 849, 3 012", Box(0, 20, 200, 40)),
+        OverlayLine("Активність: 93%", Box(0, 50, 100, 60)),
+    ]
+    text = select_structured_text("noise", lines)
+    assert "Зароблено" in text
+    assert "11 849" in text
+
+
+def test_engine3_team_place_grid_without_premium():
+    text = (
+        "3 преміумом\n"
+        "Без преміума\n"
+        "Ваше місце в команді: 9\n"
+        "3 238\n"
+        "1 811\n"
+        "8 808\n"
+        "5 671\n"
+    )
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+    assert report is not None
+    assert report.research_points == 1811
+    assert report.silver_lions == 5671
+    assert report.source == "ocrspace"
+    assert report.confidence >= 0.9
+
+
+def test_engine3_team_place_grid_with_premium():
+    text = (
+        "3 преміумом\n"
+        "Без преміума\n"
+        "Ваше місце в команді: 9\n"
+        "3 238\n"
+        "1 811\n"
+        "8 808\n"
+        "5 671\n"
+    )
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=True)
+    assert report is not None
+    assert report.research_points == 3238
+    assert report.silver_lions == 8808
+
+
+def test_four_amount_lines_without_place_are_the_grid_not_two_rp_columns():
+    """Mid-animation zone text has no «місце» line yet. Do not swap the RP cells."""
+    text = "Без преміума\n1 263\n559\n3748\n2313\n"
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+    assert report is not None
+    assert report.research_points == 559
+    assert report.silver_lions == 2313
+    assert report.source == "ocrspace"
+    assert report.confidence >= 0.9
+
+
+def test_phone_preview_uses_latest_report_fields():
+    from lockon_bridge.ocr_parse import parse_rewards_from_ocr_text
+    from lockon_bridge.parse_zone_ui import _phone_view
+
+    text = (
+        "3 преміумом\nБез преміума\nВаше місце в команді: 9\n"
+        "3 238\n1 811\n8 808\n5 671\n"
+    )
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+    view = _phone_view(report, premium=False)
+    assert "RP 1811" in view
+    assert "SL 5671" in view
+    assert '"researchPoints": 1811' in view
+    assert '"silverLions": 5671' in view
+

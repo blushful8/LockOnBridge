@@ -22,7 +22,7 @@ from .autostart import (
     _app_allow_present,
     _firewall_has_block_on_bridge,
 )
-from .i18n import EN, UK, Strings, strings_for
+from .i18n import Strings, app_language_code, strings_for
 from .dpi import enable_windows_dpi_awareness, sync_tk_scaling
 from .paths import PRODUCT_NAME, data_root, is_frozen, log_dir, log_file
 from .roi_debug import RoiDebugOverlay
@@ -119,15 +119,15 @@ class BridgeApp:
         self.port_var = tk.StringVar(value=str(self.settings.port))
         self.status_var = tk.StringVar(value="…")
         self.badge_var = tk.StringVar(value="")
-        self.language_var = tk.StringVar(
-            value=self.strings.lang_uk if self.settings.language == "uk" else self.strings.lang_en
-        )
+        self.language_var = tk.StringVar(value=self._language_label(self.settings.language))
         self._wt_code_by_label: dict[str, str] = {}
         self.wt_language_var = tk.StringVar(value="")
+        self.ocr_engine_var = tk.StringVar(value="")
         self.ocr_backend_var = tk.StringVar(value="")
         self._ocr_backend_by_label: dict[str, str] = {}
         self.debug_rois_var = tk.BooleanVar(value=False)
         self._dev_unlocked = False
+        self._quota_var: tk.StringVar | None = None
         self._version_clicks = 0
         self._roi_calibrator = None
         self._roi_overlay = RoiDebugOverlay(
@@ -426,7 +426,7 @@ class BridgeApp:
         self.language_combo = ttk.Combobox(
             lang_row,
             textvariable=self.language_var,
-            values=(t.lang_en, t.lang_uk),
+            values=(t.lang_en, t.lang_uk, t.lang_ru),
             state="readonly",
             width=18,
         )
@@ -438,7 +438,7 @@ class BridgeApp:
         self._wt_code_by_label = {}
         wt_labels: list[str] = []
         for item in WT_LANGUAGES:
-            label = item.label_uk if self.settings.language == "uk" else item.label_en
+            label = item.label_for(self.settings.language)
             self._wt_code_by_label[label] = item.code
             wt_labels.append(label)
         current_wt = next(
@@ -459,13 +459,45 @@ class BridgeApp:
         self.wt_language_combo.pack(side="right")
         self.wt_language_combo.bind("<<ComboboxSelected>>", self._on_wt_language_chosen)
 
-        # Primary actions stay visible; the rest go into a dropdown.
+        engine_labels = (t.ocr_engine_2, t.ocr_engine_3)
+        self.ocr_engine_var.set(
+            t.ocr_engine_3 if int(self.settings.ocr_space_engine) == 3 else t.ocr_engine_2
+        )
+        engine_row = tk.Frame(self.root, bg=BG)
+        engine_row.pack(fill="x", padx=20, pady=2)
+        tk.Label(
+            engine_row, text=t.ocr_engine, font=("Segoe UI", 10), fg=FG, bg=BG
+        ).pack(side="left")
+        self.ocr_engine_combo = ttk.Combobox(
+            engine_row,
+            textvariable=self.ocr_engine_var,
+            values=engine_labels,
+            state="readonly",
+            width=36,
+        )
+        self.ocr_engine_combo.pack(side="right")
+        self.ocr_engine_combo.bind("<<ComboboxSelected>>", self._on_ocr_engine_chosen)
+
+        if self._dev_unlocked:
+            self._quota_var = tk.StringVar(value="")
+            tk.Label(
+                self.root,
+                textvariable=self._quota_var,
+                font=("Segoe UI", 9),
+                fg=MUTED,
+                bg=BG,
+                wraplength=480,
+                justify="left",
+                anchor="w",
+            ).pack(fill="x", padx=20, pady=(2, 4))
+            self._apply_quota_label()
+            self.root.after(200, self._refresh_quota_remote)
+
+        # Primary action: post-battle OCR test (no hangar navigation).
         btns = tk.Frame(self.root, bg=BG)
         btns.pack(fill="x", padx=20, pady=(8, 4))
         self.btn_test_ocr = self._btn(btns, t.test_ocr, self._test_ocr)
         self.btn_test_ocr.pack(fill="x", pady=3)
-        self.btn_test_clipboard = self._btn(btns, t.test_clipboard, self._test_clipboard)
-        self.btn_test_clipboard.pack(fill="x", pady=3)
 
         more_row = tk.Frame(btns, bg=BG)
         more_row.pack(fill="x", pady=3)
@@ -485,36 +517,6 @@ class BridgeApp:
             font=("Segoe UI", 10),
         )
         more_menu.add_command(label=t.replay_log, command=self._replay_last_ocr)
-        more_menu.add_command(label=t.setup_tesseract, command=self._setup_tesseract)
-        more_menu.add_command(label=t.ocr_packs, command=self._ocr_packs_clicked)
-        ocr_sub = tk.Menu(
-            more_menu,
-            tearoff=0,
-            bg=PANEL,
-            fg=FG,
-            activebackground=ACCENT,
-            activeforeground="#ffffff",
-            bd=0,
-            font=("Segoe UI", 10),
-        )
-        self._ocr_backend_by_label = {
-            t.ocr_backend_auto: "auto",
-            t.ocr_backend_windows: "windows",
-            t.ocr_backend_tesseract: "tesseract",
-        }
-        for label, code in self._ocr_backend_by_label.items():
-            ocr_sub.add_radiobutton(
-                label=label,
-                variable=self.ocr_backend_var,
-                value=label,
-                command=self._on_ocr_backend_chosen,
-            )
-        backend_label = next(
-            (lbl for lbl, code in self._ocr_backend_by_label.items() if code == self.settings.ocr_backend),
-            t.ocr_backend_auto,
-        )
-        self.ocr_backend_var.set(backend_label)
-        more_menu.add_cascade(label=t.ocr_backend, menu=ocr_sub)
         more_menu.add_command(label=t.open_logs, command=self._open_logs)
         more_menu.add_command(label=t.firewall_menu, command=self._allow_phone_access)
         more_menu.add_command(label=t.check_updates, command=self._check_updates)
@@ -526,6 +528,47 @@ class BridgeApp:
                 variable=self.debug_rois_var,
                 command=self._on_debug_rois_toggle,
             )
+            # Dev-only: legacy Messages clipboard / local OCR backends.
+            more_menu.add_separator()
+            more_menu.add_command(label=t.test_clipboard, command=self._test_clipboard)
+            more_menu.add_command(label=t.setup_tesseract, command=self._setup_tesseract)
+            more_menu.add_command(label=t.ocr_packs, command=self._ocr_packs_clicked)
+            ocr_sub = tk.Menu(
+                more_menu,
+                tearoff=0,
+                bg=PANEL,
+                fg=FG,
+                activebackground=ACCENT,
+                activeforeground="#ffffff",
+                bd=0,
+                font=("Segoe UI", 10),
+            )
+            self._ocr_backend_by_label = {
+                "OCR.space": "ocrspace",
+                t.ocr_backend_auto: "auto",
+                t.ocr_backend_windows: "windows",
+                t.ocr_backend_tesseract: "tesseract",
+            }
+            for label, code in self._ocr_backend_by_label.items():
+                ocr_sub.add_radiobutton(
+                    label=label,
+                    variable=self.ocr_backend_var,
+                    value=label,
+                    command=self._on_ocr_backend_chosen,
+                )
+            backend_label = next(
+                (
+                    lbl
+                    for lbl, code in self._ocr_backend_by_label.items()
+                    if code == self.settings.ocr_backend
+                ),
+                "OCR.space",
+            )
+            self.ocr_backend_var.set(backend_label)
+            more_menu.add_cascade(label=t.ocr_backend, menu=ocr_sub)
+        else:
+            self._ocr_backend_by_label = {"OCR.space": "ocrspace"}
+            self.ocr_backend_var.set("OCR.space")
         more_menu.add_separator()
         more_menu.add_command(label=t.uninstall, command=self._uninstall)
         self.btn_more.configure(menu=more_menu)
@@ -576,14 +619,31 @@ class BridgeApp:
             indicatoron=False,
         )
 
+    def _language_label(self, code: str) -> str:
+        if code == "uk":
+            return self.strings.lang_uk
+        if code == "ru":
+            return self.strings.lang_ru
+        return self.strings.lang_en
+
+    def _on_ocr_engine_chosen(self, _event=None) -> None:
+        from .settings import update_settings
+
+        label = self.ocr_engine_var.get()
+        engine = 3 if label == self.strings.ocr_engine_3 else 2
+        if engine == int(self.settings.ocr_space_engine):
+            return
+        self.settings = update_settings(ocr_space_engine=engine)
+        log.info("OCR.space engine set to %s", engine)
+
     def _on_language_chosen(self, _event=None) -> None:
         selected = self.language_var.get()
-        language = "uk" if selected in (EN.lang_uk, UK.lang_uk) else "en"
+        language = app_language_code(selected)
         if language == self.settings.language:
             return
         self.settings = update_settings(language=language)
         self.strings = strings_for(language)
-        self.language_var.set(self.strings.lang_uk if language == "uk" else self.strings.lang_en)
+        self.language_var.set(self._language_label(language))
         was_enabled = self.settings.enabled
         self._build_ui()
         self.enabled_var.set(was_enabled)
@@ -654,17 +714,61 @@ class BridgeApp:
             return
         self._dev_unlocked = True
         messagebox.showinfo(PRODUCT_NAME, self.strings.dev_unlocked)
+        from .ocr_quota import subscribe
+
+        subscribe(self._apply_quota_label)
         # Rebuild More menu so calibrator appears.
         self._build_ui()
 
     def _open_roi_calibrator(self) -> None:
         if not self._dev_unlocked:
             return
-        from .roi_calibrator_ui import RoiCalibrator
+        from .parse_zone_ui import ParseZoneEditor
 
-        if self._roi_calibrator is None or not self._roi_calibrator.running:
-            self._roi_calibrator = RoiCalibrator(self.root)
-        self._roi_calibrator.open()
+        editor = getattr(self, "_parse_zone_editor", None)
+        if editor is None:
+            editor = ParseZoneEditor(self.root, on_publish=self._publish_checked_report)
+            self._parse_zone_editor = editor
+        else:
+            editor._on_publish = self._publish_checked_report
+        editor.open()
+
+    def _publish_checked_report(self, report) -> None:
+        published = self.agent.store.publish(report)
+        log.info(
+            "zone check sent to phone RP=%s SL=%s published=%s",
+            report.research_points,
+            report.silver_lions,
+            published,
+        )
+
+    def _apply_quota_label(self) -> None:
+        if not self._dev_unlocked or self._quota_var is None:
+            return
+        from .ocr_quota import format_dev_quota
+
+        text = format_dev_quota(self.settings.language)
+
+        def paint() -> None:
+            if self._quota_var is not None:
+                self._quota_var.set(text)
+
+        try:
+            self.root.after(0, paint)
+        except tk.TclError:
+            pass
+
+    def _refresh_quota_remote(self) -> None:
+        if not self._dev_unlocked:
+            return
+
+        def work() -> None:
+            from .ocr_quota import refresh_remote
+
+            refresh_remote()
+            self._apply_quota_label()
+
+        threading.Thread(target=work, name="ocr-quota", daemon=True).start()
 
     def _on_debug_rois_toggle(self) -> None:
         if not self._dev_unlocked:
@@ -1140,7 +1244,7 @@ class BridgeApp:
                 try:
                     from .wt_messages_ui import capture_clipboard_battle_report
 
-                    report, reason = capture_clipboard_battle_report()
+                    report, _refreshed, reason = capture_clipboard_battle_report()
                 except Exception as exc:  # noqa: BLE001
                     reason = str(exc)
 
@@ -1150,9 +1254,9 @@ class BridgeApp:
                         self._roi_overlay.resume()
                     except Exception:  # noqa: BLE001
                         pass
+                    # Stay withdrawn until the dialog — avoid lift/focus fighting WT.
                     try:
                         self.root.deiconify()
-                        self.root.lift()
                     except tk.TclError:
                         pass
                     if report is None:
@@ -1172,6 +1276,11 @@ class BridgeApp:
                             sl=report.silver_lions,
                             outcome=outcome,
                             conf=report.confidence,
+                            provisional=(
+                                t.outcome_provisional
+                                if report.provisional
+                                else t.outcome_final
+                            ),
                         ),
                     )
 
@@ -1339,7 +1448,7 @@ class BridgeApp:
                     without=_hit(raw.get("without")),
                     with_premium=_hit(raw.get("with")),
                 )
-                probe_text = probe.format_lines(uk=(self.settings.language == "uk"))
+                probe_text = probe.format_lines(language=self.settings.language)
         except Exception:  # noqa: BLE001
             probe_text = ""
 
@@ -1605,6 +1714,9 @@ class BridgeApp:
         try:
             if self._roi_calibrator is not None:
                 self._roi_calibrator.close()
+            editor = getattr(self, "_parse_zone_editor", None)
+            if editor is not None:
+                editor.close()
         except Exception:  # noqa: BLE001
             pass
         try:

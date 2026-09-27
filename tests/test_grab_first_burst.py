@@ -116,5 +116,51 @@ def test_grab_first_stops_early_after_settle(monkeypatch, tmp_path):
         RuntimeConfig(frames=5, grab_frame_gap=0.0, capture_delay_sec=0.0)
     )
     rt._capture_burst()
-    # First OCR starts settle streak; second publishes → stop (not all 5).
+    # First OCR starts the streak; the next identical decode publishes and stops.
     assert ocr_n["n"] == 2
+
+
+def test_six_different_shots_are_not_published(monkeypatch, tmp_path):
+    pool = [_frame((i, 0, 0)) for i in range(6)]
+
+    def fake_grab(*, focus=False, require_foreground=True):
+        return pool.pop(0) if pool else None
+
+    ocr_n = {"n": 0}
+
+    def fake_ocr(frame, **kwargs):
+        ocr_n["n"] += 1
+        n = ocr_n["n"]
+        return b"png", [("roi:calib-p1", f"Без преміума {100 + n} {5000 + n}")]
+
+    monkeypatch.setattr("lockon_bridge.runtime.grab_wt_client_image", fake_grab)
+    monkeypatch.setattr("lockon_bridge.runtime.ocr_saved_frame", fake_ocr)
+    monkeypatch.setattr("lockon_bridge.ocr_isolate.PersistentOcrWorker", _FakeWorker)
+    monkeypatch.setattr("lockon_bridge.runtime.last_capture_meta", lambda: None)
+    monkeypatch.setattr("lockon_bridge.paths.data_root", lambda: tmp_path)
+    _patch_stable_pixels(monkeypatch)
+
+    published: list[BattleReport] = []
+    rt = BridgeRuntime(RuntimeConfig(frames=6, grab_frame_gap=0.0, capture_delay_sec=0.0))
+    rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
+    rt._capture_burst()
+    assert published == []
+
+
+def test_neighbor_match_publishes_and_stops(monkeypatch, tmp_path):
+    from lockon_bridge.runtime import consecutive_reward_verdict
+
+    assert consecutive_reward_verdict(
+        [(1, 2), (1, 2)],
+        final=False,
+    ) == ("success", (1, 2))
+    series = [(10, 20), (11, 21), (12, 22), (13, 23), (14, 24), (15, 25)]
+    assert consecutive_reward_verdict(series, final=True)[0] == "failure"
+    assert consecutive_reward_verdict([(1, 1), (2, 2)], final=False)[0] == "continue"
+
+
+def test_default_shot_gaps_stretch_the_tail():
+    from lockon_bridge.runtime import shot_gap_after
+
+    assert [shot_gap_after(i) for i in range(5)] == [0.5, 0.65, 0.65, 1.0, 2.0]
+    assert shot_gap_after(0, frames=6, uniform=0.0) == 0.0

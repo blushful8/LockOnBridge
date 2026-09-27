@@ -28,6 +28,8 @@ _release_backup/
 **/*_credentials.*
 **/*_token.txt
 **/*_token.json
+ocr_space.bin
+ocr_usage.json
 secrets/
 .secrets/
 tokens/

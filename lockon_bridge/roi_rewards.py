@@ -834,8 +834,34 @@ class DualColumnProbe:
             "banked": _hit(banked),
         }
 
-    def format_lines(self, *, uk: bool = True) -> str:
-        if uk:
+    def format_lines(self, *, uk: bool = True, language: str | None = None) -> str:
+        lang = (language or ("uk" if uk else "en")).lower()
+        if lang.startswith("ru"):
+            pref = "С премиумом" if self.prefer_with else "Без премиума"
+            lines = [f"Настройка Bridge: банк колонки «{pref}»", ""]
+
+            def _fmt_ru(label: str, hit: ColumnProbeHit | None) -> str:
+                if hit is None:
+                    return f"{label}: не считано (нет calib-пары)"
+                return (
+                    f"{label}: пара #{hit.pair_index + 1} -> "
+                    f"RP {hit.research_points} / SL {hit.silver_lions}"
+                )
+
+            lines.append(_fmt_ru("Без премиума", self.without))
+            lines.append(_fmt_ru("С премиумом", self.with_premium))
+            banked = self.banked()
+            lines.append("")
+            if banked is None:
+                lines.append(f"В отчёт пойдёт: (нет) — колонка «{pref}» пустая")
+            else:
+                lines.append(
+                    f"В отчёт пойдёт: «{pref}» пара #{banked.pair_index + 1} -> "
+                    f"RP {banked.research_points} / SL {banked.silver_lions}"
+                )
+            return "\n".join(lines)
+
+        if lang.startswith("uk") or (language is None and uk):
             pref = "З преміумом" if self.prefer_with else "Без преміуму"
             lines = [f"Налаштування Bridge: банк колонки «{pref}»", ""]
 

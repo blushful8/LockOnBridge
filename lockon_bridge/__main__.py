@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=None, help="HTTP port for the phone")
     parser.add_argument("--game-host", default="127.0.0.1")
     parser.add_argument("--game-port", type=int, default=8111)
-    parser.add_argument("--frames", type=int, default=5, help="Screenshots after hangar")
+    parser.add_argument("--frames", type=int, default=6, help="Screenshots after hangar")
     parser.add_argument("--frame-gap", type=float, default=1.2, help="Seconds between frames")
     parser.add_argument(
         "--poll",
@@ -251,14 +251,14 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         time.sleep(wait_sec)
-        report, reason = capture_clipboard_battle_report()
+        report, _refreshed, reason = capture_clipboard_battle_report()
         if report is None:
             print(f"clipboard results failed: {reason}", file=sys.stderr)
             return 1
         print(
             f"clipboard results OK RP={report.research_points} "
             f"SL={report.silver_lions} outcome={report.outcome} "
-            f"conf={report.confidence:.2f}"
+            f"provisional={report.provisional} conf={report.confidence:.2f}"
         )
         return 0
 

@@ -22,6 +22,11 @@ log = logging.getLogger("lockon_bridge.ocr_isolate")
 _WORKER_ENV = "LOCKON_OCR_WORKER"
 
 
+def _json_line(payload: dict[str, Any]) -> str:
+    """ASCII JSON line. A cp1251 Windows pipe must not destroy Ukrainian OCR text."""
+    return json.dumps(payload, ensure_ascii=True) + "\n"
+
+
 def _unlink_quiet(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -479,6 +484,41 @@ def _run_ocr_on_image_file(
         else bool(settings.has_premium_account)
     )
 
+    breadcrumb("ocr-worker start")
+    mode_l = (use_backend or "ocrspace").strip().lower()
+    if mode_l in ("ocr.space", "cloud", "auto", ""):
+        mode_l = "ocrspace"
+    if mode_l == "ocrspace":
+        from .layout_ocr import ocrspace_layout_variants
+
+        breadcrumb("ocr-worker parse-zone")
+        try:
+            variants = ocrspace_layout_variants(image, max_crops=1)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("parse-zone OCR failed in worker: %s", exc)
+            variants = []
+        payload = {
+            "ok": True,
+            "variants": [[tag, text] for tag, text in variants],
+            "roi_confident": False,
+        }
+        parsed_best = choose_best_report(
+            [
+                (text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=use_prefer))
+                for _tag, text in variants
+            ],
+            prefer_premium_rewards=use_prefer,
+        )
+        if parsed_best is not None:
+            payload["rp"] = parsed_best[1].research_points
+            payload["sl"] = parsed_best[1].silver_lions
+            payload["confidence"] = parsed_best[1].confidence
+        tmp = out_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(out_path)
+        breadcrumb(f"ocr-worker zone done variants={len(variants)}")
+        return payload
+
     breadcrumb("ocr-worker extract_roi")
     variants: list[tuple[str, str]] = []
     try:
@@ -592,7 +632,7 @@ def ocr_worker_loop_main() -> int:
     install_crash_guard()
     breadcrumb("ocr-worker-loop begin")
     # Signal ready after imports/crash guard so the parent can skip cold wait later.
-    sys.stdout.write(json.dumps({"ready": True}) + "\n")
+    sys.stdout.write(_json_line({"ready": True}))
     sys.stdout.flush()
 
     for raw in sys.stdin:
@@ -602,9 +642,7 @@ def ocr_worker_loop_main() -> int:
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
-            sys.stdout.write(
-                json.dumps({"ok": False, "error": "bad json", "variants": []}) + "\n"
-            )
+            sys.stdout.write(_json_line({"ok": False, "error": "bad json", "variants": []}))
             sys.stdout.flush()
             continue
         if not isinstance(req, dict):
@@ -615,8 +653,7 @@ def ocr_worker_loop_main() -> int:
             break
         if cmd != "ocr":
             sys.stdout.write(
-                json.dumps({"ok": False, "error": f"unknown cmd {cmd}", "variants": []})
-                + "\n"
+                _json_line({"ok": False, "error": f"unknown cmd {cmd}", "variants": []})
             )
             sys.stdout.flush()
             continue
@@ -652,12 +689,12 @@ def ocr_worker_loop_main() -> int:
                 skip_expensive_fallback=bool(req.get("skip_expensive_fallback")),
             )
             payload["id"] = req.get("id")
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            sys.stdout.write(_json_line(payload))
             sys.stdout.flush()
         except Exception as exc:  # noqa: BLE001
             log.exception("ocr-worker-loop request failed")
             sys.stdout.write(
-                json.dumps(
+                _json_line(
                     {
                         "ok": False,
                         "error": str(exc),
@@ -665,7 +702,6 @@ def ocr_worker_loop_main() -> int:
                         "id": req.get("id"),
                     }
                 )
-                + "\n"
             )
             sys.stdout.flush()
     return 0

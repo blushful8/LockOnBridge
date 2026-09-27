@@ -7,6 +7,7 @@ client frame — without-premium cells + «Всього» row, cross-checked.
 Fallback: full-panel OCR text with label-driven mapping (not absolute pixels).
 
 Canonical priority (see parse_rewards_from_ocr_text):
+  0. «Зароблено / Earned» line (OCR.space post-battle settle)
   1. Premium table → *without* column (4-cell with/without grid)
   2. «Всього» / Total row (SL then RP, optional vehicle / free RP)
   3. Modification-research RP with Total SL when table cells are mangled
@@ -47,6 +48,10 @@ class BattleReport:
     confidence: float
     source: str = "ocr"
     id: str = ""
+    # True when Messages dump has rewards but no Victory/Defeat yet (match still live).
+    provisional: bool = False
+    # WT «Сесія: …» / Session id when present in Messages dump.
+    session_id: str = ""
 
     def to_json(self) -> dict[str, Any]:
         payload = {
@@ -58,6 +63,8 @@ class BattleReport:
             "rawHash": self.raw_hash,
             "confidence": self.confidence,
             "source": self.source,
+            "provisional": bool(self.provisional),
+            "sessionId": self.session_id or "",
         }
         return payload
 
@@ -125,11 +132,230 @@ def looks_like_desktop_noise(text: str) -> bool:
     return noise >= 2 and hints == 0
 
 
+# Post-battle results header: «Зароблено: 11 849, 3 012» (OCR may garble the label).
+_EARNED_LINE = re.compile(
+    r"(?i)(?:зароблено|заработано|earned|"
+    r"3apo[o0]?n?e?h?[o0]|zaro[bh]leno)",
+)
+
+# Column-split OCR.space often emits the label alone, then RP/SL on following lines.
+_WITHOUT_HEADER = re.compile(
+    r"(?i)(?:без\s*премі(?:ум[ау]?)?|without\s*premium|без\s*премиум)",
+)
+_TOTAL_LABEL = re.compile(
+    r"(?i)(?:всього|всего|total|bcboro|всьoro|bcьoro)",
+)
+
+
+def _deglue_icon_amount(value: int) -> int:
+    """
+    Strip a trailing bulb-icon ghost ``9`` on a *3-digit* reward cell.
+
+    ``5559`` → ``555``. Leaves real 4-digit totals ending in 9 (``1779``) alone
+    when callers only apply this after a failed plausible check.
+    """
+    if 1_000 <= value <= 9_999 and value % 10 == 9:
+        trimmed = value // 10
+        if 100 <= trimmed <= 999:
+            return trimmed
+    return value
+
+
+def _amounts_after_label(
+    text: str,
+    label: re.Pattern[str],
+    *,
+    window: int = 120,
+) -> list[int]:
+    """Currency-like ints in the text window immediately after ``label``."""
+    from .battle_msg_parse import _amounts_in_line
+
+    match = label.search(text)
+    if not match:
+        return []
+    chunk = text[match.end() : match.end() + window]
+    values: list[int] = []
+    for line in chunk.splitlines()[:8]:
+        values.extend(_amounts_in_line(line))
+    if len(values) >= 2:
+        return values
+    values.extend(_amounts_in_line(chunk.replace("\n", " ")))
+    return values
+
+
+def _pair_from_reward_grid_amounts(
+    amounts: list[int],
+    *,
+    prefer_with: bool,
+) -> tuple[int | None, int | None]:
+    """Map RP-with, RP-without, SL-with, SL-without onto one pair."""
+    if len(amounts) < 4:
+        return None, None
+    with_rp, without_rp, with_sl, without_sl = amounts[:4]
+    # Both research cells sit under both silver cells. Two RP columns must not
+    # be swapped into an RP/SL pair.
+    if max(with_rp, without_rp) >= min(with_sl, without_sl):
+        return None, None
+    rp, sl = (with_rp, with_sl) if prefer_with else (without_rp, without_sl)
+    if not _plausible_reward_pair(rp, sl):
+        return None, None
+    return rp, sl
+
+
+def _pair_from_team_place_grid(
+    text: str,
+    *,
+    prefer_with: bool,
+) -> tuple[int | None, int | None]:
+    """
+    Engine 3 reward grid after the team-place line.
+
+    Four amount-only lines, in order:
+      RP with premium, RP without, SL with premium, SL without.
+    """
+    from .battle_msg_parse import _amounts_in_line
+
+    place = re.compile(
+        r"(?:місце|место|micue|mict|place).{0,30}?\d{1,2}\s*$",
+        re.IGNORECASE,
+    )
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").splitlines()]
+    for index, line in enumerate(lines):
+        if not place.search(line):
+            continue
+        amounts: list[int] = []
+        for nxt in lines[index + 1 : index + 8]:
+            if not nxt:
+                continue
+            values = _amounts_in_line(nxt)
+            if len(values) != 1 or values[0] < _MIN_REWARD:
+                if amounts:
+                    break
+                continue
+            amounts.append(values[0])
+            if len(amounts) == 4:
+                break
+        if len(amounts) < 4:
+            continue
+        rp, sl = _pair_from_reward_grid_amounts(amounts, prefer_with=prefer_with)
+        if rp is not None and sl is not None:
+            return rp, sl
+    return None, None
+
+
+def _pair_from_four_amount_lines(
+    text: str,
+    *,
+    prefer_with: bool,
+) -> tuple[int | None, int | None]:
+    """
+    Same four-cell grid when the team-place line is still missing.
+
+    OCR often prints the header and the four amounts while «Ваше місце» has
+    not been painted yet.
+    """
+    from .battle_msg_parse import _amounts_in_line
+
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").splitlines()]
+    run: list[int] = []
+    for line in lines:
+        if not line:
+            continue
+        values = _amounts_in_line(line)
+        if len(values) == 1 and values[0] >= _MIN_REWARD:
+            run.append(values[0])
+            if len(run) > 4:
+                run = run[-4:]
+            if len(run) == 4:
+                rp, sl = _pair_from_reward_grid_amounts(run, prefer_with=prefer_with)
+                if rp is not None and sl is not None:
+                    return rp, sl
+            continue
+        run = []
+    return None, None
+
+
+def _pair_from_column_split_headers(text: str) -> tuple[int | None, int | None]:
+    """
+    Recover (rp, sl) when OCR.space splits the premium / Total columns.
+
+    Typical Engine-2 dump::
+
+        Без преміума
+        5559
+        2 040
+
+        Всього
+        555
+        2040
+    """
+    flat = text.replace("\r\n", "\n")
+
+    def _pick(amounts: list[int]) -> tuple[int | None, int | None]:
+        if len(amounts) < 2:
+            return None, None
+        if len(amounts) >= 4 and _pair_from_reward_grid_amounts(
+            amounts[:4], prefer_with=False
+        ) != (None, None):
+            return None, None
+        rp, sl = amounts[0], amounts[1]
+        rp2 = _deglue_icon_amount(rp)
+        # Prefer deglued RP when a trailing bulb ``9`` is likely (5559/3839)
+        # and SL clearly dominates the short RP.
+        if (
+            rp2 != rp
+            and _plausible_reward_pair(rp2, sl)
+            and sl >= rp2 * 2
+        ):
+            return rp2, sl
+        if _plausible_reward_pair(rp, sl):
+            return rp, sl
+        if _plausible_reward_pair(sl, rp):
+            return sl, rp
+        return None, None
+
+    # Only the without-premium header is safe for column-split recovery.
+    # «Всього» multi-amount rows stay with ``_pair_from_total_block``.
+    without = _amounts_after_label(flat, _WITHOUT_HEADER, window=100)
+    return _pick(without)
+
+
+
 def _normalize_results_text(text: str) -> str:
     """Keep newlines (label columns), collapse spaces, drop team-place before the grid."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[^\S\n]+", " ", text)
     return _TEAM_PLACE.sub(" ", text)
+
+
+def _pair_from_earned_line(text: str) -> tuple[int | None, int | None]:
+    """
+    SL then RP from the «Зароблено / Earned» summary line.
+
+    Parse amounts only *after* the label so a trailing digit in a garbled
+    label (``3apooneH0:11 849``) is not eaten as a ``0:11`` time token.
+    Returns ``(rp, sl)``.
+    """
+    from .battle_msg_parse import _amounts_in_line
+
+    for line in text.splitlines():
+        match = _EARNED_LINE.search(line)
+        if not match:
+            continue
+        tail = re.sub(r"^[\s:=：\-]+", "", line[match.end() :])
+        amounts = _amounts_in_line(tail)
+        if len(amounts) < 2:
+            continue
+        # Skip tiny leading junk (row counts) when 3+ amounts remain.
+        if len(amounts) >= 3 and amounts[0] < 40:
+            amounts = amounts[1:]
+        sl, rp = amounts[0], amounts[1]
+        # Earned summary: SL is usually the larger bank; reject table crumbs.
+        if sl < 200 or rp < 50:
+            continue
+        if _plausible_reward_pair(rp, sl):
+            return rp, sl
+    return None, None
 
 
 def _to_int(raw: str) -> int | None:
@@ -658,9 +884,45 @@ def parse_rewards_from_ocr_text(
     rp = sl = None
     premium_hit = False
     reward_hit = False
+    earned_hit = False
+    place_hit = False
+
+    # --- 0. Team-place grid (Engine 3 zone): with RP, without RP, with SL, without SL ---
+    place_rp, place_sl = _pair_from_team_place_grid(
+        text, prefer_with=bool(prefer_premium_rewards)
+    )
+    if _plausible_reward_pair(place_rp, place_sl):
+        rp, sl = place_rp, place_sl
+        place_hit = True
+        premium_hit = True
+    if not place_hit:
+        grid_rp, grid_sl = _pair_from_four_amount_lines(
+            text, prefer_with=bool(prefer_premium_rewards)
+        )
+        if _plausible_reward_pair(grid_rp, grid_sl):
+            rp, sl = grid_rp, grid_sl
+            place_hit = True
+            premium_hit = True
+
+    # --- 0a. «Зароблено / Earned» (OCR.space settle) ---
+    if not place_hit:
+        earn_rp, earn_sl = _pair_from_earned_line(cleaned)
+        if _plausible_reward_pair(earn_rp, earn_sl):
+            rp, sl = earn_rp, earn_sl
+            earned_hit = True
+            premium_hit = True  # treat as authoritative bank pair
+
+    # --- 0b. Column-split «Без преміума» / «Всього» (OCR.space overlay dumps) ---
+    if not place_hit and not earned_hit:
+        col_rp, col_sl = _pair_from_column_split_headers(cleaned)
+        if _plausible_reward_pair(col_rp, col_sl):
+            rp, sl = col_rp, col_sl
+            premium_hit = True
 
     # --- 1. Premium comparison table ---
-    if WITHOUT_PREMIUM.search(cleaned) or WITH_PREMIUM.search(cleaned):
+    if not earned_hit and not premium_hit and (
+        WITHOUT_PREMIUM.search(cleaned) or WITH_PREMIUM.search(cleaned)
+    ):
         prem_rp, prem_sl = _pair_from_premium_columns(
             cleaned,
             prefer_with=prefer_premium_rewards,
@@ -671,7 +933,10 @@ def parse_rewards_from_ocr_text(
 
     # --- 2. «Всього» / Total — fill gaps only. Never replace a usable premium-table
     # header pair (free research / partial «Всього» RP is a common false bank).
-    tot_rp, tot_sl = _pair_from_total_block(cleaned)
+    if place_hit:
+        tot_rp, tot_sl = None, None
+    else:
+        tot_rp, tot_sl = _pair_from_total_block(cleaned)
     if _plausible_reward_pair(tot_rp, tot_sl):
         if prefer_premium_rewards and premium_hit:
             pass  # keep with-premium table pair
@@ -742,7 +1007,7 @@ def parse_rewards_from_ocr_text(
         sl = sl if sl is not None else tot_sl
 
     # Deglue OCR (29128 → 2912) when the shorter token is also present.
-    if rp is not None and sl is not None:
+    if not place_hit and rp is not None and sl is not None:
         rp, sl = _prefer_deglued_pair(cleaned, rp, sl)
 
     # Require a plausible pair — never publish RP=1 / SL=0 junk or swapped columns.
@@ -767,7 +1032,9 @@ def parse_rewards_from_ocr_text(
 
     digest = hashlib.sha256(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:32]
     confidence = 0.5
-    if premium_hit:
+    if place_hit or earned_hit:
+        confidence = 0.92
+    elif premium_hit:
         confidence += 0.2
     if reward_hit:
         confidence += 0.15
@@ -783,6 +1050,7 @@ def parse_rewards_from_ocr_text(
         outcome=outcome,
         raw_hash=digest,
         confidence=min(1.0, confidence),
+        source="ocrspace" if place_hit or earned_hit else "ocr",
     )
 
 

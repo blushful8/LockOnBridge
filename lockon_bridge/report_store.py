@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import uuid
+from dataclasses import replace
 from typing import Any, Optional
 
 from .ocr_parse import BattleReport
@@ -112,16 +113,7 @@ class ReportStore:
     def _ensure_id(self, report: BattleReport) -> BattleReport:
         if report.id:
             return report
-        return BattleReport(
-            captured_at_epoch_millis=report.captured_at_epoch_millis,
-            research_points=report.research_points,
-            silver_lions=report.silver_lions,
-            outcome=report.outcome,
-            raw_hash=report.raw_hash,
-            confidence=report.confidence,
-            source=report.source,
-            id=str(uuid.uuid4()),
-        )
+        return replace(report, id=str(uuid.uuid4()))
 
     def _prepend_unlocked(self, report: BattleReport) -> None:
         report = self._ensure_id(report)
@@ -175,6 +167,41 @@ class ReportStore:
             self._save_disk_unlocked()
             return True
 
+    def replace_by_id(self, report_id: str, report: BattleReport) -> bool:
+        """
+        Replace an existing report (same id) in place — used when a provisional
+        Messages dump later gains Victory/Defeat / final SL+RP.
+        Keeps buffer order; moves the updated entry to the front.
+        """
+        rid = (report_id or "").strip()
+        if not rid:
+            return False
+        with self._lock:
+            self._refresh_from_disk_unlocked()
+            idx = next((i for i, r in enumerate(self._reports) if r.id == rid), None)
+            if idx is None:
+                return False
+            old = self._reports[idx]
+            updated = replace(
+                self._ensure_id(report),
+                id=old.id,
+            )
+            rest = [r for i, r in enumerate(self._reports) if i != idx]
+            self._reports = [updated] + rest
+            self._reports = self._reports[:MAX_REPORTS]
+            self._seen_hashes.discard(old.raw_hash)
+            self._seen_hashes.add(updated.raw_hash)
+            self._save_disk_unlocked()
+            log.info(
+                "ReportStore: replaced id=%s… provisional→%s RP=%s SL=%s outcome=%s",
+                rid[:8],
+                updated.provisional,
+                updated.research_points,
+                updated.silver_lions,
+                updated.outcome,
+            )
+            return True
+
     def latest(self) -> Optional[BattleReport]:
         with self._lock:
             self._refresh_from_disk_unlocked()
@@ -195,15 +222,22 @@ def _report_from_json(raw: Any) -> BattleReport | None:
         if rp < 0 or sl < 0:
             return None
         report_id = str(raw.get("id") or "").strip() or str(uuid.uuid4())
+        provisional = bool(raw.get("provisional", False))
+        outcome = str(raw.get("outcome") or "undecided")
+        if outcome == "undecided" and "provisional" not in raw:
+            # Legacy disk rows without the flag — treat undecided as provisional.
+            provisional = True
         return BattleReport(
             captured_at_epoch_millis=int(raw.get("capturedAtEpochMillis") or 0),
             research_points=rp,
             silver_lions=sl,
-            outcome=str(raw.get("outcome") or "undecided"),
+            outcome=outcome,
             raw_hash=str(raw.get("rawHash") or "disk"),
             confidence=float(raw.get("confidence") or 0.7),
             source=str(raw.get("source") or "ocr"),
             id=report_id,
+            provisional=provisional,
+            session_id=str(raw.get("sessionId") or ""),
         )
     except (TypeError, ValueError):
         return None

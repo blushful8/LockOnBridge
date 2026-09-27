@@ -285,20 +285,34 @@ def ocr_all_backends(
     png: bytes,
     *,
     wt_ui_language: str = "uk",
-    backend: str = "auto",
+    backend: str = "ocrspace",
 ) -> list[tuple[str, str]]:
     """
-    backend: auto | windows | tesseract
-    auto = Windows packs + Tesseract (if installed)
+    backend: ocrspace | auto | windows | tesseract
+
+    Shipping path is OCR.space only (``ocrspace`` / ``auto``). Local Windows /
+    Tesseract remain available only when explicitly selected.
     """
-    mode = (backend or "auto").strip().lower()
+    mode = (backend or "ocrspace").strip().lower()
+    if mode in ("ocr.space", "cloud"):
+        mode = "ocrspace"
     variants: list[tuple[str, str]] = []
-    if mode in ("auto", "windows"):
+    if mode in ("ocrspace", "auto"):
+        try:
+            from .ocr_space import ocr_space_variants
+
+            variants.extend(
+                ocr_space_variants(png, wt_ui_language=wt_ui_language)
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("OCR.space failed: %s", exc)
+        return variants
+    if mode == "windows":
         try:
             variants.extend(windows_ocr_variants(png))
         except Exception as exc:  # noqa: BLE001
             log.warning("Windows OCR failed: %s", exc)
-    if mode in ("auto", "tesseract"):
+    if mode == "tesseract":
         try:
             variants.extend(tesseract_ocr_variants(png, wt_ui_language))
         except Exception as exc:  # noqa: BLE001
@@ -309,22 +323,18 @@ def ocr_all_backends(
 def describe_ocr_status(wt_ui_language: str) -> str:
     lang = get_wt_language(wt_ui_language)
     parts: list[str] = []
-    from .capture import list_installed_ocr_languages
+    try:
+        from .ocr_space import active_ocr_engine, resolve_api_key
 
-    win = list_installed_ocr_languages()
-    parts.append("Windows OCR: " + (", ".join(t for t, _ in win) if win else "(none)"))
-    tess = find_tesseract_exe()
-    if tess is None:
-        parts.append("Tesseract: not installed")
-    else:
-        missing = missing_tessdata_for_wt(wt_ui_language)
-        parts.append(f"Tesseract: {tess}")
-        if missing:
-            parts.append(f"Missing tessdata for {lang.code}: {', '.join(missing)}")
+        key = resolve_api_key()
+        masked = (key[:4] + "…" + key[-2:]) if len(key) > 8 else "(set)"
+        if key == "helloworld":
+            parts.append("OCR.space: demo key (helloworld) — rate-limited")
         else:
-            parts.append(f"tessdata OK for {lang.code}: {', '.join(lang.tesseract_langs)}")
-    if lang.code == "uk":
-        parts.append(
-            "Note: Windows has no Ukrainian OCR pack; Tesseract ukr (or Russian Win OCR) is needed for real Cyrillic."
-        )
+            parts.append(f"OCR.space: key {masked}")
+        parts.append(f"OCR.space engine: {active_ocr_engine()} (Engine 3 is slower)")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"OCR.space: unavailable ({exc})")
+    parts.append(f"WT UI language hint: {lang.code} (API uses language=auto)")
+    parts.append("Local Windows/Tesseract: not used (ocrspace-only mode)")
     return "\n".join(parts)

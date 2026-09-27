@@ -21,16 +21,24 @@ class BridgeSettings:
     language: str = "en"
     # War Thunder UI language for OCR pack advice (en/uk/ru/…).
     wt_ui_language: str = "uk"
-    # auto | windows | tesseract
-    ocr_backend: str = "auto"
+    # auto | windows | tesseract | ocrspace — shipping default is OCR.space only.
+    ocr_backend: str = "ocrspace"
+    # Free key from https://ocr.space/ocrapi (stored in LocalAppData settings only).
+    ocr_space_api_key: str = ""
+    # OCR.space Engine 2 (faster) or Engine 3 (slower, sometimes clearer).
+    ocr_space_engine: int = 3
     # User already answered the OCR pack setup prompt.
     ocr_setup_done: bool = False
     # Phone preference: True → OCR the with-premium column (what a premium account banks).
     has_premium_account: bool = False
     # Developer: live transparent ROI overlay + annotated dumps.
     debug_show_rois: bool = False
-    # After battle: open Messages → Ctrl+C → parse (OCR is fallback).
-    use_clipboard_results: bool = True
+    # Messages navigation / Ctrl+C — off (does not touch the user's hangar UI).
+    use_clipboard_results: bool = False
+    # Post-battle grab-first OCR of the results screen (OCR.space).
+    allow_ocr_fallback: bool = True
+    # Messages panel OCR — unused while navigation is disabled.
+    allow_messages_panel_read: bool = False
     # Optional calibrated Messages envelope click (0..1 of WT content frame).
     # None / missing → use built-in multi-resolution NormPoint cluster.
     envelope_nx: float | None = None
@@ -52,14 +60,22 @@ class BridgeSettings:
         if idle > 600.0:
             idle = 600.0
         language = str(raw.get("language") or "").strip().lower()
-        if language not in ("en", "uk"):
+        if language not in ("en", "uk", "ru"):
             language = detect_system_language()
         wt_ui = str(raw.get("wt_ui_language") or language or "uk").strip().lower()
         if len(wt_ui) > 8:
             wt_ui = wt_ui[:8]
-        backend = str(raw.get("ocr_backend") or "auto").strip().lower()
-        if backend not in ("auto", "windows", "tesseract"):
-            backend = "auto"
+        backend = str(raw.get("ocr_backend") or "ocrspace").strip().lower()
+        if backend in ("ocr.space", "cloud"):
+            backend = "ocrspace"
+        if backend not in ("auto", "windows", "tesseract", "ocrspace"):
+            backend = "ocrspace"
+        try:
+            ocr_eng = int(raw.get("ocr_space_engine", 3))
+        except (TypeError, ValueError):
+            ocr_eng = 3
+        if ocr_eng not in (2, 3):
+            ocr_eng = 3
         # Default True when key missing (previous builds always registered on enable).
         if "autostart_with_windows" in raw:
             autostart = bool(raw.get("autostart_with_windows"))
@@ -77,6 +93,20 @@ class BridgeSettings:
                 return None
             return v
 
+        # Soft-migrate: OCR.space settle path — never navigate the hangar.
+        if backend == "ocrspace":
+            use_clip = False
+            allow_ocr = True
+        else:
+            if "use_clipboard_results" in raw:
+                use_clip = bool(raw.get("use_clipboard_results"))
+            else:
+                use_clip = False
+            if "allow_ocr_fallback" in raw:
+                allow_ocr = bool(raw.get("allow_ocr_fallback"))
+            else:
+                allow_ocr = True
+
         return cls(
             enabled=bool(raw.get("enabled", False)),
             port=port,
@@ -87,10 +117,14 @@ class BridgeSettings:
             language=language,
             wt_ui_language=wt_ui or "uk",
             ocr_backend=backend,
+            ocr_space_api_key=str(raw.get("ocr_space_api_key") or ""),
+            ocr_space_engine=ocr_eng,
             ocr_setup_done=bool(raw.get("ocr_setup_done", False)),
             has_premium_account=bool(raw.get("has_premium_account", False)),
             debug_show_rois=bool(raw.get("debug_show_rois", False)),
-            use_clipboard_results=bool(raw.get("use_clipboard_results", True)),
+            use_clipboard_results=use_clip,
+            allow_ocr_fallback=allow_ocr,
+            allow_messages_panel_read=bool(raw.get("allow_messages_panel_read", False)),
             envelope_nx=_opt_norm("envelope_nx"),
             envelope_ny=_opt_norm("envelope_ny"),
             autostart_with_windows=autostart,

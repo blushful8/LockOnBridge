@@ -282,7 +282,9 @@ def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path 
     if save_dump:
         dump_dir = log_dir()
         dump_dir.mkdir(parents=True, exist_ok=True)
-        (dump_dir / "last_ocr.txt").write_text(dump_text or "", encoding="utf-8")
+        from .runtime import write_last_ocr_dump
+
+        write_last_ocr_dump(dump_text or "")
         if probe is not None:
             import json
 

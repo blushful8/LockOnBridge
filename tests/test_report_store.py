@@ -42,3 +42,38 @@ def test_dedupe_same_hash(tmp_path: Path, monkeypatch):
     assert store.publish(_report(1708, 15902, 100, "same"))
     assert store.publish(_report(1708, 15902, 200, "same")) is False
     assert len(store.list_reports()) == 1
+
+
+def test_replace_provisional_by_id(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("lockon_bridge.report_store.data_root", lambda: tmp_path)
+    store = ReportStore()
+    first = BattleReport(
+        captured_at_epoch_millis=100,
+        research_points=300,
+        silver_lions=1200,
+        outcome="undecided",
+        raw_hash="prov1",
+        confidence=0.9,
+        provisional=True,
+        session_id="sessaa",
+    )
+    assert store.publish(first)
+    rid = store.latest().id  # type: ignore[union-attr]
+    final = BattleReport(
+        captured_at_epoch_millis=200,
+        research_points=350,
+        silver_lions=1500,
+        outcome="victory",
+        raw_hash="final1",
+        confidence=0.98,
+        provisional=False,
+        session_id="sessaa",
+    )
+    assert store.replace_by_id(rid, final)
+    latest = store.latest()
+    assert latest is not None
+    assert latest.id == rid
+    assert latest.research_points == 350
+    assert latest.outcome == "victory"
+    assert latest.provisional is False
+    assert latest.session_id == "sessaa"

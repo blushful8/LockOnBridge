@@ -21,12 +21,59 @@ from .phase import read_phase
 from .report_store import ReportStore
 from .roi_auto_learn import maybe_auto_learn_pair
 from .server import serve
-from .settle import LeanRoiFrameGate, SettleConfig, SettleTracker
 
 log = logging.getLogger("lockon_bridge")
 
+def shot_gap_after(index: int, *, frames: int = 6, uniform: float = 0.5) -> float:
+    """Pause after a 0-based shot before the next one.
+
+    Default six-shot run: 0.5 s, then 0.65 s, 1 s, and 2 s before the last shot.
+    """
+    if frames != 6 or uniform != 0.5:
+        return uniform
+    if index <= 0:
+        return 0.5
+    if index <= 2:
+        return 0.65
+    if index <= 3:
+        return 1.0
+    return 2.0
+
+
+def consecutive_reward_verdict(
+    pairs: list[tuple[int, int] | None],
+    *,
+    final: bool,
+) -> tuple[str, tuple[int, int] | None]:
+    """
+    Compare decoded rewards of consecutive screenshots.
+
+    The first equal neighbor pair is a success and can be sent immediately.
+    A mismatch before the last slot continues. If the last two still differ,
+    the result cannot be guaranteed.
+    """
+    if len(pairs) < 2:
+        return ("failure" if final else "continue"), None
+    last = len(pairs) - 1
+    for index in range(1, len(pairs)):
+        left, right = pairs[index - 1], pairs[index]
+        if left is not None and right is not None and left == right:
+            return "success", right
+        if final and index == last:
+            return "failure", None
+    return "continue", None
+
 # Align with LockOn Android BridgeRepository default minConfidence.
 _MIN_CONFIDENT_REPORT = 0.7
+_MAX_PROVISIONAL_ATTEMPTS = 5
+
+
+@dataclass
+class _PendingProvisional:
+    report_id: str
+    session_id: str
+    raw_hash: str
+    attempts: int = 0
 
 
 @dataclass
@@ -35,10 +82,9 @@ class RuntimeConfig:
     port: int = 8112
     game_host: str = "127.0.0.1"
     game_port: int = 8111
-    # Hard ceiling: ideally settle in 2–3 frames; never more than 5 screenshots.
-    frames: int = 5
-    # Phase A: gap between rapid grabs (OCR happens later on the buffer).
-    grab_frame_gap: float = 0.18
+    # Six screenshots, half a second apart. Publish only when two neighbors match.
+    frames: int = 6
+    grab_frame_gap: float = 0.5
     # Idle gap *after* OCR finishes — legacy sequential path / CLI; grab-first ignores for OCR.
     frame_gap: float = 0.25
     # First frames: almost no idle; catch quick results closes.
@@ -72,6 +118,7 @@ class BridgeRuntime:
         self._watch_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._watch_stop = threading.Event()
+        self._pending_provisional: list[_PendingProvisional] = []
 
     @property
     def running(self) -> bool:
@@ -195,49 +242,100 @@ class BridgeRuntime:
                 self._watch_wait(hangar)
 
     def _capture_burst(self) -> None:
-        """Clipboard Messages path first; grab-first OCR as fallback."""
+        """Post-battle grab-first OCR (OCR.space) — no hangar navigation."""
         from .crashguard import breadcrumb
 
-        try:
-            from .settings import load_settings as _ls
+        breadcrumb("capture_burst ocrspace begin")
+        self._capture_burst_ocr()
 
-            use_clip = bool(_ls().use_clipboard_results)
-        except Exception:  # noqa: BLE001
-            use_clip = True
-
-        if use_clip:
-            breadcrumb("capture_burst clipboard-msg begin")
-            log.info("battle ended — trying Messages clipboard results")
-            try:
-                from .wt_messages_ui import capture_clipboard_battle_report
-
-                report, reason = capture_clipboard_battle_report(
-                    hangar_settle_sec=0.45,
+    def _publish_capture_report(self, report) -> None:
+        """Publish top capture; track / clear provisional pending by session."""
+        sid = (getattr(report, "session_id", None) or "").lower()
+        pending = next(
+            (p for p in self._pending_provisional if p.session_id and p.session_id == sid),
+            None,
+        )
+        if pending is not None and not report.provisional:
+            if self.store.replace_by_id(pending.report_id, report):
+                log.info(
+                    "provisional finalized (top) session=%s RP=%s SL=%s outcome=%s",
+                    sid[:12],
+                    report.research_points,
+                    report.silver_lions,
+                    report.outcome,
                 )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("clipboard results error: %s", exc)
-                report, reason = None, f"error:{exc}"
-            if report is not None:
-                if self.store.publish(report):
-                    log.info(
-                        "clipboard results published RP=%s SL=%s conf=%.2f",
-                        report.research_points,
-                        report.silver_lions,
-                        report.confidence,
-                    )
-                else:
-                    log.info(
-                        "clipboard results duplicate RP=%s SL=%s",
-                        report.research_points,
-                        report.silver_lions,
-                    )
-                return
+            self._pending_provisional = [
+                p for p in self._pending_provisional if p.report_id != pending.report_id
+            ]
+            return
+
+        if self.store.publish(report):
             log.info(
-                "clipboard results unavailable (%s) — OCR grab-first fallback",
-                reason,
+                "OCR results published RP=%s SL=%s provisional=%s conf=%.2f",
+                report.research_points,
+                report.silver_lions,
+                report.provisional,
+                report.confidence,
+            )
+        else:
+            log.info(
+                "OCR results duplicate RP=%s SL=%s",
+                report.research_points,
+                report.silver_lions,
             )
 
-        self._capture_burst_ocr()
+        if report.provisional:
+            latest = self.store.latest()
+            rid = latest.id if latest is not None else report.id
+            if rid and not any(p.report_id == rid for p in self._pending_provisional):
+                self._pending_provisional.append(
+                    _PendingProvisional(
+                        report_id=rid,
+                        session_id=sid,
+                        raw_hash=report.raw_hash,
+                    )
+                )
+                log.info(
+                    "provisional pending id=%s… session=%s (n=%s)",
+                    rid[:8],
+                    sid[:12] or "—",
+                    len(self._pending_provisional),
+                )
+
+    def _apply_provisional_refreshes(self, refreshed: dict) -> None:
+        """Apply arrow-walk hits; each pending gets one attempt per capture burst."""
+        if not self._pending_provisional:
+            return
+        still: list[_PendingProvisional] = []
+        for pending in self._pending_provisional:
+            key = (pending.session_id or "").lower()
+            hit = refreshed.get(key) if key else None
+            if hit is not None and not hit.provisional:
+                if self.store.replace_by_id(pending.report_id, hit):
+                    log.info(
+                        "provisional finalized (arrow) session=%s RP=%s SL=%s outcome=%s",
+                        key[:12],
+                        hit.research_points,
+                        hit.silver_lions,
+                        hit.outcome,
+                    )
+                continue
+            pending.attempts += 1
+            if pending.attempts >= _MAX_PROVISIONAL_ATTEMPTS:
+                log.info(
+                    "provisional drop session=%s after %s attempts",
+                    key[:12] or pending.report_id[:8],
+                    pending.attempts,
+                )
+                continue
+            if hit is not None and hit.provisional:
+                log.info(
+                    "provisional still open session=%s attempts=%s",
+                    key[:12],
+                    pending.attempts,
+                )
+            still.append(pending)
+        self._pending_provisional = still
 
     def _capture_burst_ocr(self) -> None:
         """Grab-first burst: snapshot WT quickly, then OCR the buffer offline."""
@@ -250,13 +348,9 @@ class BridgeRuntime:
             f"grab_gap={cfg.grab_frame_gap}"
         )
         log.info(
-            "battle ended — waiting %.2fs then grab-first up to %s frame(s) "
-            "(grab gap %.2fs; OCR after buffer; publish after %s OCR + %s pixel-stable)",
+            "battle ended — waiting %.2fs then 6 shots at 0.50/0.65/0.65/1.00/2.00s; "
+            "publish when two neighbors decode the same RP/SL",
             cfg.capture_delay_sec,
-            cfg.frames,
-            cfg.grab_frame_gap,
-            cfg.settle_stable_frames,
-            cfg.settle_frame_stable,
         )
         if cfg.capture_delay_sec > 0:
             self._stop.wait(cfg.capture_delay_sec)
@@ -286,7 +380,10 @@ class BridgeRuntime:
                     frame.size[1],
                 )
             if index + 1 < cfg.frames:
-                self._stop.wait(cfg.grab_frame_gap)
+                gap = shot_gap_after(
+                    index, frames=cfg.frames, uniform=cfg.grab_frame_gap
+                )
+                self._stop.wait(gap)
 
         grab_elapsed = time.monotonic() - grab_t0
         log.info(
@@ -299,16 +396,6 @@ class BridgeRuntime:
         if not buffer:
             log.info("burst finished without frames (no WT foreground)")
             return
-
-        settle_cfg = SettleConfig(stable_required=max(2, cfg.settle_stable_frames))
-        tracker = SettleTracker(cfg=settle_cfg)
-        frame_gate = LeanRoiFrameGate(
-            cfg=SettleConfig(
-                stable_required=max(2, cfg.settle_frame_stable),
-                frame_mae_max=settle_cfg.frame_mae_max,
-                frame_sig_size=settle_cfg.frame_sig_size,
-            )
-        )
 
         try:
             from .settings import load_settings as _ls
@@ -328,10 +415,48 @@ class BridgeRuntime:
             worker = None
 
         last_preview = ""
-        saw_confident = False
         sticky_pair: int | None = None
         sticky_ceiling: tuple[int, int] | None = None
         total = len(buffer)
+        decoded: list[tuple[int, int] | None] = []
+        prev_frame = None
+        confirm_done = 0
+        planned = len(buffer)
+        held: tuple[object, object, object] | None = None
+
+        def _climbed_into(pairs: list[tuple[int, int] | None]) -> bool:
+            known = [pair for pair in pairs if pair is not None]
+            if len(known) < 2 or known[-1] != known[-2]:
+                return False
+            target = known[-1]
+            return any(pair[0] < target[0] or pair[1] < target[1] for pair in known[:-1])
+
+        def _confirm_after_rise() -> None:
+            nonlocal confirm_done, total
+            if confirm_done >= 2 or index + 1 < len(buffer):
+                return
+            known = [pair for pair in decoded if pair is not None]
+            if not known:
+                return
+            last = known[-1]
+            rose = any(pair[0] < last[0] or pair[1] < last[1] for pair in known[:-1])
+            if not rose:
+                return
+            confirm_done += 1
+            log.info(
+                "count-up paused at RP=%s SL=%s — confirmation shot %s/2",
+                last[0],
+                last[1],
+                confirm_done,
+            )
+            self._stop.wait(1.5)
+            extra = grab_wt_client_image(focus=False, require_foreground=True)
+            if extra is None:
+                log.info("confirmation grab skipped (War Thunder not in foreground)")
+                return
+            buffer.append(extra.copy())
+            total = len(buffer)
+            log.info("confirmation grab kept size=%sx%s", extra.size[0], extra.size[1])
 
         try:
             for index, frame in enumerate(buffer):
@@ -342,7 +467,7 @@ class BridgeRuntime:
                     set_last_ocr_frame(frame)
                     png, variants = ocr_saved_frame(
                         frame,
-                        roi_only=saw_confident,
+                        roi_only=False,
                         worker=worker,
                         pair_hint=sticky_pair,
                         prefer_with=prefer,
@@ -359,163 +484,146 @@ class BridgeRuntime:
                             and ceiling[1] is not None
                         ):
                             sticky_ceiling = (int(ceiling[0]), int(ceiling[1]))
-                        log.info(
-                            "sticky calib hint pair=%s ceiling=%s",
-                            sticky_pair,
-                            sticky_ceiling,
-                        )
 
                     breadcrumb(
                         f"ocr_buffer frame {index + 1}/{total} variants={len(variants)}"
                     )
-                    pixels_stable = frame_gate.observe(frame)
-                    if not variants:
-                        last_preview = "(empty OCR)"
-                        log.info(
-                            "ocr %s/%s: no OCR text | pix_stable=%s mae=%s",
-                            index + 1,
-                            total,
-                            pixels_stable,
-                            None
-                            if frame_gate.last_mae is None
-                            else f"{frame_gate.last_mae:.1f}",
-                        )
-                        self._write_ocr_dump("", png=png)
-                        continue
-
-                    candidates = [
-                        (
-                            text,
-                            parse_rewards_from_ocr_text(
-                                text, prefer_premium_rewards=prefer
-                            ),
-                        )
-                        for _tag, text in variants
-                    ]
-                    best = choose_best_report(
-                        candidates, prefer_premium_rewards=prefer
-                    )
+                    pair_now: tuple[int, int] | None = None
                     dump_parts: list[str] = []
-                    for tag, text in variants:
-                        parsed = parse_rewards_from_ocr_text(
-                            text, prefer_premium_rewards=prefer
-                        )
-                        if parsed is None:
-                            dump_parts.append(f"[{tag}]\n{text}\n=> (no parse)")
-                        else:
-                            dump_parts.append(
-                                f"[{tag}]\n{text}\n"
-                                f"=> RP={parsed.research_points} "
-                                f"SL={parsed.silver_lions}"
+                    best = None
+                    if variants:
+                        candidates = [
+                            (
+                                text,
+                                parse_rewards_from_ocr_text(
+                                    text, prefer_premium_rewards=prefer
+                                ),
                             )
+                            for _tag, text in variants
+                        ]
+                        best = choose_best_report(
+                            candidates, prefer_premium_rewards=prefer
+                        )
+                        for tag, text in variants:
+                            parsed = parse_rewards_from_ocr_text(
+                                text, prefer_premium_rewards=prefer
+                            )
+                            if parsed is None:
+                                dump_parts.append(f"[{tag}]\n{text}\n=> (no parse)")
+                            else:
+                                dump_parts.append(
+                                    f"[{tag}]\n{text}\n"
+                                    f"=> RP={parsed.research_points} "
+                                    f"SL={parsed.silver_lions}"
+                                )
                     self._write_ocr_dump(
                         "\n\n---OCR---\n\n".join(dump_parts), png=png
                     )
-
-                    if best is None:
+                    if best is not None and best[1].confidence >= _MIN_CONFIDENT_REPORT:
+                        pair_now = (
+                            best[1].research_points,
+                            best[1].silver_lions,
+                        )
+                        last_preview = summarize_ocr_text(best[0])
+                    elif variants:
                         last_preview = summarize_ocr_text(variants[0][1])
+                    else:
+                        last_preview = "(empty OCR)"
+                    decoded.append(pair_now)
+                    if pair_now is None and held is not None and index >= planned:
                         log.info(
-                            "ocr %s/%s: no RP/SL yet | engines=%s | pix=%s/%s | ocr=%s",
+                            "confirmation left the results screen — sending last match RP=%s SL=%s",
+                            held[0].research_points,
+                            held[0].silver_lions,
+                        )
+                        best = ("held", held[0])
+                        frame = held[1]
+                        prev_frame = held[2]
+                        matched = (
+                            held[0].research_points,
+                            held[0].silver_lions,
+                        )
+                    else:
+                        final = index + 1 >= total
+                        verdict, matched = consecutive_reward_verdict(decoded, final=final)
+                        shown = (
+                            "none"
+                            if pair_now is None
+                            else f"RP={pair_now[0]} SL={pair_now[1]}"
+                        )
+                        log.info(
+                            "ocr %s/%s: %s | compare=%s",
                             index + 1,
                             total,
-                            ",".join(tag for tag, _ in variants),
-                            frame_gate.stable_count,
-                            frame_gate.cfg.stable_required,
-                            last_preview,
+                            shown,
+                            verdict if len(decoded) > 1 else "wait",
                         )
-                        continue
-
-                    text, report = best
-                    last_preview = summarize_ocr_text(text)
-                    if report.confidence < _MIN_CONFIDENT_REPORT:
-                        log.info(
-                            "ocr %s/%s: RP=%s SL=%s conf=%.2f "
-                            "(below %.2f — keep OCR buffer)",
-                            index + 1,
-                            total,
-                            report.research_points,
-                            report.silver_lions,
-                            report.confidence,
-                            _MIN_CONFIDENT_REPORT,
-                        )
-                        continue
-
-                    saw_confident = True
-                    settled = tracker.observe(report)
-                    if settled is None:
-                        log.info(
-                            "ocr %s/%s: RP=%s SL=%s conf=%.2f "
-                            "(ocr settle %s/%s, pix %s/%s mae=%s)",
-                            index + 1,
-                            total,
-                            report.research_points,
-                            report.silver_lions,
-                            report.confidence,
-                            tracker.stable_count,
-                            tracker.cfg.stable_required,
-                            frame_gate.stable_count,
-                            frame_gate.cfg.stable_required,
-                            None
-                            if frame_gate.last_mae is None
-                            else f"{frame_gate.last_mae:.1f}",
-                        )
-                        continue
-                    if not pixels_stable:
-                        log.info(
-                            "ocr %s/%s: RP=%s SL=%s conf=%.2f "
-                            "(OCR settled — waiting lean ROI pixels %s/%s mae=%s)",
-                            index + 1,
-                            total,
-                            settled.research_points,
-                            settled.silver_lions,
-                            settled.confidence,
-                            frame_gate.stable_count,
-                            frame_gate.cfg.stable_required,
-                            None
-                            if frame_gate.last_mae is None
-                            else f"{frame_gate.last_mae:.1f}",
-                        )
-                        continue
-
+                        if verdict != "success" or matched is None or best is None:
+                            prev_frame = frame
+                            if index + 1 >= len(buffer):
+                                _confirm_after_rise()
+                            continue
+                        if _climbed_into(decoded) and confirm_done == 0:
+                            log.info(
+                                "ocr %s/%s: RP=%s SL=%s matched, but an earlier shot was lower — still counting",
+                                index + 1,
+                                total,
+                                matched[0],
+                                matched[1],
+                            )
+                            held = (best[1], frame, prev_frame)
+                            prev_frame = frame
+                            if index + 1 >= len(buffer):
+                                _confirm_after_rise()
+                            continue
+                    report = best[1]
                     try:
+                        if prev_frame is not None:
+                            archive_capture_frame(
+                                prev_frame,
+                                kind="ok",
+                                rp=report.research_points,
+                                sl=report.silver_lions,
+                                note="match-a",
+                            )
                         archive_capture_frame(
                             frame,
                             kind="ok",
-                            rp=settled.research_points,
-                            sl=settled.silver_lions,
+                            rp=report.research_points,
+                            sl=report.silver_lions,
+                            note="match-b",
                         )
                     except Exception:  # noqa: BLE001
                         pass
-                    if self.store.publish(settled):
+                    if self.store.publish(report):
                         log.info(
-                            "ocr %s/%s: settled RP=%s SL=%s conf=%.2f "
-                            "(OCR+pixels stable, grab-first buffer)",
+                            "ocr %s/%s: neighbor match RP=%s SL=%s — sent",
                             index + 1,
                             total,
-                            settled.research_points,
-                            settled.silver_lions,
-                            settled.confidence,
+                            report.research_points,
+                            report.silver_lions,
                         )
                         try:
                             maybe_auto_learn_pair(
                                 frame,
-                                rp=settled.research_points,
-                                sl=settled.silver_lions,
+                                rp=report.research_points,
+                                sl=report.silver_lions,
                                 prefer_with=prefer,
                             )
                         except Exception as exc:  # noqa: BLE001
                             log.debug("auto-learn skipped: %s", exc)
                     else:
                         log.info(
-                            "ocr %s/%s: settled duplicate RP=%s SL=%s",
+                            "ocr %s/%s: neighbor match duplicate RP=%s SL=%s",
                             index + 1,
                             total,
-                            settled.research_points,
-                            settled.silver_lions,
+                            report.research_points,
+                            report.silver_lions,
                         )
                     return
                 except Exception as exc:  # noqa: BLE001
                     log.warning("ocr %s/%s failed: %s", index + 1, total, exc)
+                    decoded.append(None)
                     try:
                         from .crashguard import write_crash_report
                         import traceback
@@ -532,39 +640,9 @@ class BridgeRuntime:
                         pass
                     breadcrumb(f"ocr_buffer frame {index + 1} error: {exc}")
 
-            fallback = tracker.finalize()
-            if fallback is not None and fallback.confidence >= _MIN_CONFIDENT_REPORT:
-                if self.store.publish(fallback):
-                    log.info(
-                        "burst ended — published best available RP=%s SL=%s "
-                        "(stable=%s/%s) | last_ocr=%s",
-                        fallback.research_points,
-                        fallback.silver_lions,
-                        tracker.stable_count,
-                        tracker.cfg.stable_required,
-                        last_preview or "(none)",
-                    )
-                    try:
-                        frame = last_ocr_frame()
-                        if frame is not None:
-                            archive_capture_frame(
-                                frame,
-                                kind="ok",
-                                rp=fallback.research_points,
-                                sl=fallback.silver_lions,
-                                note="finalize",
-                            )
-                            maybe_auto_learn_pair(
-                                frame,
-                                rp=fallback.research_points,
-                                sl=fallback.silver_lions,
-                                prefer_with=prefer,
-                            )
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return
             log.info(
-                "burst finished without a confident report | last_ocr=%s",
+                "burst finished without a guaranteed pair | shots=%s | last_ocr=%s",
+                len(decoded),
                 last_preview or "(none)",
             )
             try:
@@ -582,9 +660,7 @@ class BridgeRuntime:
 
     def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:
         try:
-            path = log_dir() / "last_ocr.txt"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text or "", encoding="utf-8")
+            write_last_ocr_dump(text)
             from .roi_debug import save_ocr_crop_dumps
             from .settings import load_settings
 
@@ -599,3 +675,17 @@ class BridgeRuntime:
                 (log_dir() / "last_capture.png").write_bytes(png)
         except OSError:
             pass
+
+
+def write_last_ocr_dump(text: str) -> None:
+    """Overwrite ``last_ocr.txt`` and prefix the local time of this write."""
+    from datetime import datetime
+
+    path = log_dir() / "last_ocr.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    body = (text or "").strip()
+    path.write_text(
+        f"[{stamp}]\n\n{body}\n" if body else f"[{stamp}]\n",
+        encoding="utf-8-sig",
+    )

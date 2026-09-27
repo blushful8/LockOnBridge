@@ -264,6 +264,95 @@ def calibrated_from_dict(raw: Any) -> CalibratedRois | None:
     ).with_synced_pair_counts()
 
 
+def default_parse_zone() -> NormRect:
+    """
+    One results-table crop for every user.
+
+    Fractions of the WT client (resolution-independent). Padded so a small
+    banner shift still keeps «Всього» / without-premium amounts inside.
+    A real layout redesign needs a new zone shipped in the next update.
+    """
+    return NormRect(0.16, 0.12, 0.58, 0.68, "parse-zone")
+
+
+def _zone_from_raw(raw: Any) -> tuple[int, NormRect] | None:
+    if not isinstance(raw, dict):
+        return None
+    rect = _norm_from_dict(raw.get("zone"), "parse-zone")
+    if rect is None:
+        return None
+    try:
+        version = int(raw.get("version", 1))
+    except (TypeError, ValueError):
+        version = 1
+    return version, rect
+
+
+def load_parse_zone() -> NormRect:
+    """Shipped zone, overridden by a newer developer save in LocalAppData."""
+    best_key = (-1, -1)
+    best: NormRect | None = None
+    for path, tie in ((user_calib_path(), 1), (packaged_calib_path(), 0)):
+        if not path.is_file():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        parsed = _zone_from_raw(raw)
+        if parsed is None:
+            continue
+        version, rect = parsed
+        key = (version, tie)
+        if key > best_key:
+            best_key = key
+            best = rect
+    return best if best is not None else default_parse_zone()
+
+
+def save_parse_zone(rect: NormRect, *, also_package: bool = False) -> list[Path]:
+    """
+    Store one parse zone.
+
+    Always writes LocalAppData. ``also_package`` also writes the repo file so
+    the next release ships the same rectangle to every user.
+    """
+    zone = rect.clamp()
+    payload_zone = _rect_to_dict(zone)
+
+    def _write(path: Path) -> None:
+        raw: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except (OSError, json.JSONDecodeError):
+                raw = {}
+        try:
+            version = int(raw.get("version", 1))
+        except (TypeError, ValueError):
+            version = 1
+        raw["version"] = max(version, 3)
+        raw["zone"] = payload_zone
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(raw, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    written: list[Path] = []
+    user = user_calib_path()
+    _write(user)
+    written.append(user)
+    if also_package:
+        pkg = packaged_calib_path()
+        _write(pkg)
+        written.append(pkg)
+    log.info("parse zone saved → %s", ", ".join(str(p) for p in written))
+    return written
+
+
 def packaged_calib_path() -> Path:
     return Path(__file__).resolve().parent / _CALIB_NAME
 

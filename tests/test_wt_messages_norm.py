@@ -25,7 +25,18 @@ def test_envelope_candidates_include_norm_cluster() -> None:
     cands = envelope_click_candidates(frame)
     assert len(cands) >= 5
     assert any(label.startswith("norm:") for label, _x, _y in cands)
-    # All points in bottom-right quadrant.
+    # Bottom social bar — right half, very bottom.
     for _label, x, y in cands:
-        assert x > 1920 * 0.75
-        assert y > 1080 * 0.80
+        assert x > 1920 * 0.70
+        assert y > 1080 * 0.90
+
+
+def test_primary_norm_near_measured_envelope() -> None:
+    """Live 2560×1600 envelope was (0.943, 0.971)."""
+    from lockon_bridge.wt_messages_ui import _ENVELOPE_NORM_POINTS
+
+    assert _ENVELOPE_NORM_POINTS[0] == (0.943, 0.971)
+    frame = Image.new("RGB", (2560, 1600))
+    x, y = norm_to_client_xy(2560, 1600, 0.943, 0.971, frame=frame)
+    assert abs(x - 2414) <= 2
+    assert abs(y - 1554) <= 2

@@ -17,6 +17,9 @@ class Strings:
     quit: str
     language: str
     wt_language: str
+    ocr_engine: str
+    ocr_engine_2: str
+    ocr_engine_3: str
     ocr_backend: str
     ocr_backend_auto: str
     ocr_backend_windows: str
@@ -31,6 +34,7 @@ class Strings:
     setup_tesseract_installing: str
     lang_en: str
     lang_uk: str
+    lang_ru: str
     badge_on: str
     badge_off: str
     badge_idle: str
@@ -95,6 +99,8 @@ class Strings:
     outcome_victory: str
     outcome_defeat: str
     outcome_undecided: str
+    outcome_provisional: str
+    outcome_final: str
     menu_more: str
     debug_show_rois: str
     roi_calibrator: str
@@ -121,6 +127,9 @@ EN = Strings(
     quit="Quit",
     language="App language",
     wt_language="War Thunder language",
+    ocr_engine="OCR engine",
+    ocr_engine_2="Engine 2",
+    ocr_engine_3="Engine 3 (can take longer)",
     ocr_backend="OCR engine",
     ocr_backend_auto="Auto (Windows + Tesseract)",
     ocr_backend_windows="Windows only",
@@ -148,6 +157,7 @@ EN = Strings(
     setup_tesseract_installing="Installing Tesseract… Confirm if Windows asks.",
     lang_en="English",
     lang_uk="Ukrainian",
+    lang_ru="Russian",
     badge_on="ON",
     badge_off="OFF",
     badge_idle="IDLE",
@@ -237,12 +247,13 @@ EN = Strings(
         "Research Points: {rp}\n"
         "Silver Lions: {sl}\n"
         "Outcome: {outcome}\n"
+        "Status: {provisional}\n"
         "Confidence: {conf:.0%}"
     ),
     test_clipboard_fail=(
         "Clipboard results failed ({reason}).\n\n"
         "Focus War Thunder hangar so the Messages envelope is visible,\n"
-        "then try again. OCR remains the fallback after battles."
+        "and Messages → Battles has at least one battle report."
     ),
     replay_log="Replay last OCR dump",
     replay_ok="Replayed last OCR dump:\nResearch Points: {rp}\nSilver Lions: {sl}",
@@ -269,9 +280,11 @@ EN = Strings(
     outcome_victory="victory",
     outcome_defeat="defeat",
     outcome_undecided="undecided",
+    outcome_provisional="provisional (match still live)",
+    outcome_final="final",
     menu_more="More ▾",
     debug_show_rois="Show OCR regions continuously (dev)",
-    roi_calibrator="ROI calibrator…",
+    roi_calibrator="OCR zone…",
     dev_unlock_title="Developer unlock",
     dev_unlock_prompt="Enter developer passphrase:",
     dev_unlock_bad="Wrong passphrase.",
@@ -295,6 +308,9 @@ UK = Strings(
     quit="Вийти",
     language="Мова програми",
     wt_language="Мова War Thunder",
+    ocr_engine="Рушій OCR",
+    ocr_engine_2="Engine 2",
+    ocr_engine_3="Engine 3 (може працювати довше)",
     ocr_backend="Рушій OCR",
     ocr_backend_auto="Авто (Windows + Tesseract)",
     ocr_backend_windows="Лише Windows",
@@ -322,6 +338,7 @@ UK = Strings(
     setup_tesseract_installing="Встановлення Tesseract… Підтвердіть запит Windows, якщо з’явиться.",
     lang_en="English",
     lang_uk="Українська",
+    lang_ru="Російська",
     badge_on="УВІМК.",
     badge_off="ВИМК.",
     badge_idle="ОЧІКУВАННЯ",
@@ -413,12 +430,13 @@ UK = Strings(
         "Очки досліджень: {rp}\n"
         "Срібні леви: {sl}\n"
         "Результат бою: {outcome}\n"
+        "Статус: {provisional}\n"
         "Впевненість: {conf:.0%}"
     ),
     test_clipboard_fail=(
         "Clipboard-результати не вдалося ({reason}).\n\n"
         "Зроби War Thunder активним у ангарі з видимою іконкою повідомлень,\n"
-        "потім спробуй ще. OCR лишається запасним шляхом після бою."
+        "і щоб у Повідомлення → Битви був хоча б один звіт бою."
     ),
     replay_log="Повторити останній OCR",
     replay_ok="Останній OCR-дамп:\nОчки досліджень: {rp}\nСрібні леви: {sl}",
@@ -445,18 +463,217 @@ UK = Strings(
     outcome_victory="перемога",
     outcome_defeat="поразка",
     outcome_undecided="невідомо",
+    outcome_provisional="незавершений (бій ще йде)",
+    outcome_final="фінальний",
     menu_more="Ще ▾",
     debug_show_rois="Показувати OCR-області постійно (dev)",
-    roi_calibrator="Калібратор ROI…",
+    roi_calibrator="Зона OCR…",
     dev_unlock_title="Розблокування розробника",
     dev_unlock_prompt="Введіть пароль розробника:",
     dev_unlock_bad="Невірний пароль.",
     dev_unlocked="Інструменти розробника розблоковано на цю сесію.",
 )
 
+RU = Strings(
+    subtitle="OCR-спутник для LockOn (War Thunder)",
+    bridge_enabled="Bridge",
+    autostart_windows="Запуск со стартом Windows",
+    tip=(
+        "Bridge ВКЛ. — автозапуск со стартом Windows и работа в фоне. "
+        "ВЫКЛ. — всё останавливается (без автозапуска). "
+        "Один раз выберите язык интерфейса War Thunder для лучшего OCR."
+    ),
+    http_port="Порт HTTP",
+    open_logs="Открыть журналы",
+    hide_to_tray="Свернуть в трей",
+    check_updates="Проверить обновления",
+    uninstall="Удалить…",
+    quit="Выйти",
+    language="Язык программы",
+    wt_language="Язык War Thunder",
+    ocr_engine="Движок OCR",
+    ocr_engine_2="Engine 2",
+    ocr_engine_3="Engine 3 (может работать дольше)",
+    ocr_backend="Движок OCR",
+    ocr_backend_auto="Авто (Windows + Tesseract)",
+    ocr_backend_windows="Только Windows",
+    ocr_backend_tesseract="Только Tesseract",
+    setup_tesseract="Настроить Tesseract OCR…",
+    setup_tesseract_body=(
+        "Tesseract читает языки WT, которых нет в Windows OCR.\n\n"
+        "Статус:\n{status}\n\n"
+        "Скачать официальные модели tessdata_fast для {lang}? (Apache-2.0, GitHub)"
+    ),
+    setup_tesseract_no_exe=(
+        "Tesseract не установлен.\n\n"
+        "Установить сейчас через winget?\n"
+        "(UB-Mannheim.TesseractOCR — бесплатно, дальше офлайн)\n\n"
+        "Или позже: https://github.com/UB-Mannheim/tesseract/wiki"
+    ),
+    setup_tesseract_done="Языковые модели готовы.\n\n{detail}",
+    setup_tesseract_failed="Не удалось скачать / установить.\n\n{detail}",
+    setup_tesseract_offer_title="Лучший OCR для вашего языка WT?",
+    setup_tesseract_offer_body=(
+        "Только Windows OCR слаб для {lang} (например, нет украинского пакета).\n\n"
+        "Установить бесплатный офлайн Tesseract через winget?\n"
+        "Один клик — рекомендуется. Можно пропустить и оставить только пакеты Windows."
+    ),
+    setup_tesseract_installing="Установка Tesseract… Подтвердите запрос Windows, если появится.",
+    lang_en="English",
+    lang_uk="Украинский",
+    lang_ru="Русский",
+    badge_on="ВКЛ.",
+    badge_off="ВЫКЛ.",
+    badge_idle="ОЖИДАНИЕ",
+    badge_active="АКТИВЕН",
+    status_disabled="Выключено — нет автозапуска и фоновой работы",
+    status_enabled_waiting="Включено — ожидание War Thunder",
+    status_firewall_needed="Включено — доступ с телефона ещё не разрешён",
+    phone_access_banner=(
+        "⚠ ТЕЛЕФОН НЕ ДОХОДИТ ДО ЭТОГО ПК\n"
+        "В Истории LockOn останутся 0 RP / 0 SL, пока это не исправить.\n\n"
+        "Исправление: More ▾ → Разрешить доступ с телефона → Да (затем Да в UAC Windows).\n"
+        "Если Defender заблокировал LockOnBridge.exe: Журнал защиты → Разрешить, и снова.\n"
+        "На телефоне: тот же IP ПК, переключатель Bridge ВКЛ., порт {port}."
+    ),
+    phone_access_ok="Доступ с телефона OK — проверка из браузера телефона:\n{url}",
+    phone_test_hint="URL для проверки с телефона (та же Wi‑Fi): {url}",
+    firewall_warning=(
+        "Доступ с телефона не разрешён на этом ПК.\n\n"
+        "Без этого LockOn на телефоне останется на 0 RP / 0 SL, даже если OCR работает.\n\n"
+        "На ЭТОМ компьютере: More ▾ → Разрешить доступ с телефона → «Да», "
+        "затем «Да» в окне Windows (UAC).\n"
+        "На телефоне запроса не будет."
+    ),
+    firewall_prompt_title="Разрешить доступ с телефона? (на этом ПК)",
+    firewall_prompt_body=(
+        "Чтобы телефон достучался до этого ПК, Windows на ЭТОМ компьютере один раз "
+        "нуждается в разрешении (брандмауэр, порт {port}).\n\n"
+        "Дальше появится окно безопасности Windows ЗДЕСЬ — нажмите «Да».\n"
+        "На телефоне ничего не появится.\n\n"
+        "Разрешить сейчас?"
+    ),
+    firewall_menu="Разрешить доступ с телефона…",
+    firewall_ok="Доступ с телефона разрешён на этом ПК. В LockOn — IP этого ПК и порт {port}.",
+    firewall_denied=(
+        "Разрешение Windows на этом ПК не выдано (UAC отменён или заблокирован).\n\n"
+        "Попробуйте снова на ЭТОМ компьютере: More ▾ → Разрешить доступ с телефона "
+        "→ «Да» в окне Windows.\n"
+        "На телефоне запроса не будет."
+    ),
+    status_idle="Ожидание — проверка каждые {seconds:.0f} с (WT закрыт)",
+    status_active="War Thunder — Bridge активен",
+    status_stopping="Остановка…",
+    status_port_saved="Порт сохранён ({port})",
+    autostart_failed="Не удалось зарегистрировать автозапуск Windows (задача планировщика).",
+    tray_open="Открыть",
+    tray_disable="Выключить Bridge",
+    tray_quit="Выйти",
+    tray_need_enable="Сначала включите Bridge. Пока он выключен, в трее держать нечего.",
+    uninstall_confirm=(
+        "Полностью удалить LockOn Bridge?\n\n"
+        "Автозапуск будет отключён, агент остановлен, локальные файлы удалены."
+    ),
+    update_checking="Проверка обновлений…",
+    update_up_to_date="У вас уже последняя версия ({version}).",
+    update_available_title="Доступно обновление",
+    update_available_body=(
+        "Доступна версия {latest} (у вас {current}).\n\n"
+        "Скачать и установить обновление сейчас?"
+    ),
+    update_confirm="Обновить",
+    update_cancel="Отмена",
+    update_downloading="Загрузка обновления…",
+    update_failed="Не удалось обновить: {error}",
+    update_dev_only="Автоматические обновления работают со сборкой LockOn Bridge. Скачайте ZIP-релиз для обновления.",
+    update_restarting="Обновление загружено. LockOn Bridge перезапустится.",
+    test_ocr="Проверить OCR",
+    test_ocr_busy="Читаю экран…",
+    test_ocr_countdown="Переключитесь на результаты WT — снимок через {n}…",
+    test_ocr_ok=(
+        "{probe}\n\n"
+        "Результат боя: {outcome}\n"
+        "Уверенность: {conf:.0%}"
+    ),
+    test_ocr_fail=(
+        "RP/SL на экране не найдены.\n\n"
+        "Нужен экран РЕЗУЛЬТАТОВ после боя (с / без премиума),\n"
+        "а не ангар или главное меню.\n\n"
+        "1) Откройте этот экран в War Thunder (или полноэкранный скрин)\n"
+        "2) Нажмите «Проверить OCR» — Bridge спрячется на 5 с\n"
+        "3) Оставайтесь на экране результатов до появления окна\n\n"
+        "Фрагмент OCR:\n{preview}"
+    ),
+    test_ocr_error="Ошибка OCR:\n{error}",
+    test_clipboard="Проверить clipboard-результаты",
+    test_clipboard_busy="Открываю Сообщения → Ctrl+C…",
+    test_clipboard_countdown="Переключитесь на ангар WT — проверка через {n}…",
+    test_clipboard_ok=(
+        "Clipboard-результаты OK\n\n"
+        "Очки исследования: {rp}\n"
+        "Серебряные львы: {sl}\n"
+        "Результат боя: {outcome}\n"
+        "Статус: {provisional}\n"
+        "Уверенность: {conf:.0%}"
+    ),
+    test_clipboard_fail=(
+        "Clipboard-результаты не удались ({reason}).\n\n"
+        "Сделайте War Thunder активным в ангаре с видимой иконкой сообщений,\n"
+        "и чтобы в Сообщения → Битвы был хотя бы один отчёт боя."
+    ),
+    replay_log="Повторить последний OCR",
+    replay_ok="Последний OCR-дамп:\nОчки исследования: {rp}\nСеребряные львы: {sl}",
+    replay_fail="Не удалось разобрать последний OCR-дамп (или файла нет).",
+    ocr_packs="Пакеты Windows OCR…",
+    ocr_packs_ok="Рекомендованные пакеты Windows OCR уже установлены:\n{packs}",
+    ocr_packs_missing_title="Установить пакеты Windows OCR?",
+    ocr_packs_missing_body=(
+        "Рекомендованные пакеты Windows OCR для ({lang}):\n{packs}\n\n"
+        "Не хватает:\n{missing}\n\n"
+        "{note}"
+        "Установить из Microsoft Windows Update?"
+    ),
+    ocr_packs_uk_note=(
+        "В Windows нет украинского OCR. "
+        "Для кириллицы — Tesseract (ukr) или русский Windows OCR.\n\n"
+    ),
+    ocr_packs_install="Установить от Microsoft",
+    ocr_packs_skip="Не сейчас",
+    ocr_packs_installing="Установка пакетов OCR… Подтвердите UAC.",
+    ocr_packs_done="Пакеты OCR установлены.\n\n{detail}",
+    ocr_packs_failed="Не удалось установить пакеты OCR.\n\n{detail}",
+    ocr_packs_nothing="Нечего устанавливать — нужные пакеты уже есть.",
+    outcome_victory="победа",
+    outcome_defeat="поражение",
+    outcome_undecided="неизвестно",
+    outcome_provisional="незавершённый (бой ещё идёт)",
+    outcome_final="финальный",
+    menu_more="Ещё ▾",
+    debug_show_rois="Показывать OCR-области постоянно (dev)",
+    roi_calibrator="Зона OCR…",
+    dev_unlock_title="Разблокировка разработчика",
+    dev_unlock_prompt="Введите пароль разработчика:",
+    dev_unlock_bad="Неверный пароль.",
+    dev_unlocked="Инструменты разработчика разблокированы на эту сессию.",
+)
+
 
 def strings_for(language: str) -> Strings:
-    return UK if language.lower().startswith("uk") else EN
+    key = (language or "").lower()
+    if key.startswith("uk"):
+        return UK
+    if key.startswith("ru"):
+        return RU
+    return EN
+
+
+def app_language_code(label: str) -> str:
+    """Map a combo label from any pack back to en / uk / ru."""
+    if label in (EN.lang_uk, UK.lang_uk, RU.lang_uk):
+        return "uk"
+    if label in (EN.lang_ru, UK.lang_ru, RU.lang_ru):
+        return "ru"
+    return "en"
 
 
 def detect_system_language() -> str:
@@ -466,6 +683,9 @@ def detect_system_language() -> str:
         raw = locale.getdefaultlocale()[0] or ""
     except Exception:  # noqa: BLE001
         raw = ""
-    if raw.lower().startswith("uk"):
+    low = raw.lower()
+    if low.startswith("uk"):
         return "uk"
+    if low.startswith("ru"):
+        return "ru"
     return "en"

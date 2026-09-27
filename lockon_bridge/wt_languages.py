@@ -41,6 +41,41 @@ WT_LANGUAGES: tuple[WtLanguage, ...] = (
 _BY_CODE = {lang.code: lang for lang in WT_LANGUAGES}
 
 
+_LABEL_RU: dict[str, str] = {
+    "en": "Английский",
+    "uk": "Украинский",
+    "ru": "Русский",
+    "de": "Немецкий",
+    "fr": "Французский",
+    "es": "Испанский",
+    "it": "Итальянский",
+    "pl": "Польский",
+    "pt": "Португальский",
+    "cs": "Чешский",
+    "tr": "Турецкий",
+    "ja": "Японский",
+    "ko": "Корейский",
+    "zh": "Китайский",
+    "hu": "Венгерский",
+    "ro": "Румынский",
+    "be": "Белорусский",
+    "sr": "Сербский",
+}
+
+
+def _wt_label_for(lang: WtLanguage, app_language: str) -> str:
+    key = (app_language or "en").lower()
+    if key.startswith("uk"):
+        return lang.label_uk
+    if key.startswith("ru"):
+        return _LABEL_RU.get(lang.code, lang.label_en)
+    return lang.label_en
+
+
+# Attach after class so existing positional constructors stay intact.
+WtLanguage.label_for = lambda self, app_language="en": _wt_label_for(self, app_language)  # type: ignore[attr-defined]
+
+
 def get_wt_language(code: str) -> WtLanguage:
     key = (code or "en").strip().lower()
     if key.startswith("zh"):
