@@ -1,79 +1,86 @@
 # LockOn Bridge
 
-**Optional Windows helper for [LockOn](https://github.com/blushful8/LockOn)** (War Thunder companion on Android).
+Windows program for War Thunder. After a battle it reads the results screen and publishes one **Research Points** and **Silver Lions** pair on this PC. A phone on the same Wi‑Fi reads that pair over HTTP.
 
-## Why this exists
-
-War Thunder’s local API (`:8111`) tells LockOn when you are in a battle and which vehicle you use — but it does **not** give the final **Research Points** and **Silver Lions** after a match. Those numbers only show on the results screen.
-
-**LockOn Bridge** is a small Windows program that detects the end of a battle, briefly reads that screen with **OCR** (Windows packs and optional **Tesseract** for every War Thunder UI language, including Ukrainian), and sends the totals to your phone over Wi‑Fi (port **8112**).
-
-- No Gaijin login  
-- Nothing leaves your home network  
-- Screenshots are not uploaded  
+No Gaijin login. The game’s local API does not include the final RP and SL; those numbers only appear on the results screen.
 
 ---
 
-## Do I need it?
+## What it does
 
-| | Without Bridge | With Bridge |
-|---|---|---|
-| Live vehicle / hangar / battle in LockOn | Yes | Yes |
-| Match history | Yes | Yes |
-| RP / SL after a match | Manual edit (or stay `0`) | Filled automatically |
+- With **Bridge** on, it starts at Windows logon, waits for War Thunder, and stops when the game exits.
+- After a battle, while the results screen stays open, it takes several shots of the reward strip.
+- It publishes one RP/SL pair only when two reads agree. The phone chooses the column: with premium or without.
 
-If you are fine editing rewards manually in LockOn, you can skip this entirely.
+Local HTTP, default port **8112**:
+
+| | |
+|---|---|
+| `GET /v1/health` | Bridge is up (`ok`, version, premium flag) |
+| `GET /v1/latest-report` | Last published pair, or `204` when there is none |
+| `GET /v1/reports` | Stored reports |
+| `GET` / `PUT /v1/preferences` | `{ "hasPremiumAccount": true }` or `false` |
+
+`latest-report` fields include `researchPoints`, `silverLions`, `capturedAtEpochMillis`, `confidence`, and `outcome`.
+
+---
+
+## OCR
+
+- **OCR.space** (Engine 3) is the default. Only the reward crop is sent to `api.ocr.space`.
+- Your key is read from the `OCR_SPACE_API_KEY` environment variable, or from an encrypted file on this Windows account. It is never stored in this repository. Without a key, the public demo key is used and runs out quickly. Free Engine 3 is **2,500** requests a month and **500** a day.
+- **EasyOCR** runs on the PC. Choose it in the window, or leave OCR.space selected: Bridge installs EasyOCR when the API is unreachable or the monthly or daily limit is spent. The first install needs **Python 3.12** on the PC and takes a few minutes. The battle that triggered the install is not held open for that download.
+- App language: **English**, **Ukrainian**, or **Russian**. Set **War Thunder language** to the language of the results screen.
 
 ---
 
 ## Install
 
 1. Download **`LockOnBridge.zip`** from [Releases](https://github.com/blushful8/LockOnBridge/releases).
-2. Extract → run **`LockOnBridge.exe`**.
-3. Set **War Thunder language**, turn **Bridge enabled** **ON**.
-4. When asked **Allow phone access?** → **Yes**, then **Yes** on the Windows prompt (once). No PowerShell.
-5. On the phone: **LockOn → Settings → Use LockOn Bridge** (same PC IP; port `8112`).
+2. Extract and run **`LockOnBridge.exe`**.
+3. Set the app language, the War Thunder language, and OCR (**OCR.space** by default). Turn **Bridge** **ON**.
+4. When asked **Allow phone access?** choose **Yes**, then **Yes** on the Windows prompt (once).
 
-If you skipped the phone-access prompt: **More ▾ → Allow phone access…**
+If you skipped that prompt: **More ▾ → Allow phone access…**
 
-That is the full path for most players. On first enable, Bridge may ask to install **Windows OCR packs** (Microsoft). For Ukrainian (and a few other cases) it may also offer free offline **Tesseract** via winget — one Yes/No, no manual GitHub hunting.
+On the phone, use this PC’s IP and port `8112`, on the same Wi‑Fi.
 
-> **Ukrainian UI:** Windows has no `uk` OCR language pack. Bridge uses Tesseract `ukr` (plus Russian/English Windows OCR as fallback) and parses Latinized mangled text when needed.
-
-> Prefer the **ZIP** build. Single-file PyInstaller executables (especially with UPX) are often false-positive’d by Windows Defender. This release is an **onedir** package **without UPX**.
+Prefer the **ZIP**. This release is an **onedir** package **without UPX**. Single-file PyInstaller executables are often false-positive’d by Windows Defender.
 
 ### Windows SmartScreen / Defender
 
-The build is **not code-signed** (no paid certificate). Unsigned PyInstaller apps are often
-misclassified by Defender **machine-learning** heuristics — typically:
+The build is **not code-signed**. Unsigned PyInstaller apps are often misclassified by Defender, typically:
 
 - `Trojan:Win32/Sabsik.TE.A!ml` (ZIP / onedir exe)
 - `Trojan:Win32/Wacatac.B!ml` (older one-file `.exe` builds)
 
-This is a **false positive**, not real malware. Releases are built as **onedir ZIP, no UPX**, from this repo only.
+This is a **false positive**. Releases are built from this repo only.
 
 **If Defender deletes the ZIP on download:**
 
 1. Open **Windows Security → Virus & threat protection → Protection history**.
 2. Find the LockOn Bridge item → **Actions → Allow / Restore**.
-3. Optionally add an exclusion for `%LOCALAPPDATA%\LockOnBridge` (and your Downloads folder while installing).
-4. Extract the ZIP, run `LockOnBridge.exe`, turn **Bridge enabled** ON (copies into LocalAppData).
+3. Optionally add an exclusion for `%LOCALAPPDATA%\LockOnBridge`.
+4. Extract the ZIP, run `LockOnBridge.exe`, and turn **Bridge** ON (copies into LocalAppData).
 
 **SmartScreen (“Windows protected your PC”):** More info → **Run anyway**.
 
-**Report to Microsoft** (helps everyone): [Submit a file](https://www.microsoft.com/en-us/wdsi/filesubmission) as a false positive, with the release SHA256 from the release notes. The lasting fix is a paid Authenticode certificate.
+**Report to Microsoft:** [Submit a file](https://www.microsoft.com/en-us/wdsi/filesubmission) as a false positive, with the release SHA256 from the release notes.
 
 ### Control window
 
 | | |
 |---|---|
-| **Enabled ON** | Autostart at Windows logon; wakes with War Thunder; stops when the game exits; tray icon while running |
-| **Enabled OFF** | Autostart removed; agent stopped; **no background process** — zero PC load until you turn it on again |
-| **Language** | English or Ukrainian |
-| **Check for updates** | Asks GitHub Releases; after confirmation downloads and replaces the program, then restarts |
-| **Desktop shortcut** | Created on first launch (points to the installed copy under LocalAppData) |
+| **Bridge ON** | Autostart at Windows logon; wakes with War Thunder; stops when the game exits; tray icon while running |
+| **Bridge OFF** | Autostart removed; agent stopped; no background process until you turn it on again |
+| **App language** | English, Ukrainian, or Russian |
+| **War Thunder language** | Language of the results screen |
+| **OCR** | OCR.space or EasyOCR |
+| **HTTP port** | Default `8112` |
+| **Check for updates** | GitHub Releases; after confirmation, downloads, replaces the program, and restarts |
+| **Desktop shortcut** | Created on first launch (installed copy under LocalAppData) |
 | **Hide to tray** | Window closes to the notification area (only when enabled) |
-| **Uninstall** | In-app **Uninstall…**, or double-click **`uninstall.exe`** next to `LockOnBridge.exe` |
+| **Uninstall** | In-app **Uninstall…**, or **`uninstall.exe`** next to `LockOnBridge.exe` |
 
 Logs: `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`
 
@@ -83,41 +90,43 @@ Logs: `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`
 
 Any of:
 
-- Double-click **`uninstall.exe`** in the same folder as `LockOnBridge.exe` (ZIP extract or `%LOCALAPPDATA%\LockOnBridge\app`)
-- In LockOn Bridge: **Uninstall…**
+- Double-click **`uninstall.exe`** next to `LockOnBridge.exe` (ZIP extract or `%LOCALAPPDATA%\LockOnBridge\app`)
+- In the window: **Uninstall…**
 - **Windows Settings → Apps → LockOn Bridge → Uninstall**
 
-This stops Bridge processes, removes autostart (scheduled task), the firewall rule for port 8112, the Desktop shortcut, the Apps & Features entry, and deletes `%LOCALAPPDATA%\LockOnBridge` (app, logs, settings).
+This stops Bridge, removes autostart, the firewall rule for port 8112, the Desktop shortcut, the Apps & Features entry, and deletes `%LOCALAPPDATA%\LockOnBridge` (app, logs, settings, the stored OCR key).
 
 ---
 
 ## Tips
 
-- Leave the **results screen** visible for a couple of seconds after the match.  
-- Phone and PC on the **same Wi‑Fi**; allow TCP **8112** in Windows Firewall if needed.  
-- While the game is open and Bridge is **ACTIVE**, open `http://127.0.0.1:8112/v1/health` — should return `{"ok": true, ...}`.
+- Leave the **results screen** visible until the RP and SL numbers finish counting. Bridge takes several shots over a few seconds and sends a pair only when two of them match.
+- Phone and PC on the **same Wi‑Fi**. Allow TCP **8112** if you skipped the prompt.
+- While Bridge is **ACTIVE**, open `http://127.0.0.1:8112/v1/health` on this PC. It should return `{"ok": true, ...}`.
 
 ---
 
 ## Privacy
 
-Local LAN only. No cloud. No account. OCR runs only for a few frames right after a battle.
+The published pair stays on your LAN. Bridge does not sign in to Gaijin and does not upload the whole screen.
+
+With **OCR.space**, the reward crop is sent to `api.ocr.space`. With **EasyOCR**, that read stays on the PC. The OCR.space key, if you saved one, stays encrypted in your Windows profile.
 
 ---
 
-## Українською (коротко)
+## Українською
 
-**Навіщо:** гра не віддає Total RP/SL через `:8111`. Bridge на ПК зчитує екран результатів і надсилає цифри в LockOn.
+**Навіщо:** після бою гра показує RP і SL лише на екрані результатів. Bridge зчитує цю смугу і віддає одну пару на цей ПК. Телефон у тій самій Wi‑Fi читає її по HTTP, порт **8112**.
 
-**Встановлення:** ZIP з Releases → `LockOnBridge.exe` → мова WT + **Bridge enabled** → у LockOn увімкніть **Use LockOn Bridge**. OCR-пакети Bridge пропонує сам при першому увімкненні.
+**OCR:** за замовчуванням **OCR.space** (Engine 3). На сервіс іде лише вирізка нагороди. Свій ключ — змінна `OCR_SPACE_API_KEY` або зашифрований файл у профілі Windows, не в репозиторії. Без ключа працює публічний демо-ключ, і він швидко закінчується (безкоштовно 2500 запитів на місяць і 500 на день). **EasyOCR** стоїть на ПК: його можна вибрати, і він сам ставиться, якщо API недоступне або ліміт вичерпано. Перше встановлення потребує Python 3.12.
 
-**SmartScreen / Defender:** немає платного підпису. Defender часто хибно позначає ZIP як `Sabsik.TE.A!ml` / `Wacatac.B!ml` (ML). Відновіть у **Захист від вірусів → Журнал захисту → Дозволити**, або виключіть `%LOCALAPPDATA%\LockOnBridge`. Беріть лише офіційний ZIP з Releases. Повний фікс — платний code signing.
+**Встановлення:** ZIP з Releases → `LockOnBridge.exe` → мова програми, мова War Thunder, OCR → **Bridge** увімкнено → **Дозволити доступ з телефона**. На телефоні: IP цього ПК і порт `8112`.
 
-**Вимкнути без навантаження:** вимкніть **Bridge enabled** — автозапуск знімається, фоновий процес не працює.
+**SmartScreen / Defender:** немає платного підпису. Defender часто хибно позначає ZIP як `Sabsik.TE.A!ml` / `Wacatac.B!ml`. Відновіть у **Захист від вірусів → Журнал захисту → Дозволити**. Беріть лише ZIP з Releases.
 
-**Видалити:** запустіть **`uninstall.exe`** поруч із `LockOnBridge.exe`, або **Видалити…** у вікні Bridge / через Параметри Windows → Застосунки.
+**Вимкнути:** вимкніть **Bridge** — автозапуск знімається, фоновий процес не працює.
 
-Застосунок LockOn: https://github.com/blushful8/LockOn
+**Видалити:** **`uninstall.exe`** поруч із `LockOnBridge.exe`, або **Видалити…** у вікні / Параметри Windows → Застосунки.
 
 ---
 
