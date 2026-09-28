@@ -9,10 +9,11 @@ from . import __version__
 from .settings import load_settings, update_settings
 
 if TYPE_CHECKING:
+    from .match_session import MatchSession
     from .report_store import ReportStore
 
 
-def make_handler(store: ReportStore):
+def make_handler(store: ReportStore, session: MatchSession | None = None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:  # noqa: A003
             print(f"[http] {self.address_string()} {format % args}")
@@ -48,6 +49,12 @@ def make_handler(store: ReportStore):
             if path in ("/v1/preferences", "/preferences"):
                 settings = load_settings()
                 self._send(200, {"hasPremiumAccount": settings.has_premium_account})
+                return
+            if path in ("/v1/session", "/session"):
+                if session is None:
+                    self._send(404, {"error": "not_found"})
+                    return
+                self._send(200, session.view().to_json())
                 return
             if path in ("/v1/reports", "/reports"):
                 reports = store.list_reports()
@@ -87,6 +94,11 @@ def make_handler(store: ReportStore):
     return Handler
 
 
-def serve(store: ReportStore, host: str = "0.0.0.0", port: int = 8112) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((host, port), make_handler(store))
+def serve(
+    store: ReportStore,
+    host: str = "0.0.0.0",
+    port: int = 8112,
+    session: MatchSession | None = None,
+) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((host, port), make_handler(store, session))
     return server

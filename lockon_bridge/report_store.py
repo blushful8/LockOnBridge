@@ -7,6 +7,7 @@ import uuid
 from dataclasses import replace
 from typing import Any, Optional
 
+from .match_session import MatchSession
 from .ocr_parse import BattleReport
 from .paths import data_root
 
@@ -31,8 +32,9 @@ class ReportStore:
     Memory and disk stay in sync so HTTP never serves a stale in-memory value.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, session: MatchSession | None = None) -> None:
         self._lock = threading.Lock()
+        self._session = session
         self._reports: list[BattleReport] = []
         self._seen_hashes: set[str] = set()
         self._load_disk_unlocked()
@@ -142,6 +144,8 @@ class ReportStore:
 
     def publish(self, report: BattleReport) -> bool:
         """Prepend a new OCR report. Returns True when the buffer head changed."""
+        if self._session is not None:
+            report = self._session.stamp(report)
         with self._lock:
             self._refresh_from_disk_unlocked()
             report = self._ensure_id(report)

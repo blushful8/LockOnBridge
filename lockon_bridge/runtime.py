@@ -16,6 +16,7 @@ from .capture import (
     set_last_ocr_frame,
 )
 from .capture_archive import archive_capture_frame
+from .match_session import MatchSession
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .paths import log_dir
 from .phase import read_phase
@@ -109,7 +110,9 @@ class BridgeRuntime:
 
     def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
-        self.store = ReportStore()
+        self.match = MatchSession()
+        self.store = ReportStore(session=self.match)
+        self._was_in_battle = False
         self._server: Optional[ThreadingHTTPServer] = None
         self._http_thread: Optional[threading.Thread] = None
         self._watch_thread: Optional[threading.Thread] = None
@@ -134,7 +137,12 @@ class BridgeRuntime:
         if self.running:
             return
         self._stop.clear()
-        self._server = serve(self.store, host=self.config.bind, port=self.config.port)
+        self._server = serve(
+            self.store,
+            host=self.config.bind,
+            port=self.config.port,
+            session=self.match,
+        )
         self._http_thread = threading.Thread(
             target=self._server.serve_forever,
             name="lockon-http",
@@ -174,6 +182,8 @@ class BridgeRuntime:
         if thread is not None and thread.is_alive():
             thread.join(timeout=3.0)
         self._watch_thread = None
+        self._was_in_battle = False
+        self.match.finish_results()
 
     def stop(self) -> None:
         self._stop.set()
@@ -192,7 +202,8 @@ class BridgeRuntime:
         if self._http_thread is not None:
             self._http_thread.join(timeout=3.0)
             self._http_thread = None
-        # Do NOT clear self.store — phone may still poll after the game closes.
+        # Do NOT clear self.store or the last battle id — the phone may still
+        # match a report published from the results screen.
         log.info("Bridge HTTP stopped (last report kept)")
 
     def _watch_wait(self, seconds: float) -> None:
@@ -203,8 +214,19 @@ class BridgeRuntime:
                 return
             time.sleep(min(0.25, end - time.monotonic()))
 
+    def _battle_just_ended(self, in_battle: bool) -> bool:
+        """Track hangar ↔ battle. A new id is issued only on entry."""
+        if in_battle:
+            if not self._was_in_battle:
+                self.match.begin()
+            self._was_in_battle = True
+            return False
+        if self._was_in_battle:
+            self._was_in_battle = False
+            return True
+        return False
+
     def _watch_loop(self) -> None:
-        was_in_battle = False
         cfg = self.config
         hangar = max(1.0, float(cfg.poll_hangar_sec or cfg.poll_sec or 2.0))
         battle = max(1.5, float(cfg.poll_battle_sec or 3.0))
@@ -226,15 +248,16 @@ class BridgeRuntime:
                 # Game HTTP not up yet / briefly unreachable — do not spam.
                 self._watch_wait(offline)
                 continue
-            if snapshot.in_battle:
-                if not was_in_battle:
-                    log.info("in battle")
-                was_in_battle = True
-                self._watch_wait(battle)
-            elif was_in_battle:
-                was_in_battle = False
-                self._capture_burst()
+            if self._battle_just_ended(snapshot.in_battle):
+                try:
+                    self._capture_burst()
+                finally:
+                    # Leave the id in place. The phone is often already in the
+                    # hangar while this report is still being published.
+                    self.match.finish_results()
                 self._watch_wait(hangar)
+            elif snapshot.in_battle:
+                self._watch_wait(battle)
             else:
                 self._watch_wait(hangar)
 
@@ -582,21 +605,24 @@ class BridgeRuntime:
                         )
                     except Exception:  # noqa: BLE001
                         pass
+                    report = self.match.stamp(report)
                     if self.store.publish(report):
                         log.info(
-                            "ocr %s/%s: neighbor match RP=%s SL=%s — sent",
+                            "ocr %s/%s: neighbor match RP=%s SL=%s session=%s — sent",
                             index + 1,
                             total,
                             report.research_points,
                             report.silver_lions,
+                            report.session_id or "—",
                         )
                     else:
                         log.info(
-                            "ocr %s/%s: neighbor match duplicate RP=%s SL=%s",
+                            "ocr %s/%s: neighbor match duplicate RP=%s SL=%s session=%s",
                             index + 1,
                             total,
                             report.research_points,
                             report.silver_lions,
+                            report.session_id or "—",
                         )
                     return
                 except Exception as exc:  # noqa: BLE001
@@ -654,12 +680,14 @@ class BridgeRuntime:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+                report = self.match.stamp(report)
                 if self.store.publish(report):
                     log.info(
-                        "ocr shot %s: last recognized RP=%s SL=%s — sent",
+                        "ocr shot %s: last recognized RP=%s SL=%s session=%s — sent",
                         shot_i + 1,
                         report.research_points,
                         report.silver_lions,
+                        report.session_id or "—",
                     )
                 else:
                     log.info(

@@ -17,11 +17,12 @@ Local HTTP, default port **8112**:
 | | |
 |---|---|
 | `GET /v1/health` | Bridge is up (`ok`, version, premium flag) |
+| `GET /v1/session` | `{ "sessionId": "<uuid>", "active": true }` for the battle in progress. The id appears when the hangar opens a battle and stays through the results screen and the published report. It changes only when the next battle starts. After the battle, `active` may be `false` while `sessionId` stays. |
 | `GET /v1/latest-report` | Last published pair, or `204` when there is none |
 | `GET /v1/reports` | Stored reports |
 | `GET` / `PUT /v1/preferences` | `{ "hasPremiumAccount": true }` or `false` |
 
-`latest-report` fields include `researchPoints`, `silverLions`, `capturedAtEpochMillis`, `confidence`, and `outcome`.
+`latest-report` and each item in `reports` include `sessionId` for that battle, plus `researchPoints`, `silverLions`, `capturedAtEpochMillis`, `confidence`, and `outcome`. `sessionId` is empty only on reports saved by an older build.
 
 ---
 
@@ -116,7 +117,7 @@ With **OCR.space**, the reward crop is sent to `api.ocr.space`. With **EasyOCR**
 
 ## Українською
 
-**Навіщо:** після бою гра показує RP і SL лише на екрані результатів. Bridge зчитує цю смугу і віддає одну пару на цей ПК. Телефон у тій самій Wi‑Fi читає її по HTTP, порт **8112**.
+**Навіщо:** після бою гра показує RP і SL лише на екрані результатів. Bridge зчитує цю смугу і віддає одну пару на цей ПК. Телефон у тій самій Wi‑Fi читає її по HTTP, порт **8112**. `GET /v1/session` віддає номер бою: він з’являється на вході в бій і лишається тим самим у звіті, аж доки не почнеться наступний.
 
 **OCR:** за замовчуванням **OCR.space** (Engine 3). На сервіс іде лише вирізка нагороди. Свій ключ — змінна `OCR_SPACE_API_KEY` або зашифрований файл у профілі Windows, не в репозиторії. Без ключа працює публічний демо-ключ, і він швидко закінчується (безкоштовно 2500 запитів на місяць і 500 на день). **EasyOCR** стоїть на ПК: його можна вибрати, і він сам ставиться, якщо API недоступне або ліміт вичерпано. Перше встановлення потребує Python 3.12.
 

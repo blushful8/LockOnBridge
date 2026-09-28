@@ -48,7 +48,8 @@ class BattleReport:
     id: str = ""
     # True when Messages dump has rewards but no Victory/Defeat yet (match still live).
     provisional: bool = False
-    # WT «Сесія: …» / Session id when present in Messages dump.
+    # Bridge match UUID for this battle. A Messages dump may still carry the
+    # WT session hex. Empty only when this build did not assign a match id.
     session_id: str = ""
 
     def to_json(self) -> dict[str, Any]:
