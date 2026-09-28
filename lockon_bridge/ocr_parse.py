@@ -1,10 +1,8 @@
 """
 War Thunder post-battle OCR → without-premium RP / SL.
 
-Primary path: scale-safe digit ROIs (``roi_layout`` / ``roi_rewards``) on the WT
-client frame — without-premium cells + «Всього» row, cross-checked.
-
-Fallback: full-panel OCR text with label-driven mapping (not absolute pixels).
+The reader is one parse-zone OCR string. Amounts are mapped from labels
+(«Зароблено», the four-cell premium grid, «Всього»), not from pixel pairs.
 
 Canonical priority (see parse_rewards_from_ocr_text):
   0. «Зароблено / Earned» line (OCR.space post-battle settle)
@@ -120,6 +118,7 @@ _WT_HINT = re.compile(
 
 # Ignore tiny / version-like numbers. Real match rewards are almost always ≥ this.
 _MIN_REWARD = 50
+_MIN_GRID_REWARD = 10
 # «Всього» SL can be well under 3k on short arcade matches (e.g. 2 912).
 _MIN_TOTAL_SL = 800
 
@@ -197,7 +196,7 @@ def _pair_from_reward_grid_amounts(
     if max(with_rp, without_rp) >= min(with_sl, without_sl):
         return None, None
     rp, sl = (with_rp, with_sl) if prefer_with else (without_rp, without_sl)
-    if not _plausible_reward_pair(rp, sl):
+    if not _plausible_grid_pair(rp, sl):
         return None, None
     return rp, sl
 
@@ -228,7 +227,7 @@ def _pair_from_team_place_grid(
             if not nxt:
                 continue
             values = _amounts_in_line(nxt)
-            if len(values) != 1 or values[0] < _MIN_REWARD:
+            if len(values) != 1 or values[0] < _MIN_GRID_REWARD:
                 if amounts:
                     break
                 continue
@@ -262,7 +261,7 @@ def _pair_from_four_amount_lines(
         if not line:
             continue
         values = _amounts_in_line(line)
-        if len(values) == 1 and values[0] >= _MIN_REWARD:
+        if len(values) == 1 and values[0] >= _MIN_GRID_REWARD:
             run.append(values[0])
             if len(run) > 4:
                 run = run[-4:]
@@ -590,6 +589,19 @@ def _sanitize_premium_amounts(amounts: list[int]) -> list[int]:
     return cleaned
 
 
+def _plausible_grid_pair(rp: int | None, sl: int | None) -> bool:
+    """Four-cell strip, including short unfinished battles such as 22 RP."""
+    if rp is None or sl is None:
+        return False
+    if rp < _MIN_GRID_REWARD or sl < _MIN_GRID_REWARD:
+        return False
+    if rp > 50_000 or sl > 200_000:
+        return False
+    if sl < rp:
+        return False
+    return sl / max(1, rp) <= 40
+
+
 def _plausible_reward_pair(rp: int | None, sl: int | None) -> bool:
     if rp is None or sl is None:
         return False
@@ -891,7 +903,7 @@ def parse_rewards_from_ocr_text(
     place_rp, place_sl = _pair_from_team_place_grid(
         text, prefer_with=bool(prefer_premium_rewards)
     )
-    if _plausible_reward_pair(place_rp, place_sl):
+    if _plausible_grid_pair(place_rp, place_sl):
         rp, sl = place_rp, place_sl
         place_hit = True
         premium_hit = True
@@ -899,7 +911,7 @@ def parse_rewards_from_ocr_text(
         grid_rp, grid_sl = _pair_from_four_amount_lines(
             text, prefer_with=bool(prefer_premium_rewards)
         )
-        if _plausible_reward_pair(grid_rp, grid_sl):
+        if _plausible_grid_pair(grid_rp, grid_sl):
             rp, sl = grid_rp, grid_sl
             place_hit = True
             premium_hit = True
@@ -1011,7 +1023,11 @@ def parse_rewards_from_ocr_text(
         rp, sl = _prefer_deglued_pair(cleaned, rp, sl)
 
     # Require a plausible pair — never publish RP=1 / SL=0 junk or swapped columns.
-    if not _plausible_reward_pair(rp, sl):
+    if place_hit:
+        acceptable = _plausible_grid_pair(rp, sl)
+    else:
+        acceptable = _plausible_reward_pair(rp, sl)
+    if not acceptable:
         # Premium path may have claimed a bad pair; fall back to totals.
         if premium_hit:
             tot_rp, tot_sl = _pair_from_total_block(cleaned)

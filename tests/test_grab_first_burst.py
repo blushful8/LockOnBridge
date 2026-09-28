@@ -120,7 +120,7 @@ def test_grab_first_stops_early_after_settle(monkeypatch, tmp_path):
     assert ocr_n["n"] == 2
 
 
-def test_six_different_shots_are_not_published(monkeypatch, tmp_path):
+def test_six_different_shots_send_the_last_planned_read(monkeypatch, tmp_path):
     pool = [_frame((i, 0, 0)) for i in range(6)]
 
     def fake_grab(*, focus=False, require_foreground=True):
@@ -131,7 +131,7 @@ def test_six_different_shots_are_not_published(monkeypatch, tmp_path):
     def fake_ocr(frame, **kwargs):
         ocr_n["n"] += 1
         n = ocr_n["n"]
-        return b"png", [("roi:calib-p1", f"Без преміума {100 + n} {5000 + n}")]
+        return b"png", [("roi:calib-p1", f"Без преміума {200 + n} {4000 + n}")]
 
     monkeypatch.setattr("lockon_bridge.runtime.grab_wt_client_image", fake_grab)
     monkeypatch.setattr("lockon_bridge.runtime.ocr_saved_frame", fake_ocr)
@@ -144,7 +144,45 @@ def test_six_different_shots_are_not_published(monkeypatch, tmp_path):
     rt = BridgeRuntime(RuntimeConfig(frames=6, grab_frame_gap=0.0, capture_delay_sec=0.0))
     rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
     rt._capture_burst()
-    assert published == []
+    assert [(report.research_points, report.silver_lions) for report in published] == [
+        (206, 4006)
+    ]
+
+
+def test_blank_sixth_shot_sends_the_previous_recognized_read(monkeypatch, tmp_path):
+    pool = [_frame((i, 0, 0)) for i in range(6)]
+    texts = [
+        "Без преміума 200 4000",
+        "Без преміума 300 4100",
+        "Без преміума 400 4200",
+        "Без преміума 500 4300",
+        "Без преміума 600 4400",
+        "",
+    ]
+
+    def fake_grab(*, focus=False, require_foreground=True):
+        return pool.pop(0) if pool else None
+
+    def fake_ocr(frame, **kwargs):
+        text = texts.pop(0)
+        if not text:
+            return b"", []
+        return b"png", [("roi:calib-p1", text)]
+
+    monkeypatch.setattr("lockon_bridge.runtime.grab_wt_client_image", fake_grab)
+    monkeypatch.setattr("lockon_bridge.runtime.ocr_saved_frame", fake_ocr)
+    monkeypatch.setattr("lockon_bridge.ocr_isolate.PersistentOcrWorker", _FakeWorker)
+    monkeypatch.setattr("lockon_bridge.runtime.last_capture_meta", lambda: None)
+    monkeypatch.setattr("lockon_bridge.paths.data_root", lambda: tmp_path)
+    _patch_stable_pixels(monkeypatch)
+
+    published: list[BattleReport] = []
+    rt = BridgeRuntime(RuntimeConfig(frames=6, grab_frame_gap=0.0, capture_delay_sec=0.0))
+    rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
+    rt._capture_burst()
+    assert [(report.research_points, report.silver_lions) for report in published] == [
+        (600, 4400)
+    ]
 
 
 def test_neighbor_match_publishes_and_stops(monkeypatch, tmp_path):
@@ -157,6 +195,46 @@ def test_neighbor_match_publishes_and_stops(monkeypatch, tmp_path):
     series = [(10, 20), (11, 21), (12, 22), (13, 23), (14, 24), (15, 25)]
     assert consecutive_reward_verdict(series, final=True)[0] == "failure"
     assert consecutive_reward_verdict([(1, 1), (2, 2)], final=False)[0] == "continue"
+    assert consecutive_reward_verdict([(5, 5), (5, 5), (9, 9)], final=True) == (
+        "failure",
+        None,
+    )
+
+
+def test_matching_tail_is_sent_when_an_earlier_shot_was_lower(monkeypatch, tmp_path):
+    pool = [_frame((i, 0, 0)) for i in range(6)]
+    texts = [
+        "",
+        "Без преміума 645 8139",
+        "Без преміума 657 8232",
+        "Без преміума 657 8232",
+        "Без преміума 657 8232",
+        "Без преміума 657 8232",
+    ]
+
+    def fake_grab(*, focus=False, require_foreground=True):
+        return pool.pop(0) if pool else None
+
+    def fake_ocr(frame, **kwargs):
+        text = texts.pop(0)
+        if not text:
+            return b"", []
+        return b"png", [("roi:calib-p1", text)]
+
+    monkeypatch.setattr("lockon_bridge.runtime.grab_wt_client_image", fake_grab)
+    monkeypatch.setattr("lockon_bridge.runtime.ocr_saved_frame", fake_ocr)
+    monkeypatch.setattr("lockon_bridge.ocr_isolate.PersistentOcrWorker", _FakeWorker)
+    monkeypatch.setattr("lockon_bridge.runtime.last_capture_meta", lambda: None)
+    monkeypatch.setattr("lockon_bridge.paths.data_root", lambda: tmp_path)
+    _patch_stable_pixels(monkeypatch)
+
+    published: list[BattleReport] = []
+    rt = BridgeRuntime(RuntimeConfig(frames=6, grab_frame_gap=0.0, capture_delay_sec=0.0))
+    rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
+    rt._capture_burst()
+    assert [(report.research_points, report.silver_lions) for report in published] == [
+        (657, 8232)
+    ]
 
 
 def test_default_shot_gaps_stretch_the_tail():

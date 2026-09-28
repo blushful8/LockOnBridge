@@ -6,6 +6,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 from .capture import list_installed_ocr_languages
@@ -237,8 +238,7 @@ def make_test_report(
 
 def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path | None]:
     from .capture import last_ocr_frame, ocr_screen_capture
-    from .roi_debug import save_ocr_crop_dumps
-    from .roi_rewards import DualColumnProbe, probe_both_premium_columns
+    from .layout_ocr import crop_parse_zone
     from .settings import load_settings
 
     settings = load_settings()
@@ -260,24 +260,7 @@ def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path 
                 f"[{tag}]\n{text}\n=> RP={parsed.research_points} SL={parsed.silver_lions}"
             )
 
-    probe: DualColumnProbe | None = None
-    frame = last_ocr_frame()
-    if frame is not None:
-        try:
-            probe = probe_both_premium_columns(frame, prefer_with=prefer)
-        except Exception as exc:  # noqa: BLE001
-            dump_body_parts.insert(0, f"(dual column probe failed: {exc})")
-            probe = None
-
     dump_text = "\n\n---OCR---\n\n".join(dump_body_parts)
-    if probe is not None:
-        uk = (settings.language or "uk") == "uk"
-        dump_text = (
-            "=== COLUMN PROBE ===\n"
-            + probe.format_lines(uk=uk)
-            + "\n\n---OCR---\n\n"
-            + dump_text
-        )
 
     if save_dump:
         dump_dir = log_dir()
@@ -285,33 +268,13 @@ def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path 
         from .runtime import write_last_ocr_dump
 
         write_last_ocr_dump(dump_text or "")
-        if probe is not None:
-            import json
-
-            (dump_dir / "last_ocr_probe.json").write_text(
-                json.dumps(probe.to_dict(), ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+        frame = last_ocr_frame()
         if frame is not None:
-            debug_full = bool(settings.debug_show_rois)
-            save_ocr_crop_dumps(frame, dump_dir, debug_full=debug_full)
+            buf = BytesIO()
+            crop_parse_zone(frame).save(buf, format="PNG")
+            (dump_dir / "last_capture.png").write_bytes(buf.getvalue())
         else:
             (dump_dir / "last_capture.png").write_bytes(png)
-
-    # Prefer calib probe banked values for the "report" shown in Test OCR.
-    if probe is not None and probe.banked() is not None:
-        hit = probe.banked()
-        assert hit is not None
-        report = BattleReport(
-            captured_at_epoch_millis=int(time.time() * 1000),
-            research_points=hit.research_points,
-            silver_lions=hit.silver_lions,
-            outcome="undecided",
-            raw_hash=f"probe-{hit.pair_index}-{hit.research_points}-{hit.silver_lions}",
-            confidence=0.92,
-            source=f"ocr-calib-p{hit.pair_index}",
-        )
-        return dump_text, report, dump_dir
 
     if best is None:
         preview = variants[0][1] if variants else ""
@@ -394,35 +357,8 @@ def run_ocr_once_cli() -> int:
         return 1
     if dump_dir is not None:
         _cli_print(f"OCR dump -> {dump_dir / 'last_ocr.txt'}")
-        _cli_print(f"Lean ROI collage -> {dump_dir / 'last_capture.png'}")
-        _cli_print(f"Per-crop PNGs -> {dump_dir / 'roi_crops'}")
+        _cli_print(f"Parse zone -> {dump_dir / 'last_capture.png'}")
     _cli_print(f"Best OCR preview: {summarize_ocr_text(text)}")
-    probe_path = (dump_dir / "last_ocr_probe.json") if dump_dir else None
-    if probe_path is not None and probe_path.is_file():
-        try:
-            import json
-
-            from .roi_rewards import ColumnProbeHit, DualColumnProbe
-
-            raw = json.loads(probe_path.read_text(encoding="utf-8"))
-
-            def _hit(node):
-                if not isinstance(node, dict):
-                    return None
-                return ColumnProbeHit(
-                    pair_index=int(node.get("pairIndex", 0)),
-                    research_points=int(node["researchPoints"]),
-                    silver_lions=int(node["silverLions"]),
-                )
-
-            probe = DualColumnProbe(
-                prefer_with=bool(raw.get("preferWith")),
-                without=_hit(raw.get("without")),
-                with_premium=_hit(raw.get("with")),
-            )
-            _cli_print(probe.format_lines(uk=False))
-        except Exception as exc:  # noqa: BLE001
-            _cli_print(f"probe read failed: {exc}")
     if report is None:
         _cli_print("Parse: no RP/SL found")
         return 2

@@ -77,14 +77,8 @@ def _dpapi(data: bytes, *, protect: bool) -> bytes:
 
 
 def active_ocr_engine() -> int:
-    """Saved choice: 2 (default) or 3. Anything else falls back to 2."""
-    try:
-        from .settings import load_settings
-
-        engine = int(load_settings().ocr_space_engine)
-    except Exception:  # noqa: BLE001
-        engine = 2
-    return 3 if engine == 3 else 2
+    """OCR.space Engine 3. Engine 2 is not used."""
+    return 3
 
 
 def timeout_for_engine(engine: int) -> float:
@@ -203,7 +197,7 @@ def ocr_space_parse(
     """
     if not png:
         return {"text": "", "lines": [], "raw": {}}
-    engine = 3 if int(engine if engine is not None else active_ocr_engine()) == 3 else 2
+    engine = 3
     if timeout_sec is None:
         timeout_sec = timeout_for_engine(engine)
     if prep:

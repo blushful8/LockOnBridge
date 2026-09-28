@@ -648,17 +648,60 @@ def ocrspace_layout_variants(
     *,
     api_key: str | None = None,
     max_crops: int = 1,
+    engine: str | None = None,
 ) -> list[tuple[str, str]]:
     """
-    One OCR.space call on the shipped parse zone.
+    One read of the shipped parse zone.
 
-    Extra crops are intentionally not sent: each call costs latency and
-    the free key's hourly budget, and a second crop often reads a different
-    column (sidebar «Зароблено») and beats the totals.
+    ``engine`` is ocrspace or easyocr. OCR.space stays the default.
+    EasyOCR takes the call when the cloud engine is selected but the monthly
+    limit is spent or the request fails.
     """
     del max_crops
+    from .local_ocr import (
+        LOCAL_ENGINES,
+        begin_install,
+        cloud_error_is_fallback,
+        cloud_limited,
+        read_text,
+    )
     from .ocr_parse import parse_rewards_from_ocr_text
     from .ocr_space import ocr_space_parse
+    from .settings import load_settings
+
+    chosen = (engine or load_settings().ocr_backend or "ocrspace").strip().lower()
+    if chosen in ("ocr.space", "cloud", "auto", "", "paddle"):
+        chosen = "ocrspace" if chosen != "paddle" else "easyocr"
+
+    def _local(name: str, *, wait: bool) -> list[tuple[str, str]]:
+        crop = crop_parse_zone(frame)
+        text = read_text(crop, engine=name, wait=wait)
+        if not text.strip():
+            return []
+        log.info("layout OCR %s chars=%s head=%r", name, len(text), text[:80].replace("\n", " | "))
+        return [(f"{name}:zone", text)]
+
+    def _local_fallback(*, wait: bool) -> list[tuple[str, str]]:
+        order = ["easyocr"]
+        for name in order:
+            try:
+                variants = _local(name, wait=wait)
+            except RuntimeError as exc:
+                log.warning("local OCR %s skipped: %s", name, exc)
+                if "ще встановлюється" in str(exc):
+                    return []
+                continue
+            if variants:
+                return variants
+        begin_install("easyocr")
+        return []
+
+    if chosen in LOCAL_ENGINES:
+        return _local_fallback(wait=False)
+
+    if cloud_limited():
+        log.info("OCR.space monthly or daily limit is spent — local OCR")
+        return _local_fallback(wait=False)
 
     variants: list[tuple[str, str]] = []
     crops = [("zone", crop_parse_zone(frame))]
@@ -670,6 +713,8 @@ def ocrspace_layout_variants(
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("OCR.space layout crop %s failed: %s", tag, exc)
+            if cloud_error_is_fallback(str(exc)):
+                return _local_fallback(wait=False)
             continue
         full = parsed.get("text") or ""
         lines = parsed.get("lines") or []

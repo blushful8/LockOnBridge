@@ -468,15 +468,13 @@ def _run_ocr_on_image_file(
     premium_ceiling: tuple[int, int] | None,
     skip_expensive_fallback: bool,
 ) -> dict[str, Any]:
-    """Shared one-shot / loop body: load PNG → ROI (+ optional panel) → payload."""
-    from .capture import _crop_results_rois, _png_from_image, ocr_png_variants
+    """Load one frame and OCR the single parse zone."""
+    del roi_only, lang, pair_hint, premium_ceiling, skip_expensive_fallback
     from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
-    from .roi_rewards import extract_roi_reward_variants, last_calib_hit_hint
     from .settings import load_settings
 
     image = Image.open(image_path).convert("RGB")
     settings = load_settings()
-    use_lang = lang or settings.wt_ui_language or settings.language
     use_backend = backend or getattr(settings, "ocr_backend", "auto") or "auto"
     use_prefer = (
         bool(prefer_with)
@@ -486,101 +484,36 @@ def _run_ocr_on_image_file(
 
     breadcrumb("ocr-worker start")
     mode_l = (use_backend or "ocrspace").strip().lower()
-    if mode_l in ("ocr.space", "cloud", "auto", ""):
+    if mode_l not in ("ocrspace", "easyocr"):
         mode_l = "ocrspace"
-    if mode_l == "ocrspace":
-        from .layout_ocr import ocrspace_layout_variants
+    from .layout_ocr import ocrspace_layout_variants
 
-        breadcrumb("ocr-worker parse-zone")
-        try:
-            variants = ocrspace_layout_variants(image, max_crops=1)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("parse-zone OCR failed in worker: %s", exc)
-            variants = []
-        payload = {
-            "ok": True,
-            "variants": [[tag, text] for tag, text in variants],
-            "roi_confident": False,
-        }
-        parsed_best = choose_best_report(
-            [
-                (text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=use_prefer))
-                for _tag, text in variants
-            ],
-            prefer_premium_rewards=use_prefer,
-        )
-        if parsed_best is not None:
-            payload["rp"] = parsed_best[1].research_points
-            payload["sl"] = parsed_best[1].silver_lions
-            payload["confidence"] = parsed_best[1].confidence
-        tmp = out_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(out_path)
-        breadcrumb(f"ocr-worker zone done variants={len(variants)}")
-        return payload
-
-    breadcrumb("ocr-worker extract_roi")
-    variants: list[tuple[str, str]] = []
+    breadcrumb("ocr-worker parse-zone")
     try:
-        variants.extend(
-            extract_roi_reward_variants(
-                image,
-                prefer_with=use_prefer,
-                pair_hint=pair_hint,
-                premium_ceiling=premium_ceiling,
-                skip_expensive_fallback=skip_expensive_fallback,
-            )
-        )
+        variants = ocrspace_layout_variants(image, max_crops=1, engine=mode_l)
     except Exception as exc:  # noqa: BLE001
-        log.warning("ROI digit extract failed in worker: %s", exc)
-
-    roi_best = choose_best_report(
-        [
-            (text, parse_rewards_from_ocr_text(text))
-            for tag, text in variants
-            if tag.startswith("roi:")
-        ]
-    )
-    roi_confident = roi_best is not None and roi_best[1].confidence >= 0.85
-    if not (roi_only or roi_confident):
-        if skip_expensive_fallback:
-            log.info("OCR worker: skip panel engines (expensive fallback disabled)")
-            breadcrumb("ocr-worker skip-panel")
-        else:
-            breadcrumb("ocr-worker panel engines")
-            for roi_tag, crop in _crop_results_rois(image):
-                png = _png_from_image(crop)
-                for eng_tag, text in ocr_png_variants(
-                    png, wt_ui_language=use_lang, backend=use_backend
-                ):
-                    variants.append((f"{eng_tag}/{roi_tag}", text))
-
-    payload: dict[str, Any] = {
+        log.warning("parse-zone OCR failed in worker: %s", exc)
+        variants = []
+    payload = {
         "ok": True,
         "variants": [[tag, text] for tag, text in variants],
-        "roi_confident": bool(roi_confident),
+        "roi_confident": False,
     }
-    if roi_best is not None:
-        payload["rp"] = roi_best[1].research_points
-        payload["sl"] = roi_best[1].silver_lions
-        payload["confidence"] = roi_best[1].confidence
-    hint = last_calib_hit_hint()
-    if hint is not None:
-        calib: dict[str, Any] = {
-            "prefer_with": hint.prefer_with,
-            "pair_index": hint.pair_index,
-        }
-        if hint.premium_ceiling is not None:
-            calib["premium_ceiling"] = [
-                int(hint.premium_ceiling[0]),
-                int(hint.premium_ceiling[1]),
-            ]
-        payload["calib_hint"] = calib
-
+    parsed_best = choose_best_report(
+        [
+            (text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=use_prefer))
+            for _tag, text in variants
+        ],
+        prefer_premium_rewards=use_prefer,
+    )
+    if parsed_best is not None:
+        payload["rp"] = parsed_best[1].research_points
+        payload["sl"] = parsed_best[1].silver_lions
+        payload["confidence"] = parsed_best[1].confidence
     tmp = out_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
-    breadcrumb(f"ocr-worker done variants={len(variants)}")
+    breadcrumb(f"ocr-worker zone done variants={len(variants)}")
     return payload
 
 

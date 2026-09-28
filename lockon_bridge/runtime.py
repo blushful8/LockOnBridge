@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
+from io import BytesIO
 from typing import Optional
 
 from .capture import (
@@ -19,7 +20,6 @@ from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summariz
 from .paths import log_dir
 from .phase import read_phase
 from .report_store import ReportStore
-from .roi_auto_learn import maybe_auto_learn_pair
 from .server import serve
 
 log = logging.getLogger("lockon_bridge")
@@ -46,21 +46,18 @@ def consecutive_reward_verdict(
     final: bool,
 ) -> tuple[str, tuple[int, int] | None]:
     """
-    Compare decoded rewards of consecutive screenshots.
+    Compare the two newest decoded rewards.
 
-    The first equal neighbor pair is a success and can be sent immediately.
-    A mismatch before the last slot continues. If the last two still differ,
-    the result cannot be guaranteed.
+    An equal neighbor pair can be sent. A mismatch before the last slot
+    continues. If the last two still differ, the result cannot be guaranteed.
     """
     if len(pairs) < 2:
         return ("failure" if final else "continue"), None
-    last = len(pairs) - 1
-    for index in range(1, len(pairs)):
-        left, right = pairs[index - 1], pairs[index]
-        if left is not None and right is not None and left == right:
-            return "success", right
-        if final and index == last:
-            return "failure", None
+    left, right = pairs[-2], pairs[-1]
+    if left is not None and right is not None and left == right:
+        return "success", right
+    if final:
+        return "failure", None
     return "continue", None
 
 # Align with LockOn Android BridgeRepository default minConfidence.
@@ -415,10 +412,9 @@ class BridgeRuntime:
             worker = None
 
         last_preview = ""
-        sticky_pair: int | None = None
-        sticky_ceiling: tuple[int, int] | None = None
         total = len(buffer)
         decoded: list[tuple[int, int] | None] = []
+        reads: list[tuple[object | None, object]] = []
         prev_frame = None
         confirm_done = 0
         planned = len(buffer)
@@ -467,23 +463,9 @@ class BridgeRuntime:
                     set_last_ocr_frame(frame)
                     png, variants = ocr_saved_frame(
                         frame,
-                        roi_only=False,
                         worker=worker,
-                        pair_hint=sticky_pair,
                         prefer_with=prefer,
-                        premium_ceiling=sticky_ceiling,
                     )
-                    meta = last_capture_meta()
-                    if isinstance(meta, dict) and "pair_index" in meta:
-                        sticky_pair = int(meta["pair_index"])
-                        ceiling = meta.get("premium_ceiling")
-                        if (
-                            isinstance(ceiling, (list, tuple))
-                            and len(ceiling) >= 2
-                            and ceiling[0] is not None
-                            and ceiling[1] is not None
-                        ):
-                            sticky_ceiling = (int(ceiling[0]), int(ceiling[1]))
 
                     breadcrumb(
                         f"ocr_buffer frame {index + 1}/{total} variants={len(variants)}"
@@ -530,6 +512,7 @@ class BridgeRuntime:
                     else:
                         last_preview = "(empty OCR)"
                     decoded.append(pair_now)
+                    reads.append((best[1] if pair_now is not None and best is not None else None, frame))
                     if pair_now is None and held is not None and index >= planned:
                         log.info(
                             "confirmation left the results screen — sending last match RP=%s SL=%s",
@@ -563,7 +546,11 @@ class BridgeRuntime:
                             if index + 1 >= len(buffer):
                                 _confirm_after_rise()
                             continue
-                        if _climbed_into(decoded) and confirm_done == 0:
+                        if (
+                            _climbed_into(decoded)
+                            and confirm_done == 0
+                            and index + 1 < planned
+                        ):
                             log.info(
                                 "ocr %s/%s: RP=%s SL=%s matched, but an earlier shot was lower — still counting",
                                 index + 1,
@@ -603,15 +590,6 @@ class BridgeRuntime:
                             report.research_points,
                             report.silver_lions,
                         )
-                        try:
-                            maybe_auto_learn_pair(
-                                frame,
-                                rp=report.research_points,
-                                sl=report.silver_lions,
-                                prefer_with=prefer,
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            log.debug("auto-learn skipped: %s", exc)
                     else:
                         log.info(
                             "ocr %s/%s: neighbor match duplicate RP=%s SL=%s",
@@ -624,6 +602,7 @@ class BridgeRuntime:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("ocr %s/%s failed: %s", index + 1, total, exc)
                     decoded.append(None)
+                    reads.append((None, frame))
                     try:
                         from .crashguard import write_crash_report
                         import traceback
@@ -640,8 +619,58 @@ class BridgeRuntime:
                         pass
                     breadcrumb(f"ocr_buffer frame {index + 1} error: {exc}")
 
+            fallback_index = planned - 1
+            chosen: tuple[int, object, object] | None = None
+            if (
+                0 <= fallback_index < len(reads)
+                and reads[fallback_index][0] is not None
+            ):
+                chosen = (
+                    fallback_index,
+                    reads[fallback_index][0],
+                    reads[fallback_index][1],
+                )
+            else:
+                for back in range(len(reads) - 1, -1, -1):
+                    if reads[back][0] is not None:
+                        chosen = (back, reads[back][0], reads[back][1])
+                        break
+            if chosen is not None:
+                shot_i, report, shot = chosen
+                log.info(
+                    "no neighbor match — sending shot %s/%s RP=%s SL=%s",
+                    shot_i + 1,
+                    planned,
+                    report.research_points,
+                    report.silver_lions,
+                )
+                try:
+                    archive_capture_frame(
+                        shot,
+                        kind="ok",
+                        rp=report.research_points,
+                        sl=report.silver_lions,
+                        note="last",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                if self.store.publish(report):
+                    log.info(
+                        "ocr shot %s: last recognized RP=%s SL=%s — sent",
+                        shot_i + 1,
+                        report.research_points,
+                        report.silver_lions,
+                    )
+                else:
+                    log.info(
+                        "ocr shot %s: last recognized duplicate RP=%s SL=%s",
+                        shot_i + 1,
+                        report.research_points,
+                        report.silver_lions,
+                    )
+                return
             log.info(
-                "burst finished without a guaranteed pair | shots=%s | last_ocr=%s",
+                "burst finished without a recognized pair | shots=%s | last_ocr=%s",
                 len(decoded),
                 last_preview or "(none)",
             )
@@ -661,16 +690,13 @@ class BridgeRuntime:
     def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:
         try:
             write_last_ocr_dump(text)
-            from .roi_debug import save_ocr_crop_dumps
-            from .settings import load_settings
+            from .layout_ocr import crop_parse_zone
 
             frame = last_ocr_frame()
             if frame is not None:
-                save_ocr_crop_dumps(
-                    frame,
-                    log_dir(),
-                    debug_full=bool(load_settings().debug_show_rois),
-                )
+                buf = BytesIO()
+                crop_parse_zone(frame).save(buf, format="PNG")
+                (log_dir() / "last_capture.png").write_bytes(buf.getvalue())
             elif png:
                 (log_dir() / "last_capture.png").write_bytes(png)
         except OSError:

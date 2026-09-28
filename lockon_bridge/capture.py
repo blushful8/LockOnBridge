@@ -468,167 +468,6 @@ def _png_from_image(image: Image.Image, max_width: int = 1920) -> bytes:
     return buf.getvalue()
 
 
-def _crop_results_rois(image: Image.Image) -> list[tuple[str, Image.Image]]:
-    """
-    Focus OCR on the post-battle rewards panel, not the whole HUD.
-
-    WT results: left/center table with Без преміума / Всього; bottom bar has FPS/CPU
-    noise that confuses Tesseract when the full window is scanned.
-    """
-    width, height = image.size
-    if width < 100 or height < 100:
-        return [("full", image)]
-
-    rois: list[tuple[str, Image.Image]] = []
-    # Main results card — drop top chrome and bottom status strip.
-    primary = image.crop(
-        (
-            int(width * 0.03),
-            int(height * 0.07),
-            int(width * 0.78),
-            int(height * 0.86),
-        )
-    )
-    rois.append(("panel", primary))
-
-    # Tighter band around without-premium / total RP·SL columns.
-    band = image.crop(
-        (
-            int(width * 0.06),
-            int(height * 0.26),
-            int(width * 0.70),
-            int(height * 0.70),
-        )
-    )
-    if band.width >= 200 and band.height >= 120:
-        rois.append(("totals", band))
-
-    # «Зароблено / Earned» line — primary OCR.space target after battle.
-    earned = image.crop(
-        (
-            int(width * 0.04),
-            int(height * 0.40),
-            int(width * 0.58),
-            int(height * 0.64),
-        )
-    )
-    if earned.width >= 200 and earned.height >= 80:
-        rois.append(("earned", earned))
-    return rois
-
-
-def _grab_primary_image() -> Image.Image:
-    with mss.MSS() as sct:
-        monitor = sct.monitors[1]
-        shot = sct.grab(monitor)
-        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    width, height = image.size
-    return image.crop(
-        (
-            int(width * 0.01),
-            int(height * 0.01),
-            int(width * 0.99),
-            int(height * 0.97),
-        )
-    )
-
-
-def grab_region_png(
-    left: int,
-    top: int,
-    right: int,
-    bottom: int,
-    *,
-    max_width: int = 1920,
-) -> bytes:
-    width = max(1, right - left)
-    height = max(1, bottom - top)
-    with mss.MSS() as sct:
-        shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
-        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    rois = _crop_results_rois(image)
-    return _png_from_image(rois[0][1], max_width=max_width)
-
-
-def grab_region_png_variants(
-    left: int,
-    top: int,
-    right: int,
-    bottom: int,
-    *,
-    max_width: int = 1920,
-) -> list[tuple[str, bytes]]:
-    """Return [(roi_tag, png_bytes), ...] for multi-crop OCR."""
-    width = max(1, right - left)
-    height = max(1, bottom - top)
-    with mss.MSS() as sct:
-        shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
-        image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    out: list[tuple[str, bytes]] = []
-    for tag, crop in _crop_results_rois(image):
-        out.append((tag, _png_from_image(crop, max_width=max_width)))
-    return out
-
-
-def grab_war_thunder_png(max_width: int = 1920) -> bytes | None:
-    """Capture the War Thunder client window when it is running and visible."""
-    image = _grab_wt_client_image()
-    if image is None:
-        return None
-    try:
-        rois = _crop_results_rois(image)
-        return _png_from_image(rois[0][1], max_width=max_width)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("WT window grab failed: %s", exc)
-        return None
-
-
-def grab_war_thunder_png_variants(max_width: int = 1920) -> list[tuple[str, bytes]] | None:
-    image = _grab_wt_client_image()
-    if image is None:
-        return None
-    try:
-        out: list[tuple[str, bytes]] = [("full", _png_from_image(image, max_width=max_width))]
-        for tag, crop in _crop_results_rois(image):
-            out.append((tag, _png_from_image(crop, max_width=max_width)))
-        return out
-    except Exception as exc:  # noqa: BLE001
-        log.debug("WT window multi-crop failed: %s", exc)
-        return None
-
-
-def grab_primary_monitor_png(max_width: int = 1920) -> bytes:
-    """
-    Grab nearly the full primary monitor.
-
-    **Not used for battle/Test OCR** — privacy: personal desktop must never be
-    saved as OCR dumps. Kept for rare offline tooling only.
-    """
-    image = _grab_primary_image()
-    rois = _crop_results_rois(image)
-    return _png_from_image(rois[0][1], max_width=max_width)
-
-
-def grab_for_ocr_png(max_width: int = 1920) -> bytes | None:
-    """Capture WT results panel only — never the whole desktop."""
-    wt = grab_war_thunder_png(max_width=max_width)
-    if wt is not None:
-        log.info("OCR capture: War Thunder window (results panel)")
-        return wt
-    log.info("OCR capture skipped: War Thunder window not available / not foreground")
-    return None
-
-
-def grab_for_ocr_png_variants(max_width: int = 1920) -> list[tuple[str, bytes]]:
-    """Multi-ROI capture for better reward-digit OCR (WT only)."""
-    wt = grab_war_thunder_png_variants(max_width=max_width)
-    if wt:
-        log.info("OCR capture: War Thunder window (%s ROI)", len(wt))
-        return wt
-    log.info("OCR capture skipped: War Thunder window not available / not foreground")
-    return []
-
-
 def ocr_png_variants_windows(png: bytes) -> list[tuple[str, str]]:
     """Windows.Media.Ocr only — one entry per installed language pack."""
     return asyncio.run(_recognize_png_variants(png))
@@ -708,14 +547,10 @@ def ocr_saved_frame(
     )
 
     _LAST_OCR_FRAME = frame
-    contrast = _panel_contrast_score(frame)
-    low_contrast = contrast < 32.0
-    skip_expensive = bool(skip_expensive_fallback) or (
-        low_contrast and not roi_only and pair_hint is None
-    )
+    del roi_only, pair_hint, premium_ceiling, skip_expensive_fallback
+    from .layout_ocr import crop_parse_zone
 
-    panel = _crop_results_rois(frame)[0][1]
-    primary = _png_from_image(panel)
+    primary = _png_from_image(crop_parse_zone(frame))
 
     if os.environ.get("LOCKON_OCR_WORKER") == "1":
         _LAST_CAPTURE_META = None
@@ -724,47 +559,27 @@ def ocr_saved_frame(
             source="wt",
             lang=lang,
             mode=mode,
-            roi_only=roi_only,
             prefer_with=prefer,
-            pair_hint=pair_hint,
-            premium_ceiling=premium_ceiling,
-            skip_expensive_fallback=skip_expensive,
         )
 
-    breadcrumb(
-        f"ocr_saved_frame isolate roi_only={roi_only} "
-        f"skip_expensive={skip_expensive} contrast={contrast:.1f}"
-    )
+    breadcrumb("ocr_saved_frame isolate parse-zone")
     if worker is not None:
         variants, hint = worker.process(
             frame,
-            roi_only=roi_only,
             wt_ui_language=lang,
             backend=mode,
-            pair_hint=pair_hint,
             prefer_with=prefer,
-            premium_ceiling=premium_ceiling,
-            skip_expensive_fallback=skip_expensive,
         )
     else:
         from .ocr_isolate import run_ocr_worker_on_image
 
         variants, hint = run_ocr_worker_on_image(
             frame,
-            roi_only=roi_only,
             wt_ui_language=lang,
             backend=mode,
-            pair_hint=pair_hint,
             prefer_with=prefer,
-            premium_ceiling=premium_ceiling,
-            skip_expensive_fallback=skip_expensive,
         )
-    # Only sticky-promote when this frame actually produced a calib variant.
-    if hint is not None and not any(
-        str(tag).startswith("roi:calib-p") for tag, _text in variants
-    ):
-        hint = None
-    _LAST_CAPTURE_META = hint
+    _LAST_CAPTURE_META = None
     return primary, variants
 
 
@@ -793,7 +608,7 @@ def ocr_screen_capture(
         breadcrumb("ocr_screen_capture skipped no-wt-foreground")
         return b"", []
 
-    log.info("OCR capture: War Thunder window + scale-safe digit ROIs")
+    log.info("OCR capture: War Thunder window, one parse zone")
     return ocr_saved_frame(
         frame,
         wt_ui_language=wt_ui_language,
@@ -813,52 +628,20 @@ def _ocr_variants_inprocess(
     source: str,
     lang: str,
     mode: str,
-    roi_only: bool,
     prefer_with: bool | None = None,
-    pair_hint: int | None = None,
-    premium_ceiling: tuple[int, int] | None = None,
-    skip_expensive_fallback: bool = False,
 ) -> list[tuple[str, str]]:
-    """OCR.space on results ROIs (no local Tesseract / Windows panel engines)."""
-    del source
+    """One parse-zone read. OCR.space, with EasyOCR when that engine is selected."""
+    del source, lang, prefer_with
     mode_l = (mode or "ocrspace").strip().lower()
-    if mode_l in ("ocr.space", "cloud", "auto", ""):
+    if mode_l not in ("ocrspace", "easyocr"):
         mode_l = "ocrspace"
-
-    variants: list[tuple[str, str]] = []
-    if mode_l != "ocrspace":
-        from .roi_rewards import extract_roi_reward_variants
-
-        try:
-            variants.extend(
-                extract_roi_reward_variants(
-                    frame,
-                    prefer_with=prefer_with,
-                    pair_hint=pair_hint,
-                    premium_ceiling=premium_ceiling,
-                    skip_expensive_fallback=skip_expensive_fallback,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("ROI digit extract failed: %s", exc)
-        if skip_expensive_fallback or roi_only:
-            return variants
-        for roi_tag, crop in _crop_results_rois(frame):
-            png = _png_from_image(crop)
-            for eng_tag, text in ocr_png_variants(
-                png, wt_ui_language=lang, backend=mode_l
-            ):
-                variants.append((f"{eng_tag}/{roi_tag}", text))
-        return variants
-
-    # OCR.space: one developer-shipped zone. No pair stack, no extra crops.
     try:
         from .layout_ocr import ocrspace_layout_variants
 
-        variants.extend(ocrspace_layout_variants(frame, max_crops=1))
+        return list(ocrspace_layout_variants(frame, max_crops=1, engine=mode_l))
     except Exception as exc:  # noqa: BLE001
         log.warning("parse-zone OCR failed: %s", exc)
-    return variants
+        return []
 
 
 def ocr_screen() -> str:

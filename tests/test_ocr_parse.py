@@ -416,6 +416,14 @@ def test_four_amount_lines_without_place_are_the_grid_not_two_rp_columns():
     assert report.confidence >= 0.9
 
 
+def test_short_grid_and_trailing_dash_still_make_a_pair():
+    text = "Без преміума\n40\n22\n302-\n202\n"
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+    assert report is not None
+    assert report.research_points == 22
+    assert report.silver_lions == 202
+
+
 def test_phone_preview_uses_latest_report_fields():
     from lockon_bridge.ocr_parse import parse_rewards_from_ocr_text
     from lockon_bridge.parse_zone_ui import _phone_view

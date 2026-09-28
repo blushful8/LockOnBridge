@@ -25,7 +25,6 @@ from .autostart import (
 from .i18n import Strings, app_language_code, strings_for
 from .dpi import enable_windows_dpi_awareness, sync_tk_scaling
 from .paths import PRODUCT_NAME, data_root, is_frozen, log_dir, log_file
-from .roi_debug import RoiDebugOverlay
 from .settings import load_settings, update_settings
 from .switch_widget import SwitchButton
 from .updater import (
@@ -122,18 +121,12 @@ class BridgeApp:
         self.language_var = tk.StringVar(value=self._language_label(self.settings.language))
         self._wt_code_by_label: dict[str, str] = {}
         self.wt_language_var = tk.StringVar(value="")
-        self.ocr_engine_var = tk.StringVar(value="")
         self.ocr_backend_var = tk.StringVar(value="")
         self._ocr_backend_by_label: dict[str, str] = {}
         self.debug_rois_var = tk.BooleanVar(value=False)
         self._dev_unlocked = False
         self._quota_var: tk.StringVar | None = None
         self._version_clicks = 0
-        self._roi_calibrator = None
-        self._roi_overlay = RoiDebugOverlay(
-            self.root,
-            on_disabled=self._on_roi_preview_closed,
-        )
 
         self._build_ui()
         self._apply_window_size(initial=True)
@@ -459,24 +452,32 @@ class BridgeApp:
         self.wt_language_combo.pack(side="right")
         self.wt_language_combo.bind("<<ComboboxSelected>>", self._on_wt_language_chosen)
 
-        engine_labels = (t.ocr_engine_2, t.ocr_engine_3)
-        self.ocr_engine_var.set(
-            t.ocr_engine_3 if int(self.settings.ocr_space_engine) == 3 else t.ocr_engine_2
+        ocr_labels = ("OCR.space", "EasyOCR")
+        self._ship_ocr_by_label = {
+            "OCR.space": "ocrspace",
+            "EasyOCR": "easyocr",
+        }
+        current_ocr = next(
+            (
+                label
+                for label, code in self._ship_ocr_by_label.items()
+                if code == self.settings.ocr_backend
+            ),
+            "OCR.space",
         )
-        engine_row = tk.Frame(self.root, bg=BG)
-        engine_row.pack(fill="x", padx=20, pady=2)
-        tk.Label(
-            engine_row, text=t.ocr_engine, font=("Segoe UI", 10), fg=FG, bg=BG
-        ).pack(side="left")
-        self.ocr_engine_combo = ttk.Combobox(
-            engine_row,
-            textvariable=self.ocr_engine_var,
-            values=engine_labels,
+        self.ocr_choice_var = tk.StringVar(value=current_ocr)
+        ocr_row = tk.Frame(self.root, bg=BG)
+        ocr_row.pack(fill="x", padx=20, pady=2)
+        tk.Label(ocr_row, text="OCR", font=("Segoe UI", 10), fg=FG, bg=BG).pack(side="left")
+        self.ocr_choice_combo = ttk.Combobox(
+            ocr_row,
+            textvariable=self.ocr_choice_var,
+            values=ocr_labels,
             state="readonly",
-            width=36,
+            width=18,
         )
-        self.ocr_engine_combo.pack(side="right")
-        self.ocr_engine_combo.bind("<<ComboboxSelected>>", self._on_ocr_engine_chosen)
+        self.ocr_choice_combo.pack(side="right")
+        self.ocr_choice_combo.bind("<<ComboboxSelected>>", self._on_ship_ocr_chosen)
 
         if self._dev_unlocked:
             self._quota_var = tk.StringVar(value="")
@@ -523,11 +524,6 @@ class BridgeApp:
         if self._dev_unlocked:
             more_menu.add_separator()
             more_menu.add_command(label=t.roi_calibrator, command=self._open_roi_calibrator)
-            more_menu.add_checkbutton(
-                label=t.debug_show_rois,
-                variable=self.debug_rois_var,
-                command=self._on_debug_rois_toggle,
-            )
             # Dev-only: legacy Messages clipboard / local OCR backends.
             more_menu.add_separator()
             more_menu.add_command(label=t.test_clipboard, command=self._test_clipboard)
@@ -545,6 +541,7 @@ class BridgeApp:
             )
             self._ocr_backend_by_label = {
                 "OCR.space": "ocrspace",
+                "EasyOCR": "easyocr",
                 t.ocr_backend_auto: "auto",
                 t.ocr_backend_windows: "windows",
                 t.ocr_backend_tesseract: "tesseract",
@@ -583,8 +580,6 @@ class BridgeApp:
             pass
 
         self._refresh_badge_for_status(self._last_agent_status)
-        # _build_ui destroys Toplevel children — recreate overlay if still on.
-        self._roi_overlay.on_ui_rebuilt()
 
     def _btn(self, parent: tk.Widget, text: str, command, *, danger: bool = False) -> tk.Button:
         return tk.Button(
@@ -626,16 +621,6 @@ class BridgeApp:
             return self.strings.lang_ru
         return self.strings.lang_en
 
-    def _on_ocr_engine_chosen(self, _event=None) -> None:
-        from .settings import update_settings
-
-        label = self.ocr_engine_var.get()
-        engine = 3 if label == self.strings.ocr_engine_3 else 2
-        if engine == int(self.settings.ocr_space_engine):
-            return
-        self.settings = update_settings(ocr_space_engine=engine)
-        log.info("OCR.space engine set to %s", engine)
-
     def _on_language_chosen(self, _event=None) -> None:
         selected = self.language_var.get()
         language = app_language_code(selected)
@@ -657,6 +642,41 @@ class BridgeApp:
         self._window_size_locked = False
         self._apply_window_size(initial=True)
         self._refresh_badge_for_status(self._last_agent_status)
+
+    def _on_ship_ocr_chosen(self, _event=None) -> None:
+        label = self.ocr_choice_var.get()
+        code = self._ship_ocr_by_label.get(label, "ocrspace")
+        self._apply_ocr_choice(code)
+
+    def _apply_ocr_choice(self, code: str) -> None:
+        from tkinter import messagebox
+
+        from .local_ocr import begin_install
+        from .settings import update_settings
+
+        if code == self.settings.ocr_backend and code == "ocrspace":
+            return
+        self.settings = update_settings(ocr_backend=code)
+        if hasattr(self, "ocr_choice_var"):
+            label = next(
+                (name for name, value in self._ship_ocr_by_label.items() if value == code),
+                "OCR.space",
+            )
+            self.ocr_choice_var.set(label)
+        if code != "easyocr":
+            return
+        state = begin_install(code)
+        if state == "missing-python":
+            messagebox.showwarning(
+                PRODUCT_NAME,
+                "Щоб поставити локальний OCR, потрібен Python 3.12.",
+            )
+        elif state == "installing":
+            messagebox.showinfo(
+                PRODUCT_NAME,
+                f"Встановлення EasyOCR почалось. Перший раз це кілька хвилин, "
+                "потім він працює без ліміту API.",
+            )
 
     def _on_wt_language_chosen(self, _event=None) -> None:
         label = self.wt_language_var.get()
@@ -687,6 +707,9 @@ class BridgeApp:
                     )
                     self.ocr_backend_var.set(prev)
                     return
+        if code in ("ocrspace", "easyocr"):
+            self._apply_ocr_choice(code)
+            return
         self.settings = update_settings(ocr_backend=code)
 
     def _on_version_clicked(self, _event=None) -> None:
@@ -699,7 +722,7 @@ class BridgeApp:
             return
         from tkinter import simpledialog
 
-        from .roi_calibrator_ui import verify_dev_passphrase
+        from .win_topmost import verify_dev_passphrase
 
         raw = simpledialog.askstring(
             self.strings.dev_unlock_title,
@@ -769,18 +792,6 @@ class BridgeApp:
             self._apply_quota_label()
 
         threading.Thread(target=work, name="ocr-quota", daemon=True).start()
-
-    def _on_debug_rois_toggle(self) -> None:
-        if not self._dev_unlocked:
-            self.debug_rois_var.set(False)
-            return
-        on = bool(self.debug_rois_var.get())
-        self.settings = update_settings(debug_show_rois=on)
-        self._roi_overlay.set_enabled(on)
-
-    def _on_roi_preview_closed(self) -> None:
-        self.debug_rois_var.set(False)
-        self.settings = load_settings()
 
     def _begin_tesseract_winget_install(self) -> None:
         from .ocr_backends import install_tesseract_via_winget
@@ -1215,10 +1226,6 @@ class BridgeApp:
         countdown = 5
         t = self.strings
         try:
-            self._roi_overlay.pause()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
             self.root.withdraw()
         except tk.TclError:
             try:
@@ -1232,11 +1239,7 @@ class BridgeApp:
                     self.root.after(1000, lambda: tick(left - 1))
                 except tk.TclError:
                     self._ocr_busy = False
-                    try:
-                        self._roi_overlay.resume()
-                    except Exception:  # noqa: BLE001
-                        pass
-                return
+                    return
 
             def work() -> None:
                 report = None
@@ -1250,10 +1253,6 @@ class BridgeApp:
 
                 def show() -> None:
                     self._ocr_busy = False
-                    try:
-                        self._roi_overlay.resume()
-                    except Exception:  # noqa: BLE001
-                        pass
                     # Stay withdrawn until the dialog — avoid lift/focus fighting WT.
                     try:
                         self.root.deiconify()
@@ -1298,11 +1297,6 @@ class BridgeApp:
             return
         self._ocr_busy = True
         countdown = 5
-        # Pause ROI preview; fully hide Bridge so its own UI is never OCR'd.
-        try:
-            self._roi_overlay.pause()
-        except Exception:  # noqa: BLE001
-            pass
         try:
             self.root.withdraw()
         except tk.TclError:
@@ -1318,11 +1312,7 @@ class BridgeApp:
                     self.root.after(1000, lambda: tick(left - 1))
                 except tk.TclError:
                     self._ocr_busy = False
-                    try:
-                        self._roi_overlay.resume()
-                    except Exception:  # noqa: BLE001
-                        pass
-                return
+                    return
 
             def work() -> None:
                 error: str | None = None
@@ -1412,10 +1402,6 @@ class BridgeApp:
     def _show_ocr_result(self, text: str, report, error: str | None) -> None:
         self._ocr_busy = False
         try:
-            self._roi_overlay.resume()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
             self.root.deiconify()
             self.root.lift()
         except tk.TclError:
@@ -1426,37 +1412,6 @@ class BridgeApp:
             return
 
         probe_text = ""
-        try:
-            import json
-
-            probe_path = log_dir() / "last_ocr_probe.json"
-            if probe_path.is_file():
-                raw = json.loads(probe_path.read_text(encoding="utf-8"))
-                from .roi_rewards import ColumnProbeHit, DualColumnProbe
-
-                def _hit(node) -> ColumnProbeHit | None:
-                    if not isinstance(node, dict):
-                        return None
-                    return ColumnProbeHit(
-                        pair_index=int(node.get("pairIndex", 0)),
-                        research_points=int(node["researchPoints"]),
-                        silver_lions=int(node["silverLions"]),
-                    )
-
-                probe = DualColumnProbe(
-                    prefer_with=bool(raw.get("preferWith")),
-                    without=_hit(raw.get("without")),
-                    with_premium=_hit(raw.get("with")),
-                )
-                probe_text = probe.format_lines(language=self.settings.language)
-        except Exception:  # noqa: BLE001
-            probe_text = ""
-
-        if not probe_text and text and "=== COLUMN PROBE ===" in text:
-            probe_text = text.split("---OCR---", 1)[0].replace(
-                "=== COLUMN PROBE ===", ""
-            ).strip()
-
         if report is None and not probe_text:
             from .ocr_parse import summarize_ocr_text
 
@@ -1662,10 +1617,6 @@ class BridgeApp:
                     # Stop agent/tray first so files under app\ unlock before replace.
                     self._closing = True
                     try:
-                        self._roi_overlay.shutdown()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
                         self.agent.stop(join=True)
                     except Exception:  # noqa: BLE001
                         pass
@@ -1696,10 +1647,6 @@ class BridgeApp:
         if not ok:
             return
         self._closing = True
-        try:
-            self._roi_overlay.shutdown()
-        except Exception:  # noqa: BLE001
-            pass
         self.agent.stop(join=True)
         self._destroy_tray()
         full_uninstall()
@@ -1712,15 +1659,9 @@ class BridgeApp:
     def _exit_clean(self) -> None:
         self._closing = True
         try:
-            if self._roi_calibrator is not None:
-                self._roi_calibrator.close()
             editor = getattr(self, "_parse_zone_editor", None)
             if editor is not None:
                 editor.close()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            self._roi_overlay.shutdown()
         except Exception:  # noqa: BLE001
             pass
         self.agent.stop(join=True)

@@ -78,31 +78,14 @@ def lean_roi_signature(
     *,
     cfg: SettleConfig | None = None,
 ) -> Image.Image | None:
-    """
-    Tiny grayscale collage of lean digit ROIs — cheap fingerprint of reward cells.
-
-    Full-client compare is noisy (background video). Lean crops track the
-    animating RP/SL glyphs that matter for settle.
-    """
-    from .roi_layout import iter_reward_digit_rois
+    """Tiny grayscale of the one parse zone. Full-client compare is too noisy."""
+    from .layout_ocr import crop_parse_zone
 
     cfg = cfg or SettleConfig()
-    crops = [crop.convert("L") for _tag, crop in iter_reward_digit_rois(frame, dense=False)]
-    if not crops:
+    crop = crop_parse_zone(frame).convert("L")
+    if crop.width < 2 or crop.height < 2:
         return None
-    height = max(c.height for c in crops)
-    width = sum(c.width for c in crops) + 2 * (len(crops) - 1)
-    strip = Image.new("L", (max(1, width), max(1, height)), 0)
-    x = 0
-    for crop in crops:
-        if crop.height != height:
-            crop = crop.resize(
-                (max(1, int(crop.width * height / float(crop.height))), height),
-                Image.Resampling.BILINEAR,
-            )
-        strip.paste(crop, (x, 0))
-        x += crop.width + 2
-    return strip.resize(cfg.frame_sig_size, Image.Resampling.BILINEAR)
+    return crop.resize(cfg.frame_sig_size, Image.Resampling.BILINEAR)
 
 
 def signature_mae(left: Image.Image, right: Image.Image) -> float:

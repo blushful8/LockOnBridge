@@ -25,7 +25,7 @@ class BridgeSettings:
     ocr_backend: str = "ocrspace"
     # Free key from https://ocr.space/ocrapi (stored in LocalAppData settings only).
     ocr_space_api_key: str = ""
-    # OCR.space Engine 2 (faster) or Engine 3 (slower, sometimes clearer).
+    # OCR.space Engine 3 only. Engine 2 misreads this results strip.
     ocr_space_engine: int = 3
     # User already answered the OCR pack setup prompt.
     ocr_setup_done: bool = False
@@ -68,14 +68,11 @@ class BridgeSettings:
         backend = str(raw.get("ocr_backend") or "ocrspace").strip().lower()
         if backend in ("ocr.space", "cloud"):
             backend = "ocrspace"
-        if backend not in ("auto", "windows", "tesseract", "ocrspace"):
+        if backend == "paddle":
+            backend = "easyocr"
+        if backend not in ("auto", "windows", "tesseract", "ocrspace", "easyocr"):
             backend = "ocrspace"
-        try:
-            ocr_eng = int(raw.get("ocr_space_engine", 3))
-        except (TypeError, ValueError):
-            ocr_eng = 3
-        if ocr_eng not in (2, 3):
-            ocr_eng = 3
+        ocr_eng = 3
         # Default True when key missing (previous builds always registered on enable).
         if "autostart_with_windows" in raw:
             autostart = bool(raw.get("autostart_with_windows"))

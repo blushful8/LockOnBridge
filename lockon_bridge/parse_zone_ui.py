@@ -1,6 +1,6 @@
 """Developer editor for the single OCR zone shipped to every user.
 
-Same shell as the old pair calibrator: a borderless overlay locked to the
+A borderless overlay locked to the
 War Thunder window (any monitor) or a borderless fullscreen screenshot, plus a
 topmost control panel. Fractions are of the full frame, matching the crop the
 shipping OCR path uses.
@@ -20,7 +20,7 @@ from PIL import Image, ImageTk
 from .dpi import fit_toplevel
 from .paths import is_frozen
 from .roi_calib import default_parse_zone, load_parse_zone, save_parse_zone
-from .roi_calibrator_ui import (
+from .win_topmost import (
     _force_hwnd_topmost,
     _style_tool_topmost,
     _toplevel_hwnd,
@@ -111,6 +111,8 @@ class ParseZoneEditor:
         self._view_var: tk.StringVar | None = None
         self._preview_raw = ""
         self._preview_phone = ""
+        self._test_ocr_var: tk.StringVar | None = None
+        self._test_ocr_by_label: dict[str, str] = {}
 
     def open(self) -> None:
         self._zone = load_parse_zone()
@@ -275,6 +277,43 @@ class ParseZoneEditor:
         self._button(src_btns, "Останній fail", self._open_last_fail)
         self._button(src_btns, "Папка captures", self._open_captures_folder)
 
+        from .settings import load_settings
+
+        ocr_row = tk.Frame(win, bg="#12141a")
+        ocr_row.pack(fill="x", padx=12, pady=(4, 0))
+        tk.Label(
+            ocr_row,
+            text="OCR для цієї перевірки",
+            font=("Segoe UI", 10),
+            fg="#e8eaed",
+            bg="#12141a",
+        ).pack(side="left")
+        self._test_ocr_by_label = {
+            "OCR.space": "ocrspace",
+            "EasyOCR": "easyocr",
+        }
+        saved = load_settings().ocr_backend
+        current = next(
+            (label for label, code in self._test_ocr_by_label.items() if code == saved),
+            "OCR.space",
+        )
+        self._test_ocr_var = tk.StringVar(value=current)
+        picker = tk.OptionMenu(
+            ocr_row,
+            self._test_ocr_var,
+            *self._test_ocr_by_label.keys(),
+            command=self._on_test_ocr,
+        )
+        picker.configure(
+            font=("Segoe UI", 10),
+            fg="#e8eaed",
+            bg="#2a2f38",
+            activebackground="#3a414d",
+            relief="flat",
+            highlightthickness=0,
+        )
+        picker.pack(side="right")
+
         btns = tk.Frame(win, bg="#12141a")
         btns.pack(fill="x", padx=12, pady=(10, 8))
         for text, cmd in (
@@ -292,7 +331,7 @@ class ParseZoneEditor:
                 "або на весь екран зі скріншотом. Тягни всередині рамки, щоб "
                 "зсунути; кути — розмір. На скріншоті можна намалювати нову "
                 "рамку на порожньому місці. «Перевірити зону» читає поточну "
-                "рамку через OCR.space, навіть якщо її ще не збережено. Esc — закрити."
+                "рамку обраним OCR, навіть якщо її ще не збережено. Esc — закрити."
             ),
             font=("Segoe UI", 9),
             fg="#8b909a",
@@ -898,14 +937,15 @@ class ParseZoneEditor:
             self._set_status(msg)
             return
         self._preview_busy = True
-        self._set_preview("OCR виділеної зони… Engine 3 може відповідати довше.")
+        engine = self._test_engine()
+        self._set_preview(f"OCR виділеної зони… {engine}. Перший локальний запуск може ставити модель.")
         self._set_status("Перевірка зони OCR…")
 
         def work() -> None:
             error: str | None = None
             body: tuple[str, str, object] | None = None
             try:
-                body = _preview_views(frame, zone)
+                body = _preview_views(frame, zone, engine=engine)
             except Exception as exc:  # noqa: BLE001
                 error = str(exc)
                 log.warning("zone parse preview failed: %s", exc)
@@ -934,6 +974,29 @@ class ParseZoneEditor:
 
         threading.Thread(target=work, name="zone-parse-preview", daemon=True).start()
 
+    def _test_engine(self) -> str:
+        label = self._test_ocr_var.get() if self._test_ocr_var is not None else "OCR.space"
+        return self._test_ocr_by_label.get(label, "ocrspace")
+
+    def _on_test_ocr(self, label: str) -> None:
+        from .local_ocr import begin_install
+        from .settings import update_settings
+
+        code = self._test_ocr_by_label.get(label, "ocrspace")
+        update_settings(ocr_backend=code)
+        if code != "easyocr":
+            self._set_status("Перевірка піде через OCR.space.")
+            return
+        state = begin_install(code)
+        if state == "missing-python":
+            self._set_status("Немає Python 3.12, щоб поставити локальний OCR.")
+        elif state == "installing":
+            self._set_status(
+                f"Встановлення {label}. Коли скінчиться, натисни «Перевірити зону»."
+            )
+        else:
+            self._set_status(f"{label} готовий. Натисни «Перевірити зону».")
+
     def _show_active_preview(self) -> None:
         mode = self._view_var.get() if self._view_var is not None else "raw"
         body = self._preview_phone if mode == "phone" else self._preview_raw
@@ -961,29 +1024,38 @@ class ParseZoneEditor:
             log.warning("zone check publish failed: %s", exc)
 
 
-def _preview_views(frame: Image.Image, zone: NormRect) -> tuple[str, str, object]:
+def _preview_views(
+    frame: Image.Image, zone: NormRect, *, engine: str = "ocrspace"
+) -> tuple[str, str, object]:
     from .layout_ocr import crop_parse_zone, select_structured_text
+    from .local_ocr import read_text
     from .ocr_parse import parse_rewards_from_ocr_text
-    from .ocr_space import active_ocr_engine, ocr_space_parse, raw_ocr_text
+    from .ocr_space import ocr_space_parse, raw_ocr_text
     from .settings import load_settings
 
     crop = crop_parse_zone(frame, zone)
-    buf = _png(crop)
-    parsed = ocr_space_parse(buf, language="auto", overlay=True)
-    full = parsed.get("text") or ""
-    lines = parsed.get("lines") or []
-    dump = raw_ocr_text(parsed.get("raw") if isinstance(parsed.get("raw"), dict) else None)
-    if not dump:
-        dump = full.strip() or "(OCR повернув порожній текст)"
+    title = "EasyOCR" if engine == "easyocr" else "OCR.space Engine 3"
+    if engine == "easyocr":
+        text = read_text(crop, engine=engine, wait=True)
+        dump = text.strip() or "(OCR повернув порожній текст)"
+        structured = dump
+    else:
+        buf = _png(crop)
+        parsed = ocr_space_parse(buf, language="auto", overlay=True)
+        full = parsed.get("text") or ""
+        lines = parsed.get("lines") or []
+        dump = raw_ocr_text(parsed.get("raw") if isinstance(parsed.get("raw"), dict) else None)
+        if not dump:
+            dump = full.strip() or "(OCR повернув порожній текст)"
+        structured = select_structured_text(full, lines) or dump
     header = [
-        f"Engine {active_ocr_engine()}",
+        title,
         (
             f"зона {zone.left:.3f},{zone.top:.3f} – {zone.right:.3f},{zone.bottom:.3f}"
             f"   crop {crop.size[0]}×{crop.size[1]} з {frame.size[0]}×{frame.size[1]}"
         ),
     ]
     raw_view = "\n".join(header) + "\n\n" + dump
-    structured = select_structured_text(full, lines) or dump
     premium = bool(load_settings().has_premium_account)
     report = parse_rewards_from_ocr_text(structured, prefer_premium_rewards=premium)
     return raw_view, _phone_view(report, premium=premium), report

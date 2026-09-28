@@ -72,24 +72,19 @@ def test_finalize_returns_best_if_screen_closes_early():
 
 
 def _fake_results_frame(*, digit_fill: int) -> Image.Image:
-    """Synthetic full-client frame with solid blobs in calibrated lean ROI cells."""
-    from lockon_bridge.roi_calib import load_calibrated_rois
-    from lockon_bridge.roi_layout import pixel_box
+    """Synthetic frame with a solid block in the parse zone."""
+    from lockon_bridge.roi_calib import default_parse_zone
 
     img = Image.new("RGB", (1920, 1080), (20, 20, 30))
     draw = ImageDraw.Draw(img)
-    fill = (digit_fill, digit_fill, digit_fill)
-    calib = load_calibrated_rois()
-    if calib is not None:
-        for col in (calib.with_premium, calib.without_premium):
-            for rect in (col.rp, col.sl):
-                box = pixel_box(img, rect, min_width=8, min_height=4)
-                if box is not None:
-                    draw.rectangle(box, fill=fill)
-    else:
-        # Catalogue fallback when calib file is absent.
-        draw.rectangle((360, 160, 780, 290), fill=fill)
-        draw.rectangle((960, 475, 1220, 520), fill=fill)
+    zone = default_parse_zone()
+    box = (
+        int(1920 * zone.left),
+        int(1080 * zone.top),
+        int(1920 * zone.right),
+        int(1080 * zone.bottom),
+    )
+    draw.rectangle(box, fill=(digit_fill, digit_fill, digit_fill))
     return img
 
 
