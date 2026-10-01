@@ -19,6 +19,18 @@ from pathlib import Path
 
 log = logging.getLogger("lockon_bridge.local_ocr")
 
+
+def _hidden_process() -> dict[str, object]:
+    """Keep the EasyOCR Python window off the desktop."""
+    flags = 0
+    startupinfo = None
+    if sys.platform == "win32":
+        flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+    return {"creationflags": flags, "startupinfo": startupinfo}
+
 LOCAL_ENGINES = ("easyocr",)
 _PACKAGES = {
     "easyocr": ("easyocr==1.7.2",),
@@ -99,6 +111,7 @@ def engine_ready(engine: str) -> bool:
             capture_output=True,
             timeout=120,
             check=False,
+            **_hidden_process(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -129,6 +142,7 @@ def _base_python() -> str | None:
                 text=True,
                 timeout=20,
                 check=False,
+                **_hidden_process(),
             )
         except (OSError, subprocess.TimeoutExpired):
             done = None
@@ -180,6 +194,7 @@ def ensure_installed(engine: str) -> None:
             [base, "-m", "venv", str(py.parent.parent)],
             check=True,
             timeout=180,
+            **_hidden_process(),
         )
     _reader_path().write_text(_READER, encoding="utf-8")
     log.info("installing %s", engine)
@@ -195,6 +210,7 @@ def ensure_installed(engine: str) -> None:
         ],
         check=True,
         timeout=3600,
+        **_hidden_process(),
     )
     if not engine_ready(engine):
         raise RuntimeError(f"{engine} встановився, але імпорт не вдався")
@@ -225,6 +241,7 @@ def read_text(image, *, engine: str, wait: bool) -> str:
             encoding="utf-8",
             errors="replace",
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            **_hidden_process(),
         )
     finally:
         try:

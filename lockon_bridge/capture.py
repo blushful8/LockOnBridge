@@ -14,6 +14,9 @@ from winrt.windows.media.ocr import OcrEngine
 from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
 
 from .process_watch import war_thunder_pids
+from .win_graphics import bind_graphics_api
+
+bind_graphics_api()
 
 log = logging.getLogger("lockon_bridge.capture")
 
@@ -225,7 +228,11 @@ def _grab_hwnd_gdi(hwnd: int) -> Image.Image | None:
         bmi.biBitCount = 32
         bmi.biCompression = 0  # BI_RGB
         buf = (ctypes.c_ubyte * (width * height * 4))()
-        got = gdi32.GetDIBits(hdc_src, hbmp_obj, 0, height, buf, ctypes.byref(bmi), 0)
+        gdi32.SelectObject(hdc_mem, old)
+        try:
+            got = gdi32.GetDIBits(hdc_src, hbmp_obj, 0, height, buf, ctypes.byref(bmi), 0)
+        finally:
+            gdi32.SelectObject(hdc_mem, hbmp_obj)
         if not got:
             return None
         raw = bytes(buf)
@@ -260,21 +267,118 @@ def _grab_hwnd_gdi(hwnd: int) -> Image.Image | None:
     old = gdi32.SelectObject(hdc_mem, hbmp)
     image: Image.Image | None = None
     try:
-        # BitBlt often "succeeds" with a black buffer on exclusive fullscreen —
-        # always fall through to PrintWindow(PW_RENDERFULLCONTENT) when empty.
+        # Wait for the next composed frame. Without this, six BitBlts of a
+        # hardware window return the same cached picture.
+        try:
+            dwmapi.DwmFlush()
+        except Exception:  # noqa: BLE001
+            pass
+        # BitBlt often "succeeds" with a black or stale buffer on exclusive
+        # fullscreen — PrintWindow(PW_RENDERFULLCONTENT) asks for a fresh one.
         gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_win, 0, 0, 0x00CC0020)
         image = _bitmap_to_image(hdc_win, hbmp)
-        if image is None:
-            try:
-                if user32.PrintWindow(wintypes.HWND(hwnd), hdc_mem, 2):
-                    image = _bitmap_to_image(hdc_win, hbmp)
-            except Exception:  # noqa: BLE001
-                image = None
+        # A non-black BitBlt can still be the previous results screen.
+        # PrintWindow asks for the frame the window has now.
+        try:
+            if user32.PrintWindow(wintypes.HWND(hwnd), hdc_mem, 2):
+                fresh = _bitmap_to_image(hdc_win, hbmp)
+                if fresh is not None:
+                    image = fresh
+        except Exception:  # noqa: BLE001
+            pass
     finally:
         gdi32.SelectObject(hdc_mem, old)
         gdi32.DeleteObject(hbmp)
         gdi32.DeleteDC(hdc_mem)
         user32.ReleaseDC(wintypes.HWND(hwnd), hdc_win)
+    return image
+
+
+def _frame_stamp(image: Image.Image) -> bytes:
+    """Tiny fingerprint so a frozen window buffer can be told from the live screen."""
+    return image.resize((24, 16)).convert("RGB").tobytes()
+
+
+def _grab_hwnd_screen(hwnd: int) -> Image.Image | None:
+    """What is on the monitor over the game, without DXGI.
+
+    The window DC can keep a frame from the previous battle. Desktop
+    duplication is not used here: that is what pulls exclusive fullscreen
+    back to the desktop.
+    """
+    point = wintypes.POINT(0, 0)
+    if not user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(point)):
+        return None
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+        return None
+    width = int(rect.right - rect.left)
+    height = int(rect.bottom - rect.top)
+    if width < 400 or height < 300:
+        return None
+    gdi32 = ctypes.windll.gdi32
+    try:
+        dwmapi.DwmFlush()
+    except Exception:  # noqa: BLE001
+        pass
+    hdc_screen = user32.GetDC(None)
+    if not hdc_screen:
+        return None
+    hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
+    hbmp = gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
+    if not hdc_mem or not hbmp:
+        if hbmp:
+            gdi32.DeleteObject(hbmp)
+        if hdc_mem:
+            gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(None, hdc_screen)
+        return None
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi32.SelectObject.restype = wintypes.HGDIOBJ
+    old = gdi32.SelectObject(hdc_mem, hbmp)
+    image: Image.Image | None = None
+    try:
+        if gdi32.BitBlt(
+            hdc_mem, 0, 0, width, height, hdc_screen, int(point.x), int(point.y), 0x00CC0020
+        ):
+            class _BMI(ctypes.Structure):
+                _fields_ = [
+                    ("biSize", wintypes.DWORD),
+                    ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD),
+                    ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD),
+                    ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG),
+                    ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD),
+                ]
+
+            info = _BMI()
+            info.biSize = ctypes.sizeof(_BMI)
+            info.biWidth = width
+            info.biHeight = -height
+            info.biPlanes = 1
+            info.biBitCount = 32
+            buf = (ctypes.c_ubyte * (width * height * 4))()
+            gdi32.SelectObject(hdc_mem, old)
+            if gdi32.GetDIBits(hdc_mem, hbmp, 0, height, buf, ctypes.byref(info), 0):
+                raw = bytes(buf)
+                image = Image.frombytes("RGB", (width, height), raw, "raw", "BGRX")
+                from PIL import ImageStat
+
+                if float(ImageStat.Stat(image.convert("L")).mean[0]) < 8.0:
+                    image = None
+    except Exception as exc:  # noqa: BLE001
+        log.debug("screen grab failed: %s", exc)
+        image = None
+    finally:
+        gdi32.SelectObject(hdc_mem, old)
+        gdi32.DeleteObject(hbmp)
+        gdi32.DeleteDC(hdc_mem)
+        user32.ReleaseDC(None, hdc_screen)
     return image
 
 
@@ -323,6 +427,7 @@ def grab_wt_client_image(
     focus: bool = False,
     require_foreground: bool = True,
     allow_mss: bool = True,
+    prefer_window_buffer: bool = False,
 ) -> Image.Image | None:
     """
     Full War Thunder client bitmap, or None.
@@ -355,14 +460,29 @@ def grab_wt_client_image(
         except Exception:  # noqa: BLE001
             pass
 
+    if prefer_window_buffer:
+        # A topmost notice sits on the desktop. The window buffer does not
+        # include it; mss does. Use the buffer when it is sharp enough.
+        gdi_hold = _grab_hwnd_gdi(hwnd)
+        gdi_hold_score = _panel_contrast_score(gdi_hold) if gdi_hold is not None else -1.0
+        if gdi_hold is not None and gdi_hold_score >= 32.0:
+            log.debug("OCR grab via gdi (hold) contrast=%.1f", gdi_hold_score)
+            return gdi_hold
+
     if not allow_mss:
-        gdi_only = _grab_hwnd_gdi(hwnd)
-        if gdi_only is not None:
-            log.debug(
-                "OCR grab via gdi-only contrast=%.1f",
-                _panel_contrast_score(gdi_only),
-            )
-        return gdi_only
+        # Read the visible client first: a successful PrintWindow may contain
+        # a stale previous battle. Do not reject a live dark results panel by
+        # an arbitrary contrast threshold.
+        live = _grab_hwnd_screen(hwnd)
+        if live is not None:
+            log.info("OCR grab via live screen contrast=%.1f", _panel_contrast_score(live))
+            return live
+        buffered = _grab_hwnd_gdi(hwnd)
+        if buffered is not None:
+            log.info("OCR grab via window buffer (screen unavailable)")
+        else:
+            log.warning("OCR grab failed: both screen and window buffers empty")
+        return buffered
 
     # mss first — matches what the user actually sees.
     mss_img = _grab_hwnd_mss(hwnd)

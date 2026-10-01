@@ -15,7 +15,7 @@ from .capture import (
     ocr_saved_frame,
     set_last_ocr_frame,
 )
-from .capture_archive import archive_capture_frame
+from .capture_archive import save_result_shots
 from .match_session import MatchSession
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .paths import log_dir
@@ -25,10 +25,12 @@ from .server import serve
 
 log = logging.getLogger("lockon_bridge")
 
+_CAPTURE_LOCK = threading.Lock()
+
 def shot_gap_after(index: int, *, frames: int = 6, uniform: float = 0.5) -> float:
     """Pause after a 0-based shot before the next one.
 
-    Default six-shot run: 0.5 s, then 0.65 s, 1 s, and 2 s before the last shot.
+    Default six-shot run sums to about 6 s: 0.5 + 0.65 + 0.65 + 1 + 2.
     """
     if frames != 6 or uniform != 0.5:
         return uniform
@@ -80,7 +82,7 @@ class RuntimeConfig:
     port: int = 8112
     game_host: str = "127.0.0.1"
     game_port: int = 8111
-    # Six screenshots, half a second apart. Publish only when two neighbors match.
+    # Six screenshots. Pauses 0.5, 0.65, 0.65, 1 and 2 seconds sum to about 6.
     frames: int = 6
     grab_frame_gap: float = 0.5
     # Idle gap *after* OCR finishes — legacy sequential path / CLI; grab-first ignores for OCR.
@@ -113,6 +115,7 @@ class BridgeRuntime:
         self.match = MatchSession()
         self.store = ReportStore(session=self.match)
         self._was_in_battle = False
+        self._hangar_streak = 0
         self._server: Optional[ThreadingHTTPServer] = None
         self._http_thread: Optional[threading.Thread] = None
         self._watch_thread: Optional[threading.Thread] = None
@@ -158,11 +161,20 @@ class BridgeRuntime:
 
     def start_watch(self) -> None:
         """Begin hangar/battle phase polling (call only while WT is running)."""
-        if self.watching:
-            return
+        thread = self._watch_thread
+        if thread is not None and thread.is_alive():
+            if not self._watch_stop.is_set():
+                return
+            if threading.current_thread() is not thread:
+                thread.join(timeout=15.0)
+            if thread.is_alive():
+                log.info("phase watch busy — not starting a second one")
+                return
         if not self.running:
             self.start_http()
         self._watch_stop.clear()
+        self._was_in_battle = False
+        self._hangar_streak = 0
         self._watch_thread = threading.Thread(
             target=self._watch_loop,
             name="lockon-phase",
@@ -179,10 +191,20 @@ class BridgeRuntime:
         """Stop phase polling; keep HTTP + last report for the phone."""
         self._watch_stop.set()
         thread = self._watch_thread
-        if thread is not None and thread.is_alive():
+        if (
+            thread is not None
+            and thread.is_alive()
+            and threading.current_thread() is not thread
+        ):
             thread.join(timeout=3.0)
+        if thread is not None and thread.is_alive():
+            # A burst is still publishing. Dropping the thread here used to
+            # start a second watch and a new session id on top of this one.
+            log.info("phase watch still finishing a capture")
+            return
         self._watch_thread = None
         self._was_in_battle = False
+        self._hangar_streak = 0
         self.match.finish_results()
 
     def stop(self) -> None:
@@ -215,16 +237,26 @@ class BridgeRuntime:
             time.sleep(min(0.25, end - time.monotonic()))
 
     def _battle_just_ended(self, in_battle: bool) -> bool:
-        """Track hangar ↔ battle. A new id is issued only on entry."""
+        """Track hangar ↔ battle. A new id is issued only on entry.
+
+        One hangar reading is not enough: map_info briefly goes invalid in
+        the middle of a flight. Two readings in a row confirm the results
+        screen, which stays up much longer than a single poll.
+        """
         if in_battle:
             if not self._was_in_battle:
                 self.match.begin()
             self._was_in_battle = True
+            self._hangar_streak = 0
             return False
-        if self._was_in_battle:
-            self._was_in_battle = False
-            return True
-        return False
+        if not self._was_in_battle:
+            return False
+        self._hangar_streak += 1
+        if self._hangar_streak < 2:
+            return False
+        self._was_in_battle = False
+        self._hangar_streak = 0
+        return True
 
     def _watch_loop(self) -> None:
         cfg = self.config
@@ -357,7 +389,17 @@ class BridgeRuntime:
             still.append(pending)
         self._pending_provisional = still
 
-    def _capture_burst_ocr(self) -> None:
+    def _capture_burst_ocr(self, *, publish: bool = True):
+        """One burst at a time, so the notice counter does not run twice."""
+        if not _CAPTURE_LOCK.acquire(blocking=False):
+            log.info("capture already running — skip overlapping burst")
+            return None
+        try:
+            return self._capture_burst_ocr_body(publish=publish)
+        finally:
+            _CAPTURE_LOCK.release()
+
+    def _capture_burst_ocr_body(self, *, publish: bool = True):
         """Grab-first burst: snapshot WT quickly, then OCR the buffer offline."""
         from .crashguard import breadcrumb
         from .ocr_isolate import PersistentOcrWorker
@@ -372,38 +414,51 @@ class BridgeRuntime:
             "publish when two neighbors decode the same RP/SL",
             cfg.capture_delay_sec,
         )
-        if cfg.capture_delay_sec > 0:
-            self._stop.wait(cfg.capture_delay_sec)
+        # --- Phase A: shots while the results screen is held still ---
+        from .result_hold import ResultHold
 
-        # --- Phase A: rapid grabs while results screen is still up ---
         grab_t0 = time.monotonic()
         buffer: list = []
-        for index in range(cfg.frames):
-            if self._stop.is_set():
-                return
-            breadcrumb(f"grab_burst frame {index + 1}/{cfg.frames}")
-            frame = grab_wt_client_image(focus=False, require_foreground=True)
-            if frame is None:
-                log.info(
-                    "grab %s/%s: skipped (War Thunder not in foreground)",
-                    index + 1,
-                    cfg.frames,
+        taken_at: list[float] = []
+        with ResultHold(total=cfg.frames) as hold:
+            if cfg.capture_delay_sec > 0:
+                self._stop.wait(cfg.capture_delay_sec)
+            for index in range(cfg.frames):
+                if self._stop.is_set():
+                    break
+                hold.set_progress(index + 1)
+                breadcrumb(f"grab_burst frame {index + 1}/{cfg.frames}")
+                frame = grab_wt_client_image(
+                    focus=False,
+                    require_foreground=True,
+                    allow_mss=False,
                 )
-            else:
-                # Copy so later WT paints cannot mutate our buffer.
-                buffer.append(frame.copy())
-                log.info(
-                    "grab %s/%s: ok size=%sx%s",
-                    index + 1,
-                    cfg.frames,
-                    frame.size[0],
-                    frame.size[1],
-                )
-            if index + 1 < cfg.frames:
-                gap = shot_gap_after(
-                    index, frames=cfg.frames, uniform=cfg.grab_frame_gap
-                )
-                self._stop.wait(gap)
+                if frame is None:
+                    log.info(
+                        "grab %s/%s: skipped (no frame)",
+                        index + 1,
+                        cfg.frames,
+                    )
+                else:
+                    # Copy so later WT paints cannot mutate our buffer.
+                    buffer.append(frame.copy())
+                    taken_at.append(time.time())
+                    log.info(
+                        "grab %s/%s: ok size=%sx%s",
+                        index + 1,
+                        cfg.frames,
+                        frame.size[0],
+                        frame.size[1],
+                    )
+                if index + 1 < cfg.frames:
+                    gap = shot_gap_after(
+                        index, frames=cfg.frames, uniform=cfg.grab_frame_gap
+                    )
+                    self._stop.wait(gap)
+        if buffer:
+            save_result_shots(buffer, taken_at=taken_at)
+        if self._stop.is_set():
+            return
 
         grab_elapsed = time.monotonic() - grab_t0
         log.info(
@@ -469,7 +524,9 @@ class BridgeRuntime:
                 confirm_done,
             )
             self._stop.wait(1.5)
-            extra = grab_wt_client_image(focus=False, require_foreground=True)
+            extra = grab_wt_client_image(
+                focus=False, require_foreground=True, allow_mss=False
+            )
             if extra is None:
                 log.info("confirmation grab skipped (War Thunder not in foreground)")
                 return
@@ -587,26 +644,8 @@ class BridgeRuntime:
                                 _confirm_after_rise()
                             continue
                     report = best[1]
-                    try:
-                        if prev_frame is not None:
-                            archive_capture_frame(
-                                prev_frame,
-                                kind="ok",
-                                rp=report.research_points,
-                                sl=report.silver_lions,
-                                note="match-a",
-                            )
-                        archive_capture_frame(
-                            frame,
-                            kind="ok",
-                            rp=report.research_points,
-                            sl=report.silver_lions,
-                            note="match-b",
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
                     report = self.match.stamp(report)
-                    if self.store.publish(report):
+                    if publish and self.store.publish(report):
                         log.info(
                             "ocr %s/%s: neighbor match RP=%s SL=%s session=%s — sent",
                             index + 1,
@@ -615,7 +654,7 @@ class BridgeRuntime:
                             report.silver_lions,
                             report.session_id or "—",
                         )
-                    else:
+                    elif publish:
                         log.info(
                             "ocr %s/%s: neighbor match duplicate RP=%s SL=%s session=%s",
                             index + 1,
@@ -624,7 +663,15 @@ class BridgeRuntime:
                             report.silver_lions,
                             report.session_id or "—",
                         )
-                    return
+                    else:
+                        log.info(
+                            "ocr %s/%s: neighbor match RP=%s SL=%s — not sent",
+                            index + 1,
+                            total,
+                            report.research_points,
+                            report.silver_lions,
+                        )
+                    return report
                 except Exception as exc:  # noqa: BLE001
                     log.warning("ocr %s/%s failed: %s", index + 1, total, exc)
                     decoded.append(None)
@@ -662,7 +709,7 @@ class BridgeRuntime:
                         chosen = (back, reads[back][0], reads[back][1])
                         break
             if chosen is not None:
-                shot_i, report, shot = chosen
+                shot_i, report, _shot = chosen
                 log.info(
                     "no neighbor match — sending shot %s/%s RP=%s SL=%s",
                     shot_i + 1,
@@ -670,18 +717,8 @@ class BridgeRuntime:
                     report.research_points,
                     report.silver_lions,
                 )
-                try:
-                    archive_capture_frame(
-                        shot,
-                        kind="ok",
-                        rp=report.research_points,
-                        sl=report.silver_lions,
-                        note="last",
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
                 report = self.match.stamp(report)
-                if self.store.publish(report):
+                if publish and self.store.publish(report):
                     log.info(
                         "ocr shot %s: last recognized RP=%s SL=%s session=%s — sent",
                         shot_i + 1,
@@ -689,25 +726,26 @@ class BridgeRuntime:
                         report.silver_lions,
                         report.session_id or "—",
                     )
-                else:
+                elif publish:
                     log.info(
                         "ocr shot %s: last recognized duplicate RP=%s SL=%s",
                         shot_i + 1,
                         report.research_points,
                         report.silver_lions,
                     )
-                return
+                else:
+                    log.info(
+                        "ocr shot %s: last recognized RP=%s SL=%s — not sent",
+                        shot_i + 1,
+                        report.research_points,
+                        report.silver_lions,
+                    )
+                return report
             log.info(
                 "burst finished without a recognized pair | shots=%s | last_ocr=%s",
                 len(decoded),
                 last_preview or "(none)",
             )
-            try:
-                frame = last_ocr_frame()
-                if frame is not None:
-                    archive_capture_frame(frame, kind="fail", note="burst")
-            except Exception:  # noqa: BLE001
-                pass
         finally:
             if worker is not None:
                 try:

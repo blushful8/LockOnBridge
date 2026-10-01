@@ -58,6 +58,15 @@ class BridgeAgent:
     def detail(self) -> str:
         return self._detail
 
+    @property
+    def store(self):
+        """Report store of the live runtime, or None before HTTP is up."""
+        with self._lock:
+            runtime = self._runtime
+        if runtime is None:
+            return None
+        return runtime.store
+
     def _set_status(self, status: AgentStatus, detail: str) -> None:
         self._status = status
         self._detail = detail
@@ -145,12 +154,21 @@ class BridgeAgent:
                     runtime.start_watch()
                     # While fighting / hangar: only re-check process every few seconds.
                     # Phase HTTP is handled inside the watch thread (slow in battle).
-                    while not self._stop.is_set() and is_war_thunder_running():
+                    # One empty process scan is not enough to tear the watch down
+                    # in the middle of a flight.
+                    misses = 0
+                    while not self._stop.is_set() and misses < 2:
                         with self._lock:
                             live = self._runtime
                         if live is None or not live.running:
                             break
                         _interruptible_sleep(self._stop, 3.0, slice_sec=1.0)
+                        if self._stop.is_set():
+                            break
+                        if is_war_thunder_running():
+                            misses = 0
+                        else:
+                            misses += 1
                     runtime.stop_watch()
                     log.info("War Thunder closed — phase watch stopped (HTTP kept)")
                 else:

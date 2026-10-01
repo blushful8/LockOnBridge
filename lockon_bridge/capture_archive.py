@@ -13,7 +13,7 @@ from .paths import data_root
 
 log = logging.getLogger("lockon_bridge.capture_archive")
 
-_MAX_CAPTURES = 40
+_MAX_CAPTURES = 6
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -38,6 +38,49 @@ def _prune(folder: Path, *, keep: int = _MAX_CAPTURES) -> None:
             pass
 
 
+def save_result_shots(
+    images: list[Image.Image],
+    *,
+    taken_at: list[float] | None = None,
+) -> list[Path]:
+    """Replace ``captures/`` with the shots just taken on the results screen.
+
+    ``taken_at`` is the clock time of each grab. The file name uses that second,
+    so a burst that spans several seconds does not look like one instant.
+    """
+    frames = [image for image in images if image is not None][-_MAX_CAPTURES:]
+    if not frames:
+        return []
+    folder = captures_dir()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("captures dir: %s", exc)
+        return []
+    for old in folder.glob("*.png"):
+        if old.is_file():
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    saved: list[Path] = []
+    for index, image in enumerate(frames, start=1):
+        moment = _stamp()
+        if taken_at is not None and index - 1 < len(taken_at):
+            moment = datetime.fromtimestamp(taken_at[index - 1]).strftime("%Y%m%d_%H%M%S")
+        path = folder / f"{moment}_shot{index}.png"
+        try:
+            rgb = image if image.mode == "RGB" else image.convert("RGB")
+            rgb.save(path, format="PNG", compress_level=1)
+        except OSError as exc:
+            log.warning("result shot %s failed: %s", index, exc)
+            continue
+        saved.append(path)
+    if saved:
+        log.info("saved %s result shots in %s", len(saved), folder)
+    return saved
+
+
 def archive_capture_frame(
     image: Image.Image,
     *,
@@ -50,7 +93,7 @@ def archive_capture_frame(
     Save a full client frame under ``%LocalAppData%\\LockOnBridge\\captures\\``.
 
     ``kind``: ``fail`` (calib/OCR miss), ``ok`` (settled publish), ``sample``.
-    Keeps the newest ``_MAX_CAPTURES`` PNGs.
+    The results burst replaces this folder with its own shots instead.
     """
     folder = captures_dir()
     try:

@@ -502,10 +502,12 @@ class BridgeApp:
 
         more_row = tk.Frame(btns, bg=BG)
         more_row.pack(fill="x", pady=3)
+        more_row.columnconfigure(0, weight=1, uniform="pair")
+        more_row.columnconfigure(1, weight=1, uniform="pair")
         self.btn_tray = self._btn(more_row, t.hide_to_tray, self._hide_to_tray)
-        self.btn_tray.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self.btn_more = self._menubutton(more_row, t.menu_more)
-        self.btn_more.pack(side="right", fill="x", expand=True, padx=(4, 0))
+        self.btn_tray.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self.btn_more = self._btn(more_row, t.menu_more, self._open_more_menu)
+        self.btn_more.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
         more_menu = tk.Menu(
             self.btn_more,
@@ -568,7 +570,6 @@ class BridgeApp:
             self.ocr_backend_var.set("OCR.space")
         more_menu.add_separator()
         more_menu.add_command(label=t.uninstall, command=self._uninstall)
-        self.btn_more.configure(menu=more_menu)
         self._more_menu = more_menu
 
         self.btn_quit = self._btn(btns, t.quit, self._quit_keep_enabled)
@@ -597,22 +598,18 @@ class BridgeApp:
             cursor="hand2",
         )
 
-    def _menubutton(self, parent: tk.Widget, text: str) -> tk.Menubutton:
-        return tk.Menubutton(
-            parent,
-            text=text,
-            font=("Segoe UI", 10),
-            fg=FG,
-            bg=PANEL,
-            activebackground="#2f343c",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=12,
-            pady=8,
-            cursor="hand2",
-            direction="below",
-            indicatoron=False,
-        )
+    def _open_more_menu(self) -> None:
+        menu = getattr(self, "_more_menu", None)
+        btn = getattr(self, "btn_more", None)
+        if menu is None or btn is None:
+            return
+        try:
+            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+        finally:
+            try:
+                menu.grab_release()
+            except tk.TclError:
+                pass
 
     def _language_label(self, code: str) -> str:
         if code == "uk":
@@ -757,7 +754,11 @@ class BridgeApp:
         editor.open()
 
     def _publish_checked_report(self, report) -> None:
-        published = self.agent.store.publish(report)
+        store = self.agent.store
+        if store is None:
+            log.info("zone check not sent: bridge is not running")
+            return
+        published = store.publish(report)
         log.info(
             "zone check sent to phone RP=%s SL=%s published=%s",
             report.research_points,
@@ -1239,7 +1240,7 @@ class BridgeApp:
                     self.root.after(1000, lambda: tick(left - 1))
                 except tk.TclError:
                     self._ocr_busy = False
-                    return
+                return
 
             def work() -> None:
                 report = None
@@ -1312,14 +1313,28 @@ class BridgeApp:
                     self.root.after(1000, lambda: tick(left - 1))
                 except tk.TclError:
                     self._ocr_busy = False
-                    return
+                return
 
             def work() -> None:
                 error: str | None = None
                 text = ""
                 report = None
                 try:
-                    text, report, error = self._run_ocr_once_isolated()
+                    from .runtime import BridgeRuntime, RuntimeConfig
+
+                    runtime = BridgeRuntime(
+                        RuntimeConfig(
+                            port=self.settings.port,
+                            game_host=self.settings.game_host,
+                            game_port=self.settings.game_port,
+                        )
+                    )
+                    report = runtime._capture_burst_ocr(publish=False)
+                    from .paths import log_dir
+
+                    dump = log_dir() / "last_ocr.txt"
+                    if dump.is_file():
+                        text = dump.read_text(encoding="utf-8", errors="replace")
                 except Exception as exc:  # noqa: BLE001
                     error = str(exc)
                 try:
@@ -1333,71 +1348,6 @@ class BridgeApp:
             threading.Thread(target=work, name="ocr-test", daemon=True).start()
 
         tick(countdown)
-
-    def _run_ocr_once_isolated(self):
-        """
-        Run OCR in a child process so a native OCR crash cannot kill the UI.
-        Returns (text, report, error).
-        """
-        import subprocess
-        import sys
-
-        from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text
-        from .paths import log_dir
-
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        if getattr(sys, "frozen", False):
-            cmd = [sys.executable, "--ocr-once"]
-        else:
-            cmd = [sys.executable, "-m", "lockon_bridge", "--ocr-once"]
-        try:
-            proc = subprocess.run(
-                cmd,
-                timeout=180,
-                creationflags=creationflags,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except subprocess.TimeoutExpired:
-            return "", None, "OCR timed out (180s)"
-        except Exception as exc:  # noqa: BLE001
-            return "", None, str(exc)
-
-        dump = log_dir() / "last_ocr.txt"
-        text = ""
-        if dump.is_file():
-            try:
-                text = dump.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                text = ""
-        if not text:
-            text = (proc.stdout or "").strip()
-
-        if proc.returncode != 0 and not text:
-            err = (proc.stderr or proc.stdout or f"OCR exited {proc.returncode}").strip()
-            return "", None, err or f"OCR exited {proc.returncode}"
-
-        report = parse_rewards_from_ocr_text(text) if text else None
-        if report is None and text:
-            blocks = [b.strip() for b in text.split("\n\n---OCR---\n\n") if b.strip()]
-            candidates = []
-            for block in blocks:
-                body = block
-                if body.startswith("[") and "]\n" in body:
-                    body = body.split("]\n", 1)[1]
-                if "\n=>" in body:
-                    body = body.split("\n=>", 1)[0]
-                parsed = parse_rewards_from_ocr_text(body)
-                if parsed is not None:
-                    candidates.append((body, parsed))
-            best = choose_best_report(candidates) if candidates else None
-            if best is not None:
-                text, report = best
-        return text, report, None
 
     def _show_ocr_result(self, text: str, report, error: str | None) -> None:
         self._ocr_busy = False
