@@ -11,10 +11,14 @@ _release_backup/
 
 .idea/
 
-# Cursor local state — keep tracked project rules under .cursor/rules/
-.cursor/*
-!.cursor/rules/
-!.cursor/rules/**
+# Local editor and agent configuration
+.cursor/
+.codex/
+.agents/
+.vscode/
+*.code-workspace
+AGENTS.md
+CLAUDE.md
 
 # Secrets / credentials — never commit or ship in releases
 .env
@@ -58,3 +62,6 @@ tools/_*.jpg
 tools/_*.jpeg
 tools/_*.webp
 tools/_*.json
+
+# Local diagnostic scripts
+tools/probe_*.py
