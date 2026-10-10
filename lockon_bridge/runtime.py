@@ -43,25 +43,38 @@ def shot_gap_after(index: int, *, frames: int = 6, uniform: float = 0.5) -> floa
     return 2.0
 
 
-def consecutive_reward_verdict(
+def select_reward_read(
     pairs: list[tuple[int, int] | None],
-    *,
-    final: bool,
-) -> tuple[str, tuple[int, int] | None]:
-    """
-    Compare the two newest decoded rewards.
+) -> tuple[int | None, str]:
+    """Select only after every captured frame has been decoded.
 
-    An equal neighbor pair can be sent. A mismatch before the last slot
-    continues. If the last two still differ, the result cannot be guaranteed.
+    A count-up may pause at equal neighbors before its final value. Prefer
+    the latest readable frame unless either reward regresses. In that case,
+    use the latest equal neighboring pair preceding the first regression.
+    Unreadable frames neither form matches nor hide a subsequent decrease.
     """
-    if len(pairs) < 2:
-        return ("failure" if final else "continue"), None
-    left, right = pairs[-2], pairs[-1]
-    if left is not None and right is not None and left == right:
-        return "success", right
-    if final:
-        return "failure", None
-    return "continue", None
+    latest = None
+    confirmed = None
+    previous = None
+    regression = False
+    for index, pair in enumerate(pairs):
+        if pair is None:
+            continue
+        if previous is not None and (
+            pair[0] < previous[0] or pair[1] < previous[1]
+        ):
+            regression = True
+        if (
+            not regression
+            and index > 0
+            and pairs[index - 1] == pair
+        ):
+            confirmed = index
+        previous = pair
+        latest = index
+    if regression and confirmed is not None:
+        return confirmed, "regression: earlier neighbor match"
+    return latest, "latest recognized (no earlier match)" if regression else "latest recognized"
 
 # Align with LockOn Android BridgeRepository default minConfidence.
 _MIN_CONFIDENT_REPORT = 0.7
@@ -414,7 +427,7 @@ class BridgeRuntime:
         )
         log.info(
             "battle ended — waiting %.2fs then 6 shots at 0.50/0.65/0.65/1.00/2.00s; "
-            "publish when two neighbors decode the same RP/SL",
+            "decode every captured shot before selecting RP/SL",
             cfg.capture_delay_sec,
         )
         # --- Phase A: shots while the results screen is held still ---
@@ -494,47 +507,6 @@ class BridgeRuntime:
         total = len(buffer)
         decoded: list[tuple[int, int] | None] = []
         reads: list[tuple[object | None, object]] = []
-        prev_frame = None
-        confirm_done = 0
-        planned = len(buffer)
-        held: tuple[object, object, object] | None = None
-
-        def _climbed_into(pairs: list[tuple[int, int] | None]) -> bool:
-            known = [pair for pair in pairs if pair is not None]
-            if len(known) < 2 or known[-1] != known[-2]:
-                return False
-            target = known[-1]
-            return any(pair[0] < target[0] or pair[1] < target[1] for pair in known[:-1])
-
-        def _confirm_after_rise() -> None:
-            nonlocal confirm_done, total
-            if confirm_done >= 2 or index + 1 < len(buffer):
-                return
-            known = [pair for pair in decoded if pair is not None]
-            if not known:
-                return
-            last = known[-1]
-            rose = any(pair[0] < last[0] or pair[1] < last[1] for pair in known[:-1])
-            if not rose:
-                return
-            confirm_done += 1
-            log.info(
-                "count-up paused at RP=%s SL=%s — confirmation shot %s/2",
-                last[0],
-                last[1],
-                confirm_done,
-            )
-            self._stop.wait(1.5)
-            extra = grab_wt_client_image(
-                focus=False, require_foreground=True, allow_mss=False
-            )
-            if extra is None:
-                log.info("confirmation grab skipped (War Thunder not in foreground)")
-                return
-            buffer.append(extra.copy())
-            total = len(buffer)
-            log.info("confirmation grab kept size=%sx%s", extra.size[0], extra.size[1])
-
         try:
             for index, frame in enumerate(buffer):
                 if self._stop.is_set():
@@ -595,89 +567,17 @@ class BridgeRuntime:
                         last_preview = "(empty OCR)"
                     decoded.append(pair_now)
                     reads.append((best[1] if pair_now is not None and best is not None else None, frame))
-                    if pair_now is None and held is not None and index >= planned:
-                        log.info(
-                            "confirmation left the results screen — sending last match RP=%s SL=%s",
-                            held[0].research_points,
-                            held[0].silver_lions,
-                        )
-                        best = ("held", held[0])
-                        frame = held[1]
-                        prev_frame = held[2]
-                        matched = (
-                            held[0].research_points,
-                            held[0].silver_lions,
-                        )
-                    else:
-                        final = index + 1 >= total
-                        verdict, matched = consecutive_reward_verdict(decoded, final=final)
-                        shown = (
-                            "none"
-                            if pair_now is None
-                            else f"RP={pair_now[0]} SL={pair_now[1]}"
-                        )
-                        log.info(
-                            "ocr %s/%s: %s | compare=%s",
-                            index + 1,
-                            total,
-                            shown,
-                            verdict if len(decoded) > 1 else "wait",
-                        )
-                        if verdict != "success" or matched is None or best is None:
-                            prev_frame = frame
-                            if index + 1 >= len(buffer):
-                                _confirm_after_rise()
-                            continue
-                        if (
-                            _climbed_into(decoded)
-                            and confirm_done == 0
-                            and index + 1 < planned
-                        ):
-                            log.info(
-                                "ocr %s/%s: RP=%s SL=%s matched, but an earlier shot was lower — still counting",
-                                index + 1,
-                                total,
-                                matched[0],
-                                matched[1],
-                            )
-                            held = (best[1], frame, prev_frame)
-                            prev_frame = frame
-                            if index + 1 >= len(buffer):
-                                _confirm_after_rise()
-                            continue
-                    report = best[1]
-                    report = self.match.stamp(report)
-                    if publish and self.store.publish(report):
-                        log.info(
-                            "ocr %s/%s: neighbor match RP=%s SL=%s session=%s — sent",
-                            index + 1,
-                            total,
-                            report.research_points,
-                            report.silver_lions,
-                            report.session_id or "—",
-                        )
-                    elif publish:
-                        log.info(
-                            "ocr %s/%s: neighbor match duplicate RP=%s SL=%s session=%s",
-                            index + 1,
-                            total,
-                            report.research_points,
-                            report.silver_lions,
-                            report.session_id or "—",
-                        )
-                    else:
-                        log.info(
-                            "ocr %s/%s: neighbor match RP=%s SL=%s — not sent",
-                            index + 1,
-                            total,
-                            report.research_points,
-                            report.silver_lions,
-                        )
-                    return report
+                    log.info(
+                        "ocr %s/%s: %s | waiting for all captured shots",
+                        index + 1,
+                        total,
+                        "none" if pair_now is None else f"RP={pair_now[0]} SL={pair_now[1]}",
+                    )
                 except Exception as exc:  # noqa: BLE001
                     log.warning("ocr %s/%s failed: %s", index + 1, total, exc)
-                    decoded.append(None)
-                    reads.append((None, frame))
+                    if len(decoded) <= index:
+                        decoded.append(None)
+                        reads.append((None, frame))
                     try:
                         from .crashguard import write_crash_report
                         import traceback
@@ -694,35 +594,22 @@ class BridgeRuntime:
                         pass
                     breadcrumb(f"ocr_buffer frame {index + 1} error: {exc}")
 
-            fallback_index = planned - 1
-            chosen: tuple[int, object, object] | None = None
-            if (
-                0 <= fallback_index < len(reads)
-                and reads[fallback_index][0] is not None
-            ):
-                chosen = (
-                    fallback_index,
-                    reads[fallback_index][0],
-                    reads[fallback_index][1],
-                )
-            else:
-                for back in range(len(reads) - 1, -1, -1):
-                    if reads[back][0] is not None:
-                        chosen = (back, reads[back][0], reads[back][1])
-                        break
-            if chosen is not None:
-                shot_i, report, _shot = chosen
+            shot_i, reason = select_reward_read(decoded)
+            if shot_i is not None:
+                report, _shot = reads[shot_i]
                 log.info(
-                    "no neighbor match — sending shot %s/%s RP=%s SL=%s",
+                    "all %s shots decoded — selected shot %s/%s RP=%s SL=%s | %s",
+                    total,
                     shot_i + 1,
-                    planned,
+                    total,
                     report.research_points,
                     report.silver_lions,
+                    reason,
                 )
                 report = self.match.stamp(report)
                 if publish and self.store.publish(report):
                     log.info(
-                        "ocr shot %s: last recognized RP=%s SL=%s session=%s — sent",
+                        "ocr shot %s: selected RP=%s SL=%s session=%s — sent",
                         shot_i + 1,
                         report.research_points,
                         report.silver_lions,
@@ -730,14 +617,14 @@ class BridgeRuntime:
                     )
                 elif publish:
                     log.info(
-                        "ocr shot %s: last recognized duplicate RP=%s SL=%s",
+                        "ocr shot %s: selected duplicate RP=%s SL=%s",
                         shot_i + 1,
                         report.research_points,
                         report.silver_lions,
                     )
                 else:
                     log.info(
-                        "ocr shot %s: last recognized RP=%s SL=%s — not sent",
+                        "ocr shot %s: selected RP=%s SL=%s — not sent",
                         shot_i + 1,
                         report.research_points,
                         report.silver_lions,
