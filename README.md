@@ -1,151 +1,80 @@
 # LockOn Bridge
 
-Windows program for War Thunder. After a battle it reads the results screen and publishes one **Research Points** and **Silver Lions** pair on this PC. A phone on the same Wi‑Fi reads that pair over HTTP.
+LockOn Bridge is a Windows companion for War Thunder. It reads Research Points (RP) and Silver Lions (SL) from the post-battle results screen and makes the recognized rewards available to the LockOn phone app over your local network.
 
-No Gaijin login. The game’s local API does not include the final RP and SL; those numbers only appear on the results screen.
+No Gaijin account or game login is required.
 
----
+## Install and connect
 
-## What it does
+1. Download **LockOnBridge.zip** from the [latest release](https://github.com/blushful8/LockOnBridge/releases/latest).
+2. Extract the entire folder and run **LockOnBridge.exe**. Keep the accompanying files next to the executable.
+3. Choose the app language and OCR backend, then turn **Bridge ON**.
+4. Allow phone access when prompted. On the phone, enable the Bridge connection and enter this PC's local IP address and port **8112**.
+5. Keep the phone and PC on the same local network.
 
-- With **Bridge** on, it starts at Windows logon, waits for War Thunder, and stops when the game exits.
-- After a battle, while the results screen stays open, it takes several shots of the reward strip.
-- It publishes one RP/SL pair only when two reads agree. The phone chooses the column: with premium or without.
+The Windows build is unsigned and distributed as a folder-based ZIP without UPX. Check that the download comes from this repository; the release notes include the archive's SHA256 checksum.
 
-Local HTTP, default port **8112**:
+## Reading battle rewards
 
-| | |
+While enabled, Bridge monitors War Thunder and captures a short sequence of game-window screenshots after a battle. Keep the results screen visible and in the foreground until capture finishes. Input is temporarily paused during capture, then released while recognition continues. A progress notice remains visible during processing.
+
+Bridge looks for matching RP/SL values in neighboring reads. If no match is found, it can use the last planned screenshot that was successfully read, or the most recent successful read. OCR can misread animated, obscured or incomplete results; a report is not guaranteed for every battle.
+
+The phone's premium-account preference determines whether Bridge reads the with-premium or without-premium rewards. A battle session ID connects the report to its battle and remains available until a new battle starts.
+
+## OCR backends
+
+- **OCR.space** is the default cloud backend. Only a crop of the results screen is sent to the service. It requires internet access and is subject to the service's availability and usage limits.
+- **EasyOCR** performs recognition on the PC. On first selection, Bridge downloads a private Python runtime, CPU dependencies and OCR models. The current backend remains active during preparation; EasyOCR is selected after setup succeeds. Errors appear in the window, and selecting EasyOCR again retries preparation.
+
+Prepare EasyOCR before starting a battle if you want local recognition. If OCR.space is unavailable or its usage limit is reached, Bridge can attempt local fallback, but a report may be missed while local setup is incomplete.
+
+The app interface supports **English, Ukrainian and Russian**. EasyOCR currently loads **Ukrainian and English** models; changing the War Thunder language selector does not change that model set. OCR.space uses automatic language detection.
+
+## Everyday controls
+
+| Control | Behavior |
 |---|---|
-| `GET /v1/health` | Bridge is up (`ok`, version, premium flag) |
-| `GET /v1/session` | `{ "sessionId": "<uuid>", "active": true }` for the battle in progress. The id appears when the hangar opens a battle and stays through the results screen and the published report. It changes only when the next battle starts. After the battle, `active` may be `false` while `sessionId` stays. |
-| `GET /v1/latest-report` | Last published pair, or `204` when there is none |
-| `GET /v1/reports` | Stored reports |
-| `GET` / `PUT /v1/preferences` | `{ "hasPremiumAccount": true }` or `false` |
+| **Bridge ON** | Enables capture, local HTTP access and Windows logon startup. |
+| **Bridge OFF** | Stops the background agent and removes logon startup. The control window can remain open. |
+| **OCR** | Selects OCR.space or prepares and selects EasyOCR. |
+| **HTTP port** | Sets the local connection port; the default is 8112. |
+| **Check for updates** | Checks GitHub Releases and, after confirmation, downloads the update and restarts the app. |
+| **Hide to tray** | Keeps an enabled Bridge running in the notification area. |
+| **Allow phone access** | Helps configure the Windows firewall for the selected port. |
+| **Uninstall** | Starts the included uninstaller. |
 
-`latest-report` and each item in `reports` include `sessionId` for that battle, plus `researchPoints`, `silverLions`, `capturedAtEpochMillis`, `confidence`, and `outcome`. `sessionId` is empty only on reports saved by an older build.
+When War Thunder closes, capture monitoring stops. While Bridge remains enabled, its HTTP server stays available so the phone can retrieve the last report.
 
----
+## Local connection
 
-## OCR
+The HTTP API uses port **8112** by default:
 
-- **OCR.space** (Engine 3) is the default. Only the reward crop is sent to `api.ocr.space`.
-- Your key is read from the `OCR_SPACE_API_KEY` environment variable, or from an encrypted file on this Windows account. It is never stored in this repository. Without a key, the public demo key is used and runs out quickly. Free Engine 3 is **2,500** requests a month and **500** a day.
-- **EasyOCR** runs on the PC. Choose it in the window, or leave OCR.space selected: Bridge installs EasyOCR when the API is unreachable or the monthly or daily limit is spent. The first install downloads a private Python runtime, CPU dependencies and OCR models and takes a few minutes. The current OCR stays selected until preparation succeeds; installation errors appear in the window and selecting EasyOCR again retries. The battle that triggered the install is not held open for that download.
-- App language: **English**, **Ukrainian**, or **Russian**. Set **War Thunder language** to the language of the results screen.
-
----
-
-## Install
-
-1. Download **`LockOnBridge.zip`** from [Releases](https://github.com/blushful8/LockOnBridge/releases).
-2. Extract and run **`LockOnBridge.exe`**.
-3. Set the app language, the War Thunder language, and OCR (**OCR.space** by default). Turn **Bridge** **ON**.
-4. When asked **Allow phone access?** choose **Yes**, then **Yes** on the Windows prompt (once).
-
-If you skipped that prompt: **More ▾ → Allow phone access…**
-
-On the phone, use this PC’s IP and port `8112`, on the same Wi‑Fi.
-
-Prefer the **ZIP**. This release is an **onedir** package **without UPX**. Single-file PyInstaller executables are often false-positive’d by Windows Defender.
-
-### Windows SmartScreen / Defender
-
-The build is **not code-signed**. Unsigned PyInstaller apps are often misclassified by Defender, typically:
-
-- `Trojan:Win32/Sabsik.TE.A!ml` (ZIP / onedir exe)
-- `Trojan:Win32/Wacatac.B!ml` (older one-file `.exe` builds)
-
-This is a **false positive**. Releases are built from this repo only.
-
-**If Defender deletes the ZIP on download:**
-
-1. Open **Windows Security → Virus & threat protection → Protection history**.
-2. Find the LockOn Bridge item → **Actions → Allow / Restore**.
-3. Optionally add an exclusion for `%LOCALAPPDATA%\LockOnBridge`.
-4. Extract the ZIP, run `LockOnBridge.exe`, and turn **Bridge** ON (copies into LocalAppData).
-
-**SmartScreen (“Windows protected your PC”):** More info → **Run anyway**.
-
-**Report to Microsoft:** [Submit a file](https://www.microsoft.com/en-us/wdsi/filesubmission) as a false positive, with the release SHA256 from the release notes.
-
-### Control window
-
-| | |
+| Endpoint | Response |
 |---|---|
-| **Bridge ON** | Autostart at Windows logon; wakes with War Thunder; stops when the game exits; tray icon while running |
-| **Bridge OFF** | Autostart removed; agent stopped; no background process until you turn it on again |
-| **App language** | English, Ukrainian, or Russian |
-| **War Thunder language** | Language of the results screen |
-| **OCR** | OCR.space or EasyOCR |
-| **HTTP port** | Default `8112` |
-| **Check for updates** | GitHub Releases; after confirmation, downloads, replaces the program, and restarts |
-| **Desktop shortcut** | Created on first launch (installed copy under LocalAppData) |
-| **Hide to tray** | Window closes to the notification area (only when enabled) |
-| **Uninstall** | In-app **Uninstall…**, or **`uninstall.exe`** next to `LockOnBridge.exe` |
+| `GET /v1/health` | Service status, app version and premium-account preference. |
+| `GET /v1/session` | Current battle session ID and its active state. |
+| `GET /v1/latest-report` | Latest saved report, or HTTP 204 when none exists. |
+| `GET /v1/reports` | Saved reports inside a `reports` array. |
+| `GET /v1/preferences` | Current `hasPremiumAccount` preference. |
+| `PUT /v1/preferences` | Updates `hasPremiumAccount` with a JSON body. |
 
-Logs: `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`
+Reports include RP, SL, capture time, OCR confidence, outcome and session ID. Older saved reports may have an empty session ID. This is a local HTTP connection without account authentication; use it on a trusted network.
 
----
+## Data and privacy
 
-## Uninstall
+Reports, settings and diagnostic logs are stored on the PC. The latest capture sequence can retain up to six game-window screenshots locally. Captures can contain information visible in the game window.
 
-Any of:
+With OCR.space selected, the reward crop is sent to that external service. With EasyOCR selected and ready, recognition runs locally; initial setup still downloads software and models. A saved OCR.space key is encrypted for the current Windows account.
 
-- Double-click **`uninstall.exe`** next to `LockOnBridge.exe` (ZIP extract or `%LOCALAPPDATA%\LockOnBridge\app`)
-- In the window: **Uninstall…**
-- **Windows Settings → Apps → LockOn Bridge → Uninstall**
+The release ZIP contains application resources, not personal captures, logs, reports or saved keys. Real screenshot fixtures are excluded from the current source tree. Older commits and release source archives can still contain historical test screenshots.
 
-This stops Bridge, removes autostart, the firewall rule for port 8112, the Desktop shortcut, the Apps & Features entry, and deletes `%LOCALAPPDATA%\LockOnBridge` (app, logs, settings, the stored OCR key).
+## Troubleshooting and uninstall
 
----
+- Keep the results screen open until capture finishes, especially while reward numbers are still counting.
+- Check that the phone uses the correct PC IP and port on the same network.
+- Use **Allow phone access** if Windows firewall prevents the connection.
+- Open `http://127.0.0.1:8112/v1/health` on the PC to check an enabled Bridge.
+- Logs are normally under `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`.
 
-## Tips
-
-- Leave the **results screen** visible until the RP and SL numbers finish counting. Bridge takes several shots over a few seconds and sends a pair only when two of them match.
-- Phone and PC on the **same Wi‑Fi**. Allow TCP **8112** if you skipped the prompt.
-- While Bridge is **ACTIVE**, open `http://127.0.0.1:8112/v1/health` on this PC. It should return `{"ok": true, ...}`.
-
----
-
-## Privacy
-
-The published pair stays on your LAN. Bridge does not sign in to Gaijin and does not upload the whole screen.
-
-With **OCR.space**, the reward crop is sent to `api.ocr.space`. With **EasyOCR**, that read stays on the PC. The OCR.space key, if you saved one, stays encrypted in your Windows profile.
-
----
-
-## Українською
-
-**Навіщо:** після бою гра показує RP і SL лише на екрані результатів. Bridge зчитує цю смугу і віддає одну пару на цей ПК. Телефон у тій самій Wi‑Fi читає її по HTTP, порт **8112**. `GET /v1/session` віддає номер бою: він з’являється на вході в бій і лишається тим самим у звіті, аж доки не почнеться наступний.
-
-**OCR:** за замовчуванням **OCR.space** (Engine 3). На сервіс іде лише вирізка нагороди. Свій ключ — змінна `OCR_SPACE_API_KEY` або зашифрований файл у профілі Windows, не в репозиторії. Без ключа працює публічний демо-ключ, і він швидко закінчується (безкоштовно 2500 запитів на місяць і 500 на день). **EasyOCR** стоїть на ПК: його можна вибрати, і він сам ставиться, якщо API недоступне або ліміт вичерпано. Перше встановлення автоматично готує окремий Python і моделі. Поточний OCR працює до завершення підготовки; помилка показується у вікні, повторний вибір EasyOCR повторює спробу.
-
-**Встановлення:** ZIP з Releases → `LockOnBridge.exe` → мова програми, мова War Thunder, OCR → **Bridge** увімкнено → **Дозволити доступ з телефона**. На телефоні: IP цього ПК і порт `8112`.
-
-**SmartScreen / Defender:** немає платного підпису. Defender часто хибно позначає ZIP як `Sabsik.TE.A!ml` / `Wacatac.B!ml`. Відновіть у **Захист від вірусів → Журнал захисту → Дозволити**. Беріть лише ZIP з Releases.
-
-**Вимкнути:** вимкніть **Bridge** — автозапуск знімається, фоновий процес не працює.
-
-**Видалити:** **`uninstall.exe`** поруч із `LockOnBridge.exe`, або **Видалити…** у вікні / Параметри Windows → Застосунки.
-
----
-
-## Developers
-
-Real screenshots and local OCR captures are kept outside version control. Optional screenshot fixtures under `tests/fixtures/` stay local; the shipped resources contain only application artwork and recognition icons.
-
-```bat
-py -3 -m pip install -r requirements.txt
-py -3 -m lockon_bridge --ui
-```
-
-Build the exe:
-
-```bat
-Build LockOn Bridge.bat
-```
-
-Output: `dist\LockOnBridge\` and `dist\LockOnBridge.zip`
-
-CLI (no UI): `py -3 -m lockon_bridge --session`
+Uninstall from the app, Windows Installed apps, or **uninstall.exe** next to the installed executable. Separately downloaded EasyOCR files may remain: on PCs with a D: drive, they are stored under `D:\CodexData\LockOnBridge\ocr`; otherwise they are stored under the app's local data directory.
