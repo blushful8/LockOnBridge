@@ -386,7 +386,7 @@ def _wrap_text(draw, text: str, font, width: int) -> list[str]:
 
 
 class ResultHold:
-    """In-game notice while the six shots are taken. Input stays paused."""
+    """Notice through capture and OCR; input is paused only during capture."""
 
     def __init__(self, total: int, *, block_input: bool = True) -> None:
         self.total = max(1, int(total))
@@ -402,6 +402,7 @@ class ResultHold:
         self._origin = (80, 80)
         self._clipped = False
         self._stop_drive = threading.Event()
+        self._stop_input = threading.Event()
         self._ready = threading.Event()
         self._dirty = threading.Event()
         self._drive: threading.Thread | None = None
@@ -423,10 +424,12 @@ class ResultHold:
         except Exception:  # noqa: BLE001
             language = "en"
         text = strings_for(language)
+        self._text = text
         self.title = text.grab_hold_title
         self.body = text.grab_hold_body
         self.set_progress(1)
         self._stop_drive.clear()
+        self._stop_input.clear()
         self._ready.clear()
         self._hook_thread = threading.Thread(
             target=self._hook_loop, name="result-hold-input", daemon=True
@@ -445,7 +448,24 @@ class ResultHold:
         self.progress = f"{shown} / {self.total}"
         self._dirty.set()
 
+    def begin_processing(self) -> None:
+        """Release game controls but retain the notice until OCR finishes."""
+        self._stop_input.set()
+        thread = self._hook_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        self._release_cursor()
+        self.title = self._text.processing_title
+        self.body = self._text.processing_body
+        self.progress = ""
+        self._dirty.set()
+
+    def set_processing_progress(self, index: int, total: int) -> None:
+        self.progress = f"{index} / {total}"
+        self._dirty.set()
+
     def close(self) -> None:
+        self._stop_input.set()
         self._stop_drive.set()
         for thread in (self._drive, self._hook_thread):
             if thread is not None and thread.is_alive() and thread is not threading.current_thread():
@@ -463,7 +483,7 @@ class ResultHold:
             if not self._blocked:
                 log.warning("BlockInput failed; low-level pause is still on")
         try:
-            while not self._stop_drive.is_set():
+            while not self._stop_input.is_set():
                 self._drain()
                 user32.MsgWaitForMultipleObjects(0, None, False, 15, _QS_ALLINPUT)
             self._drain()

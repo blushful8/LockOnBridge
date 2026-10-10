@@ -1,6 +1,6 @@
 """On-demand EasyOCR.
 
-It stays out of the shipped exe. A private Python venv under LocalAppData
+It stays out of the shipped exe. A private, isolated Python runtime and venv
 installs it the first time it is selected, or when OCR.space is unreachable
 or out of monthly quota.
 """
@@ -8,6 +8,9 @@ or out of monthly quota.
 from __future__ import annotations
 
 import json
+import ctypes
+import zipfile
+import urllib.request
 import logging
 import os
 import shutil
@@ -38,6 +41,75 @@ _PACKAGES = {
 _ready: set[str] = set()
 _install_lock = threading.Lock()
 _installing: set[str] = set()
+_install_errors: dict[str, str] = {}
+_install_gate = threading.Lock()
+_spawn_lock = threading.Lock()
+
+
+def _runtime_root() -> Path:
+    # Keep the large private Python, wheels and models on D: when available.
+    if Path("D:/").is_dir():
+        root = Path("D:/CodexData/LockOnBridge/ocr")
+    else:
+        from .paths import data_root
+        root = data_root() / "ocr"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in list(env):
+        if key.upper().startswith(("PYTHON", "_PYI", "_MEIPASS")):
+            env.pop(key, None)
+    root = _runtime_root()
+    for name in ("TEMP", "TMP"):
+        env[name] = str(root / "temp")
+    (root / "temp").mkdir(exist_ok=True)
+    env["PIP_CACHE_DIR"] = str(root / "pip-cache")
+    env["EASYOCR_MODULE_PATH"] = str(root / "models")
+    env["TORCH_HOME"] = str(root / "torch-cache")
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _run_python(args: list[str], *, timeout: int = 180, check: bool = False):
+    # PyInstaller's DLL directory must not leak into an external interpreter.
+    # Restore it immediately after spawn, not after a multi-minute download.
+    with _spawn_lock:
+        frozen = sys.platform == "win32" and getattr(sys, "frozen", False)
+        if frozen:
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        try:
+            proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                env=_child_env(), **_hidden_process(),
+            )
+        finally:
+            if frozen:
+                ctypes.windll.kernel32.SetDllDirectoryW(str(sys._MEIPASS))
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise RuntimeError("Перевищено час очікування локального OCR")
+    done = subprocess.CompletedProcess(args, proc.returncode, out, err)
+    if check and done.returncode:
+        detail = (err or out or f"exit={done.returncode}").strip()[-1600:]
+        raise RuntimeError(detail)
+    return done
+
+
+def installation_state(engine: str) -> tuple[str, str]:
+    with _install_lock:
+        if engine in _installing:
+            return "installing", ""
+        if engine in _install_errors:
+            return "failed", _install_errors[engine]
+    return ("ready", "") if engine in _ready else ("idle", "")
+
 
 _READER = r'''
 import json, os, sys
@@ -49,7 +121,8 @@ lines = []
 if engine == "easyocr":
     import easyocr
     reader = easyocr.Reader(["uk", "en"], gpu=False, verbose=False)
-    lines = [str(part) for part in reader.readtext(path, detail=0)]
+    if path != "--prepare":
+        lines = [str(part) for part in reader.readtext(path, detail=0)]
 else:
     raise SystemExit("unknown engine")
 sys.stdout.write(json.dumps({"text": "\n".join(lines)}, ensure_ascii=True))
@@ -87,33 +160,25 @@ def cloud_limited() -> bool:
 
 
 def _venv_python() -> Path:
-    from .paths import data_root
-
-    return data_root() / "ocr-venv" / "Scripts" / "python.exe"
+    return _runtime_root() / "venv" / "Scripts" / "python.exe"
 
 
 def _reader_path() -> Path:
-    from .paths import data_root
-
-    return data_root() / "ocr-venv" / "read_zone.py"
+    return _runtime_root() / "read_zone.py"
 
 
 def engine_ready(engine: str) -> bool:
     if engine in _ready:
         return True
     py = _venv_python()
-    if not py.is_file():
+    if not py.is_file() or not (_runtime_root() / "ready.json").is_file():
         return False
-    module = "easyocr"
     try:
-        done = subprocess.run(
-            [str(py), "-c", f"import {module}"],
-            capture_output=True,
+        done = _run_python(
+            [str(py), "-I", "-c", "import easyocr, torch, numpy; print('ready')"],
             timeout=120,
-            check=False,
-            **_hidden_process(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, RuntimeError):
         return False
     if done.returncode == 0:
         _ready.add(engine)
@@ -121,57 +186,52 @@ def engine_ready(engine: str) -> bool:
     return False
 
 
-def _base_python() -> str | None:
-    if not getattr(sys, "frozen", False):
-        return sys.executable
-    local = (
-        Path(os.environ.get("LOCALAPPDATA", ""))
-        / "Programs"
-        / "Python"
-        / "Python312"
-        / "python.exe"
-    )
-    if local.is_file():
-        return str(local)
-    py = shutil.which("py")
-    if py:
-        try:
-            done = subprocess.run(
-                [py, "-3.12", "-c", "import sys; print(sys.executable)"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-                **_hidden_process(),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            done = None
-        if done is not None and done.returncode == 0:
-            path = done.stdout.strip()
-            if path:
-                return path
-    found = shutil.which("python")
-    return found
+def _base_python() -> str:
+    # A private, complete CPython avoids broken system installs and Store aliases.
+    target = _runtime_root() / "python-3.12.10"
+    py = target / "tools" / "python.exe"
+    if py.is_file():
+        done = _run_python([str(py), "-I", "-c", "import venv, ensurepip"], timeout=30)
+        if done.returncode == 0:
+            return str(py)
+    log.info("downloading private Python 3.12 runtime")
+    url = "https://api.nuget.org/v3-flatcontainer/python/3.12.10/python.3.12.10.nupkg"
+    archive = _runtime_root() / "python-download.zip"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response, archive.open("wb") as out:
+            shutil.copyfileobj(response, out)
+        with zipfile.ZipFile(archive) as bundle:
+            # Extract only CPython tools; reject paths escaping the private directory.
+            for info in bundle.infolist():
+                if not info.filename.startswith("tools/"):
+                    continue
+                dest = (target / info.filename).resolve()
+                if not dest.is_relative_to(target.resolve()):
+                    raise RuntimeError("Некоректний архів Python")
+                bundle.extract(info, target)
+    finally:
+        archive.unlink(missing_ok=True)
+    _run_python([str(py), "-I", "-c", "import venv, ensurepip"], timeout=30, check=True)
+    return str(py)
 
 
 def begin_install(engine: str) -> str:
-    """Start a background install. Returns ready, installing, or missing-python."""
-    if engine not in LOCAL_ENGINES:
+    """Start preparation off the UI thread. Explicit selection retries a failure."""
+    if engine not in LOCAL_ENGINES or engine in _ready:
         return "ready"
-    if engine_ready(engine):
-        return "ready"
-    if _base_python() is None:
-        return "missing-python"
     with _install_lock:
         if engine in _installing:
             return "installing"
+        _install_errors.pop(engine, None)
         _installing.add(engine)
 
     def work() -> None:
         try:
             ensure_installed(engine)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("local OCR install failed: %s", exc)
+        except Exception as exc:
+            log.warning("local OCR preparation failed: %s", exc)
+            with _install_lock:
+                _install_errors[engine] = str(exc)
         finally:
             with _install_lock:
                 _installing.discard(engine)
@@ -181,39 +241,33 @@ def begin_install(engine: str) -> str:
 
 
 def ensure_installed(engine: str) -> None:
-    """Block until the venv can import this engine."""
-    if engine_ready(engine):
-        return
-    base = _base_python()
-    if not base:
-        raise RuntimeError("Немає Python 3.12, щоб поставити локальний OCR")
-    py = _venv_python()
-    if not py.is_file():
-        log.info("creating local OCR venv")
-        subprocess.run(
-            [base, "-m", "venv", str(py.parent.parent)],
-            check=True,
-            timeout=180,
-            **_hidden_process(),
-        )
-    _reader_path().write_text(_READER, encoding="utf-8")
-    log.info("installing %s", engine)
-    subprocess.run(
-        [
-            str(py),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-input",
-            *_PACKAGES[engine],
-        ],
-        check=True,
-        timeout=3600,
-        **_hidden_process(),
-    )
-    if not engine_ready(engine):
-        raise RuntimeError(f"{engine} встановився, але імпорт не вдався")
+    """Prepare dependencies AND models before making this backend selectable."""
+    with _install_gate:
+        if engine_ready(engine):
+            return
+        base = _base_python()
+        py = _venv_python()
+        # Re-run venv safely to repair interrupted/missing launchers.
+        log.info("creating/repairing local OCR venv")
+        _run_python([base, "-I", "-m", "venv", str(py.parent.parent)], check=True)
+        _reader_path().write_text(_READER, encoding="utf-8")
+        log.info("installing CPU OCR dependencies")
+        _run_python([
+            str(py), "-I", "-m", "pip", "install", "--disable-pip-version-check",
+            "--no-input", "torch==2.6.0", "torchvision==0.21.0",
+            "--index-url", "https://download.pytorch.org/whl/cpu",
+        ], timeout=3600, check=True)
+        _run_python([
+            str(py), "-I", "-m", "pip", "install", "--disable-pip-version-check",
+            "--no-input", "numpy==2.2.6", *_PACKAGES[engine],
+        ], timeout=3600, check=True)
+        log.info("preparing EasyOCR models")
+        _run_python([
+            str(py), "-I", str(_reader_path()), engine, "--prepare",
+        ], timeout=900, check=True)
+        (_runtime_root() / "ready.json").write_text(json.dumps({"engine": engine}), encoding="utf-8")
+        _ready.add(engine)
+        log.info("local OCR ready: %s", engine)
 
 
 def read_text(image, *, engine: str, wait: bool) -> str:
@@ -221,27 +275,22 @@ def read_text(image, *, engine: str, wait: bool) -> str:
     if wait:
         ensure_installed(engine)
     elif not engine_ready(engine):
-        state = begin_install(engine)
-        if state == "missing-python":
-            raise RuntimeError("Немає Python 3.12, щоб поставити локальний OCR")
+        state, detail = installation_state(engine)
+        if state == "failed":
+            raise RuntimeError(f"{engine}: {detail}")
+        if state != "installing":
+            begin_install(engine)
         raise RuntimeError(f"{engine} ще встановлюється")
     _reader_path().parent.mkdir(parents=True, exist_ok=True)
     _reader_path().write_text(_READER, encoding="utf-8")
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=_child_env()["TEMP"])
     tmp_path = tmp.name
     tmp.close()
     try:
         image.save(tmp_path, format="PNG")
-        done = subprocess.run(
-            [str(_venv_python()), str(_reader_path()), engine, tmp_path],
-            capture_output=True,
-            text=True,
+        done = _run_python(
+            [str(_venv_python()), "-I", str(_reader_path()), engine, tmp_path],
             timeout=180,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-            **_hidden_process(),
         )
     finally:
         try:

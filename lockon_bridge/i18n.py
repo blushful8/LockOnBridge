@@ -110,6 +110,8 @@ class Strings:
     dev_unlocked: str
     grab_hold_title: str
     grab_hold_body: str
+    processing_title: str
+    processing_body: str
 
 
 EN = Strings(
@@ -291,6 +293,8 @@ EN = Strings(
     dev_unlock_prompt="Enter developer passphrase:",
     dev_unlock_bad="Wrong passphrase.",
     dev_unlocked="Developer tools unlocked for this session.",
+    processing_title="Processing results",
+    processing_body="Recognizing rewards. You can continue playing.",
     grab_hold_title="Reading the results",
     grab_hold_body="Please wait a few seconds. Input is paused so the results screen stays open.",
 )
@@ -476,6 +480,8 @@ UK = Strings(
     dev_unlock_prompt="Введіть пароль розробника:",
     dev_unlock_bad="Невірний пароль.",
     dev_unlocked="Інструменти розробника розблоковано на цю сесію.",
+    processing_title="Обробляємо результати",
+    processing_body="Розпізнаємо нагороди. Можна продовжувати грати.",
     grab_hold_title="Зчитуємо результати",
     grab_hold_body="Зачекайте кілька секунд. Введення зупинено, щоб екран результатів лишився відкритим.",
 )
@@ -661,6 +667,8 @@ RU = Strings(
     dev_unlock_prompt="Введите пароль разработчика:",
     dev_unlock_bad="Неверный пароль.",
     dev_unlocked="Инструменты разработчика разблокированы на эту сессию.",
+    processing_title="Обрабатываем результаты",
+    processing_body="Распознаём награды. Можно продолжать играть.",
     grab_hold_title="Считываем результаты",
     grab_hold_body="Подождите несколько секунд. Ввод остановлен, чтобы экран результатов остался открытым.",
 )

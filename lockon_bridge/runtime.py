@@ -395,11 +395,14 @@ class BridgeRuntime:
             log.info("capture already running — skip overlapping burst")
             return None
         try:
-            return self._capture_burst_ocr_body(publish=publish)
+            from .result_hold import ResultHold
+
+            with ResultHold(total=self.config.frames) as hold:
+                return self._capture_burst_ocr_body(publish=publish, hold=hold)
         finally:
             _CAPTURE_LOCK.release()
 
-    def _capture_burst_ocr_body(self, *, publish: bool = True):
+    def _capture_burst_ocr_body(self, *, publish: bool = True, hold):
         """Grab-first burst: snapshot WT quickly, then OCR the buffer offline."""
         from .crashguard import breadcrumb
         from .ocr_isolate import PersistentOcrWorker
@@ -415,46 +418,44 @@ class BridgeRuntime:
             cfg.capture_delay_sec,
         )
         # --- Phase A: shots while the results screen is held still ---
-        from .result_hold import ResultHold
-
         grab_t0 = time.monotonic()
         buffer: list = []
         taken_at: list[float] = []
-        with ResultHold(total=cfg.frames) as hold:
-            if cfg.capture_delay_sec > 0:
-                self._stop.wait(cfg.capture_delay_sec)
-            for index in range(cfg.frames):
-                if self._stop.is_set():
-                    break
-                hold.set_progress(index + 1)
-                breadcrumb(f"grab_burst frame {index + 1}/{cfg.frames}")
-                frame = grab_wt_client_image(
-                    focus=False,
-                    require_foreground=True,
-                    allow_mss=False,
+        if cfg.capture_delay_sec > 0:
+            self._stop.wait(cfg.capture_delay_sec)
+        for index in range(cfg.frames):
+            if self._stop.is_set():
+                break
+            hold.set_progress(index + 1)
+            breadcrumb(f"grab_burst frame {index + 1}/{cfg.frames}")
+            frame = grab_wt_client_image(
+                focus=False,
+                require_foreground=True,
+                allow_mss=False,
+            )
+            if frame is None:
+                log.info(
+                    "grab %s/%s: skipped (no frame)",
+                    index + 1,
+                    cfg.frames,
                 )
-                if frame is None:
-                    log.info(
-                        "grab %s/%s: skipped (no frame)",
-                        index + 1,
-                        cfg.frames,
-                    )
-                else:
-                    # Copy so later WT paints cannot mutate our buffer.
-                    buffer.append(frame.copy())
-                    taken_at.append(time.time())
-                    log.info(
-                        "grab %s/%s: ok size=%sx%s",
-                        index + 1,
-                        cfg.frames,
-                        frame.size[0],
-                        frame.size[1],
-                    )
-                if index + 1 < cfg.frames:
-                    gap = shot_gap_after(
-                        index, frames=cfg.frames, uniform=cfg.grab_frame_gap
-                    )
-                    self._stop.wait(gap)
+            else:
+                # Copy so later WT paints cannot mutate our buffer.
+                buffer.append(frame.copy())
+                taken_at.append(time.time())
+                log.info(
+                    "grab %s/%s: ok size=%sx%s",
+                    index + 1,
+                    cfg.frames,
+                    frame.size[0],
+                    frame.size[1],
+                )
+            if index + 1 < cfg.frames:
+                gap = shot_gap_after(
+                    index, frames=cfg.frames, uniform=cfg.grab_frame_gap
+                )
+                self._stop.wait(gap)
+        hold.begin_processing()
         if buffer:
             save_result_shots(buffer, taken_at=taken_at)
         if self._stop.is_set():
@@ -539,6 +540,7 @@ class BridgeRuntime:
                 if self._stop.is_set():
                     return
                 try:
+                    hold.set_processing_progress(index + 1, total)
                     breadcrumb(f"ocr_buffer frame {index + 1}/{total}")
                     set_last_ocr_frame(frame)
                     png, variants = ocr_saved_frame(

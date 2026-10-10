@@ -12,6 +12,7 @@ hiddenimports = [
     "numpy",
 ]
 for pkg in (
+    "numpy",
     "winrt",
     "winrt.windows.foundation",
     "winrt.windows.foundation.collections",

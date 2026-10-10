@@ -4,14 +4,28 @@
   Builds LockOn Bridge as an onedir folder (no UPX) and packs dist\LockOnBridge.zip
   Prefers Python 3.12 (Defender ML flags 3.14+ PyInstaller stubs more often).
 #>
+param([string]$PythonExe = "")
+
 $ErrorActionPreference = "Stop"
+$env:TEMP = "D:/CodexData/Temp"
+$env:TMP = $env:TEMP
+$env:PIP_CACHE_DIR = "D:/CodexData/LockOnBridge/build-cache"
+$env:PYINSTALLER_CONFIG_DIR = "D:/CodexData/LockOnBridge/build-cache"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
 Write-Host "=== Building LockOn Bridge (onedir, no UPX) ===" -ForegroundColor Cyan
 
 $py = $null
+if (-not $PythonExe) {
+    $PythonExe = "D:/CodexData/LockOnBridge/build-python/python.exe"
+}
+if (Test-Path -LiteralPath $PythonExe) {
+    & $PythonExe -I -c "import venv, ensurepip" 2>$null
+    if ($LASTEXITCODE -eq 0) { $py = $PythonExe }
+}
 foreach ($ver in @("-3.12", "-3.11", "-3")) {
+    if ($py) { break }
     try {
         $candidate = (& py $ver -c "import sys; print(sys.executable)" 2>$null)
         if ($candidate -and (Test-Path $candidate.Trim())) {
@@ -28,11 +42,24 @@ if (-not $py) {
 Write-Host "Using $py"
 & $py -c "import sys; print(sys.version)"
 & $py -m pip install -r requirements.txt -q
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $py -m pip install pyinstaller -q
-& $py (Join-Path $Root "assets\generate_icon.py")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $py -c "import tkinter, numpy; r=tkinter.Tk(); r.withdraw(); r.destroy(); print('GUI and NumPy', numpy.__version__, 'OK')"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (-not (Test-Path "$Root/assets/lockon_bridge.ico")) {
+    & $py (Join-Path $Root "assets\generate_icon.py")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
-if (Test-Path "$Root\build") { Remove-Item -Recurse -Force "$Root\build" }
-if (Test-Path "$Root\dist\LockOnBridge") { Remove-Item -Recurse -Force "$Root\dist\LockOnBridge" }
+foreach ($relative in @("build", "dist/LockOnBridge")) {
+    $target = [IO.Path]::GetFullPath((Join-Path $Root $relative))
+    $workspace = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    if (-not $target.StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Build target escaped project: $target"
+    }
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+}
 if (Test-Path "$Root\dist\LockOnBridge.zip") { Remove-Item -Force "$Root\dist\LockOnBridge.zip" }
 if (Test-Path "$Root\dist\LockOnBridge.exe") { Remove-Item -Force "$Root\dist\LockOnBridge.exe" }
 

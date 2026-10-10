@@ -134,6 +134,9 @@ class BridgeApp:
         # Dev ROI overlay only if previously enabled AND unlocked this session.
         # Never auto-start for normal users.
 
+        if self.settings.ocr_backend == "easyocr":
+            self._apply_ocr_choice("easyocr")
+
         if self.settings.enabled:
             self._start_enabled(persist=False)
         else:
@@ -646,34 +649,60 @@ class BridgeApp:
         self._apply_ocr_choice(code)
 
     def _apply_ocr_choice(self, code: str) -> None:
-        from tkinter import messagebox
+        from .local_ocr import begin_install, installation_state
 
-        from .local_ocr import begin_install
-        from .settings import update_settings
+        # Each new selection invalidates the previous completion callback.
+        token = getattr(self, "_ocr_selection_token", 0) + 1
+        self._ocr_selection_token = token
 
-        if code == self.settings.ocr_backend and code == "ocrspace":
-            return
-        self.settings = update_settings(ocr_backend=code)
-        if hasattr(self, "ocr_choice_var"):
-            label = next(
-                (name for name, value in self._ship_ocr_by_label.items() if value == code),
-                "OCR.space",
-            )
-            self.ocr_choice_var.set(label)
+        def show_choice(active: str) -> None:
+            if hasattr(self, "ocr_choice_var"):
+                self.ocr_choice_var.set(next(
+                    (name for name, value in self._ship_ocr_by_label.items() if value == active),
+                    "OCR.space",
+                ))
+            if hasattr(self, "ocr_backend_var"):
+                self.ocr_backend_var.set(next(
+                    (name for name, value in self._ocr_backend_by_label.items() if value == active),
+                    "OCR.space",
+                ))
+
         if code != "easyocr":
+            self.settings = update_settings(ocr_backend=code)
+            show_choice(code)
             return
+
+        # Keep cloud OCR operational until the local engine and its models work.
+        previous = self.settings.ocr_backend
+        if previous == "easyocr":
+            previous = "ocrspace"
+            self.settings = update_settings(ocr_backend=previous)
+        show_choice(previous)
         state = begin_install(code)
-        if state == "missing-python":
-            messagebox.showwarning(
-                PRODUCT_NAME,
-                "Щоб поставити локальний OCR, потрібен Python 3.12.",
-            )
-        elif state == "installing":
-            messagebox.showinfo(
-                PRODUCT_NAME,
-                f"Встановлення EasyOCR почалось. Перший раз це кілька хвилин, "
-                "потім він працює без ліміту API.",
-            )
+        if state == "ready":
+            self.settings = update_settings(ocr_backend=code)
+            show_choice(code)
+            return
+        self.status_var.set("Готується EasyOCR. Поточний OCR продовжує працювати…")
+
+        def poll() -> None:
+            if self._closing or self._ocr_selection_token != token:
+                return
+            state, detail = installation_state(code)
+            if state == "installing":
+                self.root.after(500, poll)
+            elif state == "ready":
+                self.settings = update_settings(ocr_backend=code)
+                show_choice(code)
+                self.status_var.set("EasyOCR готовий і ввімкнений")
+            else:
+                show_choice(previous)
+                self.status_var.set("EasyOCR не встановлено. Поточний OCR залишився активним")
+                messagebox.showerror(PRODUCT_NAME,
+                    "Не вдалося підготувати EasyOCR. Поточний OCR залишився активним."
+                    "\nПовторний вибір EasyOCR запустить нову спробу.\n\n" + detail[-600:])
+
+        self.root.after(500, poll)
 
     def _on_wt_language_chosen(self, _event=None) -> None:
         label = self.wt_language_var.get()

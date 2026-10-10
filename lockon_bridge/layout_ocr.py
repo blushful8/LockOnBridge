@@ -660,7 +660,6 @@ def ocrspace_layout_variants(
     del max_crops
     from .local_ocr import (
         LOCAL_ENGINES,
-        begin_install,
         cloud_error_is_fallback,
         cloud_limited,
         read_text,
@@ -693,7 +692,6 @@ def ocrspace_layout_variants(
                 continue
             if variants:
                 return variants
-        begin_install("easyocr")
         return []
 
     if chosen in LOCAL_ENGINES:

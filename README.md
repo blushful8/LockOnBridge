@@ -30,7 +30,7 @@ Local HTTP, default port **8112**:
 
 - **OCR.space** (Engine 3) is the default. Only the reward crop is sent to `api.ocr.space`.
 - Your key is read from the `OCR_SPACE_API_KEY` environment variable, or from an encrypted file on this Windows account. It is never stored in this repository. Without a key, the public demo key is used and runs out quickly. Free Engine 3 is **2,500** requests a month and **500** a day.
-- **EasyOCR** runs on the PC. Choose it in the window, or leave OCR.space selected: Bridge installs EasyOCR when the API is unreachable or the monthly or daily limit is spent. The first install needs **Python 3.12** on the PC and takes a few minutes. The battle that triggered the install is not held open for that download.
+- **EasyOCR** runs on the PC. Choose it in the window, or leave OCR.space selected: Bridge installs EasyOCR when the API is unreachable or the monthly or daily limit is spent. The first install downloads a private Python runtime, CPU dependencies and OCR models and takes a few minutes. The current OCR stays selected until preparation succeeds; installation errors appear in the window and selecting EasyOCR again retries. The battle that triggered the install is not held open for that download.
 - App language: **English**, **Ukrainian**, or **Russian**. Set **War Thunder language** to the language of the results screen.
 
 ---
@@ -119,7 +119,7 @@ With **OCR.space**, the reward crop is sent to `api.ocr.space`. With **EasyOCR**
 
 **Навіщо:** після бою гра показує RP і SL лише на екрані результатів. Bridge зчитує цю смугу і віддає одну пару на цей ПК. Телефон у тій самій Wi‑Fi читає її по HTTP, порт **8112**. `GET /v1/session` віддає номер бою: він з’являється на вході в бій і лишається тим самим у звіті, аж доки не почнеться наступний.
 
-**OCR:** за замовчуванням **OCR.space** (Engine 3). На сервіс іде лише вирізка нагороди. Свій ключ — змінна `OCR_SPACE_API_KEY` або зашифрований файл у профілі Windows, не в репозиторії. Без ключа працює публічний демо-ключ, і він швидко закінчується (безкоштовно 2500 запитів на місяць і 500 на день). **EasyOCR** стоїть на ПК: його можна вибрати, і він сам ставиться, якщо API недоступне або ліміт вичерпано. Перше встановлення потребує Python 3.12.
+**OCR:** за замовчуванням **OCR.space** (Engine 3). На сервіс іде лише вирізка нагороди. Свій ключ — змінна `OCR_SPACE_API_KEY` або зашифрований файл у профілі Windows, не в репозиторії. Без ключа працює публічний демо-ключ, і він швидко закінчується (безкоштовно 2500 запитів на місяць і 500 на день). **EasyOCR** стоїть на ПК: його можна вибрати, і він сам ставиться, якщо API недоступне або ліміт вичерпано. Перше встановлення автоматично готує окремий Python і моделі. Поточний OCR працює до завершення підготовки; помилка показується у вікні, повторний вибір EasyOCR повторює спробу.
 
 **Встановлення:** ZIP з Releases → `LockOnBridge.exe` → мова програми, мова War Thunder, OCR → **Bridge** увімкнено → **Дозволити доступ з телефона**. На телефоні: IP цього ПК і порт `8112`.
 
