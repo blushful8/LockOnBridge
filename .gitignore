@@ -65,3 +65,6 @@ tools/_*.json
 
 # Local diagnostic scripts
 tools/probe_*.py
+
+# Real screenshot fixtures are local-only, never published.
+/tests/fixtures/

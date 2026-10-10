@@ -133,6 +133,8 @@ With **OCR.space**, the reward crop is sent to `api.ocr.space`. With **EasyOCR**
 
 ## Developers
 
+Real screenshots and local OCR captures are kept outside version control. Optional screenshot fixtures under `tests/fixtures/` stay local; the shipped resources contain only application artwork and recognition icons.
+
 ```bat
 py -3 -m pip install -r requirements.txt
 py -3 -m lockon_bridge --ui
