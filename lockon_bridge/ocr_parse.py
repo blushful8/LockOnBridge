@@ -248,12 +248,7 @@ def _pair_from_four_amount_lines(
     *,
     prefer_with: bool,
 ) -> tuple[int | None, int | None]:
-    """
-    Same four-cell grid when the team-place line is still missing.
-
-    OCR often prints the header and the four amounts while «Ваше місце» has
-    not been painted yet.
-    """
+    """Original consecutive four-cell grid recovery."""
     from .battle_msg_parse import _amounts_in_line
 
     lines = [ln.strip() for ln in text.replace("\r\n", "\n").splitlines()]
@@ -272,6 +267,58 @@ def _pair_from_four_amount_lines(
                     return rp, sl
             continue
         run = []
+    return None, None
+
+
+def _pair_from_structural_reward_grid(
+    text: str, *, prefer_with: bool,
+) -> tuple[int | None, int | None]:
+    """Recover a row-major reward grid without interpreting caption language.
+
+    A table has two adjacent RP cells, then two adjacent SL cells. OCR may
+    interleave text-only captions between the rows. Mixed text/number lines
+    are boundaries, never cells. Do not slide across rejected numeric cells:
+    that could replace a missing reward with a daily total or combat counter.
+    """
+    from .battle_msg_parse import _amounts_in_line
+
+    amounts: list[int] = []
+    caption_count = 0
+    for line in text.splitlines():
+        cell = line.strip()
+        if not cell:
+            continue
+        if not any(char.isdecimal() for char in cell):
+            if amounts:
+                caption_count += 1
+                # Captions can separate rows, not the two columns of a row.
+                if len(amounts) != 2 or caption_count > 3:
+                    return None, None
+            continue
+        if not re.fullmatch(r"[+]?\d[\d \u00a0.,']*", cell):
+            if amounts:
+                return None, None
+            continue
+        values = _amounts_in_line(cell)
+        if len(values) != 1 or values[0] < _MIN_GRID_REWARD:
+            if amounts:
+                return None, None
+            continue
+        amounts.append(values[0])
+        caption_count = 0
+        if len(amounts) == 4:
+            with_rp, without_rp, with_sl, without_sl = amounts
+            if not (
+                without_rp <= with_rp <= without_rp * 3
+                and without_sl <= with_sl <= without_sl * 3
+            ):
+                return None, None
+            if max(with_rp, without_rp) >= min(with_sl, without_sl):
+                return None, None
+            rp, sl = (with_rp, with_sl) if prefer_with else (without_rp, without_sl)
+            if rp > 50_000 or sl > 200_000 or sl / rp > 100:
+                return None, None
+            return rp, sl
     return None, None
 
 
@@ -1028,17 +1075,24 @@ def parse_rewards_from_ocr_text(
         acceptable = _plausible_grid_pair(rp, sl)
     else:
         acceptable = _plausible_reward_pair(rp, sl)
+    structural_hit = False
     if not acceptable:
-        # Premium path may have claimed a bad pair; fall back to totals.
+        # Preserve the original final totals recovery before the safety net.
         if premium_hit:
             tot_rp, tot_sl = _pair_from_total_block(cleaned)
             if _plausible_reward_pair(tot_rp, tot_sl):
                 rp, sl = tot_rp, tot_sl
                 premium_hit = False
-            else:
+                acceptable = True
+        if not acceptable:
+            # Language-independent safety net only where the original parser
+            # would return None. Never override a successful primary parse.
+            rp, sl = _pair_from_structural_reward_grid(
+                text, prefer_with=bool(prefer_premium_rewards)
+            )
+            if rp is None or sl is None:
                 return None
-        else:
-            return None
+            structural_hit = True
     assert rp is not None and sl is not None
 
     outcome = "undecided"
@@ -1049,7 +1103,9 @@ def parse_rewards_from_ocr_text(
 
     digest = hashlib.sha256(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:32]
     confidence = 0.5
-    if place_hit or earned_hit:
+    if structural_hit:
+        confidence = 0.7
+    elif place_hit or earned_hit:
         confidence = 0.92
     elif premium_hit:
         confidence += 0.2
