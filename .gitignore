@@ -68,3 +68,7 @@ tools/probe_*.py
 
 # Real screenshot fixtures are local-only, never published.
 /tests/fixtures/
+
+# Local security checks and package output
+/work/
+*.dpapi

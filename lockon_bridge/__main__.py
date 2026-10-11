@@ -78,7 +78,7 @@ def run_auto(config: RuntimeConfig, idle_poll_sec: float) -> int:
 def run_session(config: RuntimeConfig) -> int:
     log = logging.getLogger("lockon_bridge")
     log.info("LockOn Bridge v%s — session mode (Ctrl+C to stop)", __version__)
-    log.info("Phone API: http://<PC_IP>:%s/v1/latest-report", config.port)
+    log.info("Phone API: https://<PC_IP>:%s/v1/latest-report", config.port)
     runtime = BridgeRuntime(config)
     runtime.start()
     try:
@@ -94,8 +94,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="LockOn Bridge — OCR War Thunder results for the phone app",
     )
-    parser.add_argument("--bind", default=None, help="HTTP bind address")
-    parser.add_argument("--port", type=int, default=None, help="HTTP port for the phone")
+    parser.add_argument("--bind", default=None, help="HTTPS bind address")
+    parser.add_argument("--port", type=int, default=None, help="HTTPS port for the phone")
     parser.add_argument("--game-host", default="127.0.0.1")
     parser.add_argument("--game-port", type=int, default=8111)
     parser.add_argument("--frames", type=int, default=6, help="Screenshots after hangar")
@@ -264,7 +264,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.serve_test:
         from .selftest import run_serve_test
-        from .settings import load_settings
 
         settings = load_settings()
         port = args.port if args.port is not None else settings.port

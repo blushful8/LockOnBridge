@@ -9,7 +9,7 @@ No Gaijin account or game login is required.
 1. Download **LockOnBridge.zip** from the [latest release](https://github.com/blushful8/LockOnBridge/releases/latest).
 2. Extract the entire folder and run **LockOnBridge.exe**. Keep the accompanying files next to the executable.
 3. Choose the app language and OCR backend, then turn **Bridge ON**.
-4. Allow phone access when prompted. On the phone, enable the Bridge connection and enter this PC's local IP address and port **8112**.
+4. Allow phone access when prompted. In **More → Pair phone securely**, copy the private pairing code. On the phone, enable Bridge, enter this PC's IP and port **8112**, and paste the code into **Settings → Bridge pairing code**.
 5. Keep the phone and PC on the same local network.
 
 The Windows build is unsigned and distributed as a folder-based ZIP without UPX. Check that the download comes from this repository; the release notes include the archive's SHA256 checksum.
@@ -48,7 +48,7 @@ When War Thunder closes, capture monitoring stops. While Bridge remains enabled,
 
 ## Local connection
 
-The HTTP API uses port **8112** by default:
+The HTTPS API uses port **8112** by default. All endpoints require the paired phone’s bearer token over TLS:
 
 | Endpoint | Response |
 |---|---|
@@ -59,7 +59,7 @@ The HTTP API uses port **8112** by default:
 | `GET /v1/preferences` | Current `hasPremiumAccount` preference. |
 | `PUT /v1/preferences` | Updates `hasPremiumAccount` with a JSON body. |
 
-Reports include RP, SL, capture time, OCR confidence, outcome and session ID. Older saved reports may have an empty session ID. This is a local HTTP connection without account authentication; use it on a trusted network.
+Reports include RP, SL, capture time, OCR confidence, outcome and session ID. Older saved reports may have an empty session ID. The phone pins the exact PC certificate from the locally supplied pairing code; unpaired clients are rejected. There is no insecure HTTP fallback. Update both the Android app and Bridge together. The code grants access to this Bridge, so keep it private.
 
 ## Data and privacy
 
@@ -74,7 +74,11 @@ The release ZIP contains application resources, not personal captures, logs, rep
 - Keep the results screen open until capture finishes, especially while reward numbers are still counting.
 - Check that the phone uses the correct PC IP and port on the same network.
 - Use **Allow phone access** if Windows firewall prevents the connection.
-- Open `http://127.0.0.1:8112/v1/health` on the PC to check an enabled Bridge.
+- Use **More → Pair phone securely**, paste the code into the Android settings, then use **Test Bridge**. A browser without pairing credentials cannot read the API.
 - Logs are normally under `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`.
 
 Uninstall from the app, Windows Installed apps, or **uninstall.exe** next to the installed executable. Separately downloaded EasyOCR files may remain: on PCs with a D: drive, they are stored under `D:\CodexData\LockOnBridge\ocr`; otherwise they are stored under the app's local data directory.
+
+## Secure pairing storage
+
+On Windows, the TLS identity and access token are encrypted for the current user using DPAPI. Security data is stored under `D:/CodexData/LockOnBridge/security` when D: is available, otherwise under the existing app data directory. Keep this identity when updating Bridge; deleting it requires pairing the phone again. Personal identity files are never included in release archives.

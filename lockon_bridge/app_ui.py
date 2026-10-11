@@ -522,6 +522,8 @@ class BridgeApp:
             bd=0,
             font=("Segoe UI", 10),
         )
+        pair_labels = {"en": "Pair phone securely", "uk": "Безпечно підключити телефон", "ru": "Безопасно подключить телефон"}
+        more_menu.add_command(label=pair_labels.get(self.settings.language, pair_labels["en"]), command=self._show_pairing)
         more_menu.add_command(label=t.replay_log, command=self._replay_last_ocr)
         more_menu.add_command(label=t.open_logs, command=self._open_logs)
         more_menu.add_command(label=t.firewall_menu, command=self._allow_phone_access)
@@ -981,7 +983,7 @@ class BridgeApp:
     def _phone_test_url(self) -> str:
         port = self._read_port()
         ip = self._lan_ipv4() or "PC_IP"
-        return f"http://{ip}:{port}/v1/health"
+        return f"https://{ip}:{port}/v1/health"
 
     def _refresh_phone_access_ui(self) -> None:
         t = self.strings
@@ -1198,6 +1200,33 @@ class BridgeApp:
             else:
                 self.badge_var.set(t.badge_off)
                 self.badge.configure(bg=OFF)
+
+    def _show_pairing(self) -> None:
+        from .security import pairing_code
+        labels = {
+            "en": ("Pair phone securely", "Copy this private code into LockOn → Settings → Bridge pairing code.", "Copy code"),
+            "uk": ("Безпечне підключення", "Вставте цей приватний код у LockOn → Налаштування → Код підключення Bridge.", "Копіювати код"),
+            "ru": ("Безопасное подключение", "Вставьте этот приватный код в LockOn → Настройки → Код подключения Bridge.", "Копировать код"),
+        }
+        title, hint, copy = labels.get(self.settings.language, labels["en"])
+        try:
+            code = pairing_code()
+        except Exception as error:
+            messagebox.showerror(PRODUCT_NAME, str(error), parent=self.root)
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        tk.Label(dialog, text=hint, wraplength=480, padx=20, pady=15).pack()
+        entry = tk.Entry(dialog, width=60)
+        entry.insert(0, code)
+        entry.configure(state="readonly")
+        entry.pack(padx=20, pady=5)
+        def copy_code():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code)
+            dialog.destroy()
+        tk.Button(dialog, text=copy, command=copy_code).pack(pady=15)
 
     def _read_port(self) -> int:
         try:

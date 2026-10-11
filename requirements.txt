@@ -12,3 +12,5 @@ winrt-Windows.Graphics.Imaging>=2.0.0
 winrt-Windows.Media.Ocr>=2.0.0
 winrt-Windows.Storage>=2.0.0
 winrt-Windows.Storage.Streams>=2.0.0
+
+cryptography>=46.0.0
