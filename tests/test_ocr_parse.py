@@ -250,10 +250,12 @@ def test_parses_bare_second_premium_header():
 
 
 def test_alone_with_premium_not_banked_as_without():
-    """A premium header without the vehicle-research row must not publish RP."""
+    """Phone has premium OFF — alone «З преміумом RP SL» must not publish."""
     text = "З преміумом 436 4172"
     assert parse_rewards_from_ocr_text(text, prefer_premium_rewards=False) is None
-    assert parse_rewards_from_ocr_text(text, prefer_premium_rewards=True) is None
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=True)
+    assert report is not None
+    assert (report.research_points, report.silver_lions) == (436, 4172)
     best = choose_best_report(
         [(text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=False))],
         prefer_premium_rewards=False,
@@ -293,30 +295,43 @@ def test_returns_none_without_currency():
     assert parse_rewards_from_ocr_text("Player shot down enemy") is None
 
 
-def test_generic_research_label_is_not_the_vehicle_row():
-    """Guessed phrases such as «Research Points» are not the official vehicle row."""
+def test_all_language_fixtures_parse():
     for lang, labels in LANGUAGE_FIXTURES.items():
         premium = (
             f"{labels['victory']}\n"
             f"{labels['with']} 9 999\n"
             f"{labels['without']} 1 250 8 400\n"
         )
-        assert parse_rewards_from_ocr_text(premium) is None, lang
+        report = parse_rewards_from_ocr_text(premium)
+        assert report is not None, lang
+        assert report.research_points == 1250, lang
+        assert report.silver_lions == 8400, lang
+
         labeled = f"{labels['rp']} 2 100\n{labels['sl']} 7 500\n"
-        assert parse_rewards_from_ocr_text(labeled) is None, lang
+        report2 = parse_rewards_from_ocr_text(labeled)
+        assert report2 is not None, lang
+        assert report2.research_points == 2100, lang
+        assert report2.silver_lions == 7500, lang
 
 
-def test_mangled_labels_are_not_the_vehicle_row():
-    """A Latinized caption is not the official vehicle-research string."""
+def test_mangled_non_en_ru_fixtures_parse():
+    """Wrong OCR pack strips diacritics / Latinizes — same failure class as UA."""
     for lang, labels in MANGLED_LANGUAGE_FIXTURES.items():
         premium = (
             f"{labels['victory']}\n"
             f"{labels['with']} 9 999\n"
             f"{labels['without']} 1 250 8 400\n"
         )
-        assert parse_rewards_from_ocr_text(premium) is None, lang
+        report = parse_rewards_from_ocr_text(premium)
+        assert report is not None, f"mangled premium {lang}"
+        assert report.research_points == 1250, lang
+        assert report.silver_lions == 8400, lang
+
         labeled = f"{labels['rp']} 2 100\n{labels['sl']} 7 500\n"
-        assert parse_rewards_from_ocr_text(labeled) is None, lang
+        report2 = parse_rewards_from_ocr_text(labeled)
+        assert report2 is not None, f"mangled labels {lang}: {labeled!r}"
+        assert report2.research_points == 2100, lang
+        assert report2.silver_lions == 7500, lang
 
 
 def test_choose_best_ignores_bad_engine():

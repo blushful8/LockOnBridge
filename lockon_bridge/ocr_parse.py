@@ -1184,20 +1184,37 @@ def parse_rewards_from_ocr_text(
     if not place_hit and rp is not None and sl is not None:
         rp, sl = _prefer_deglued_pair(cleaned, rp, sl)
 
-    # Vehicle research is the only RP that counts toward the phone's goal.
+    # The official vehicle-research row wins when OCR actually saw it.
     # Silver still comes from the premium column / total row above.
+    # If that row is missing, keep the earlier grid / total / label reading.
     vehicle_rp = vehicle_research_amount(
         cleaned, prefer_with=bool(prefer_premium_rewards)
     )
-    if vehicle_rp is None:
-        return None
-    rp = vehicle_rp
-
-    # The label is authoritative, including short battles under 50 RP.
-    # Do not replace it with the summary grid or «Total» when the pair looks odd.
-    if not _plausible_grid_pair(rp, sl):
-        return None
-    structural_hit = False
+    if vehicle_rp is not None:
+        rp = vehicle_rp
+        if not _plausible_grid_pair(rp, sl):
+            return None
+        structural_hit = False
+    else:
+        if place_hit:
+            acceptable = _plausible_grid_pair(rp, sl)
+        else:
+            acceptable = _plausible_reward_pair(rp, sl)
+        structural_hit = False
+        if not acceptable:
+            if premium_hit:
+                tot_rp, tot_sl = _pair_from_total_block(cleaned)
+                if _plausible_reward_pair(tot_rp, tot_sl):
+                    rp, sl = tot_rp, tot_sl
+                    premium_hit = False
+                    acceptable = True
+            if not acceptable:
+                rp, sl = _pair_from_structural_reward_grid(
+                    text, prefer_with=bool(prefer_premium_rewards)
+                )
+                if rp is None or sl is None:
+                    return None
+                structural_hit = True
     assert rp is not None and sl is not None
 
     outcome = "undecided"

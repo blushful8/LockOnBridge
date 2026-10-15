@@ -99,12 +99,17 @@ def test_two_numbers_follow_the_premium_column():
     assert vehicle_research_amount(text, prefer_with=False) == 1098
 
 
-def test_missing_vehicle_row_does_not_guess_from_the_grid():
+def test_missing_vehicle_row_falls_back_to_the_summary_grid():
     text = (
         "З преміумом\nБез преміума\nВаше місце в команді: 9\n"
         "1 855\n993\n11 377\n6 944\n"
     )
-    assert parse_rewards_from_ocr_text(text) is None
+    without = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+    assert without is not None
+    assert (without.research_points, without.silver_lions) == (993, 6944)
+    with_premium = parse_rewards_from_ocr_text(text, prefer_premium_rewards=True)
+    assert with_premium is not None
+    assert (with_premium.research_points, with_premium.silver_lions) == (1855, 11377)
 
 
 def test_official_label_in_every_bridge_language():
