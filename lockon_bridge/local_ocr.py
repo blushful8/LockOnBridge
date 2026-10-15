@@ -94,7 +94,7 @@ def _run_python(args: list[str], *, timeout: int = 180, check: bool = False):
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
-        raise RuntimeError("Перевищено час очікування локального OCR")
+        raise RuntimeError("Local OCR timed out.")
     done = subprocess.CompletedProcess(args, proc.returncode, out, err)
     if check and done.returncode:
         detail = (err or out or f"exit={done.returncode}").strip()[-1600:]
@@ -111,16 +111,20 @@ def installation_state(engine: str) -> tuple[str, str]:
     return ("ready", "") if engine in _ready else ("idle", "")
 
 
+# Shown to the caller when preparation is still running. Matched in layout_ocr.
+STILL_PREPARING = "EasyOCR is still being prepared."
+
 _READER = r'''
 import json, os, sys
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("FLAGS_minloglevel", "2")
 sys.stdout.reconfigure(encoding="utf-8")
 engine, path = sys.argv[1], sys.argv[2]
+langs = json.loads(sys.argv[3]) if len(sys.argv) > 3 else ["en"]
 lines = []
 if engine == "easyocr":
     import easyocr
-    reader = easyocr.Reader(["uk", "en"], gpu=False, verbose=False)
+    reader = easyocr.Reader(langs, gpu=False, verbose=False)
     if path != "--prepare":
         lines = [str(part) for part in reader.readtext(path, detail=0)]
 else:
@@ -207,7 +211,7 @@ def _base_python() -> str:
                     continue
                 dest = (target / info.filename).resolve()
                 if not dest.is_relative_to(target.resolve()):
-                    raise RuntimeError("Некоректний архів Python")
+                    raise RuntimeError("The Python archive is invalid.")
                 bundle.extract(info, target)
     finally:
         archive.unlink(missing_ok=True)
@@ -262,25 +266,28 @@ def ensure_installed(engine: str) -> None:
             "--no-input", "numpy==2.2.6", *_PACKAGES[engine],
         ], timeout=3600, check=True)
         log.info("preparing EasyOCR models")
+        from .wt_languages import easyocr_lang_list
+
+        langs = easyocr_lang_list(load_settings_language())
         _run_python([
             str(py), "-I", str(_reader_path()), engine, "--prepare",
+            json.dumps(langs),
         ], timeout=900, check=True)
         (_runtime_root() / "ready.json").write_text(json.dumps({"engine": engine}), encoding="utf-8")
         _ready.add(engine)
         log.info("local OCR ready: %s", engine)
 
 
-def read_text(image, *, engine: str, wait: bool) -> str:
-    """OCR one crop. ``wait`` blocks on first install (the test window)."""
-    if wait:
-        ensure_installed(engine)
-    elif not engine_ready(engine):
-        state, detail = installation_state(engine)
-        if state == "failed":
-            raise RuntimeError(f"{engine}: {detail}")
-        if state != "installing":
-            begin_install(engine)
-        raise RuntimeError(f"{engine} ще встановлюється")
+def load_settings_language() -> str:
+    try:
+        from .settings import load_settings
+
+        return load_settings().wt_ui_language or "en"
+    except Exception:  # noqa: BLE001
+        return "en"
+
+
+def _read_once(image, *, engine: str, langs: list[str]) -> str:
     _reader_path().parent.mkdir(parents=True, exist_ok=True)
     _reader_path().write_text(_READER, encoding="utf-8")
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=_child_env()["TEMP"])
@@ -289,8 +296,11 @@ def read_text(image, *, engine: str, wait: bool) -> str:
     try:
         image.save(tmp_path, format="PNG")
         done = _run_python(
-            [str(_venv_python()), "-I", str(_reader_path()), engine, tmp_path],
-            timeout=180,
+            [
+                str(_venv_python()), "-I", str(_reader_path()), engine, tmp_path,
+                json.dumps(langs),
+            ],
+            timeout=300,
         )
     finally:
         try:
@@ -311,3 +321,35 @@ def read_text(image, *, engine: str, wait: bool) -> str:
     except json.JSONDecodeError:
         return ""
     return str(payload.get("text") or "").strip()
+
+
+def read_text(image, *, engine: str, wait: bool, langs: list[str] | None = None) -> str:
+    """OCR one crop. ``wait`` blocks on first install (the test window).
+
+    The selected War Thunder language chooses the EasyOCR model. If that pass
+    does not contain the vehicle-research row, one other script is tried.
+    """
+    if wait:
+        ensure_installed(engine)
+    elif not engine_ready(engine):
+        state, detail = installation_state(engine)
+        if state == "failed":
+            raise RuntimeError(f"{engine}: {detail}")
+        if state != "installing":
+            begin_install(engine)
+        raise RuntimeError(STILL_PREPARING)
+    from .ocr_parse import vehicle_research_amount
+    from .wt_languages import easyocr_fallback_lang_list, easyocr_lang_list
+
+    ui_lang = load_settings_language()
+    primary = list(langs or easyocr_lang_list(ui_lang))
+    text = _read_once(image, engine=engine, langs=primary)
+    if vehicle_research_amount(text, prefer_with=False) is not None:
+        return text
+    fallback = easyocr_fallback_lang_list(ui_lang)
+    if fallback == primary:
+        return text
+    second = _read_once(image, engine=engine, langs=fallback)
+    if vehicle_research_amount(second, prefer_with=False) is not None:
+        return second
+    return text or second

@@ -110,6 +110,12 @@ class Strings:
     dev_unlocked: str
     grab_hold_title: str
     grab_hold_body: str
+    easyocr_preparing: str
+    easyocr_ready: str
+    easyocr_failed: str
+    pair_phone: str
+    pair_phone_hint: str
+    pair_phone_copy: str
     processing_title: str
     processing_body: str
 
@@ -297,6 +303,15 @@ EN = Strings(
     processing_body="Recognizing rewards. You can continue playing.",
     grab_hold_title="Reading the results",
     grab_hold_body="Please wait a few seconds. Input is paused so the results screen stays open.",
+    easyocr_preparing="Preparing EasyOCR. The current recognition keeps working.",
+    easyocr_ready="EasyOCR is ready and selected.",
+    easyocr_failed=(
+        "EasyOCR was not prepared. The current recognition is still selected. "
+        "Choosing EasyOCR again starts a new attempt.\n\n{detail}"
+    ),
+    pair_phone="Pair phone securely",
+    pair_phone_hint="Copy this private code into LockOn → Settings → Bridge pairing code.",
+    pair_phone_copy="Copy code",
 )
 
 UK = Strings(
@@ -304,9 +319,9 @@ UK = Strings(
     bridge_enabled="Bridge",
     autostart_windows="Запуск зі стартом Windows",
     tip=(
-        "Bridge УВІМК. — автозапуск зі стартом Windows і робота у фоні. "
-        "ВИМК. — усе зупиняється (без автозапуску). "
-        "Один раз оберіть мову інтерфейсу War Thunder для кращого OCR."
+        "Увімкнений Bridge запускається разом із Windows і працює у фоні. "
+        "Вимкнений Bridge зупиняє роботу й автозапуск. "
+        "Один раз оберіть мову інтерфейсу War Thunder для розпізнавання."
     ),
     http_port="Порт HTTP",
     open_logs="Відкрити журнали",
@@ -347,8 +362,8 @@ UK = Strings(
     lang_en="English",
     lang_uk="Українська",
     lang_ru="Російська",
-    badge_on="УВІМК.",
-    badge_off="ВИМК.",
+    badge_on="УВІМКНЕНО",
+    badge_off="ВИМКНЕНО",
     badge_idle="ОЧІКУВАННЯ",
     badge_active="АКТИВНИЙ",
     status_disabled="Вимкнено — немає автозапуску й фонової роботи",
@@ -359,7 +374,7 @@ UK = Strings(
         "В Історії LockOn лишатимуться 0 RP / 0 SL, доки це не виправите.\n\n"
         "Виправлення: More ▾ → Дозволити доступ з телефона → Так (потім Так у UAC Windows).\n"
         "Якщо Defender заблокував LockOnBridge.exe: Журнал захисту → Дозволити, і знову.\n"
-        "На телефоні: той самий IP ПК, перемикач Bridge УВІМК., порт {port}."
+        "На телефоні: той самий IP ПК, перемикач Bridge увімкнено, порт {port}."
     ),
     phone_access_ok="Доступ з телефона OK — перевірка з браузера телефона:\n{url}",
     phone_test_hint="URL для перевірки з телефона (та сама Wi‑Fi): {url}",
@@ -484,6 +499,15 @@ UK = Strings(
     processing_body="Розпізнаємо нагороди. Можна продовжувати грати.",
     grab_hold_title="Зчитуємо результати",
     grab_hold_body="Зачекайте кілька секунд. Введення зупинено, щоб екран результатів лишився відкритим.",
+    easyocr_preparing="Триває підготовка EasyOCR. Поточне розпізнавання продовжує працювати.",
+    easyocr_ready="EasyOCR готовий і вибраний.",
+    easyocr_failed=(
+        "Не вдалося підготувати EasyOCR. Поточне розпізнавання лишилося вибраним. "
+        "Повторний вибір EasyOCR почне нову спробу.\n\n{detail}"
+    ),
+    pair_phone="Безпечно підключити телефон",
+    pair_phone_hint="Скопіюйте цей приватний код у LockOn → Налаштування → Код підключення Bridge.",
+    pair_phone_copy="Копіювати код",
 )
 
 RU = Strings(
@@ -491,9 +515,9 @@ RU = Strings(
     bridge_enabled="Bridge",
     autostart_windows="Запуск со стартом Windows",
     tip=(
-        "Bridge ВКЛ. — автозапуск со стартом Windows и работа в фоне. "
-        "ВЫКЛ. — всё останавливается (без автозапуска). "
-        "Один раз выберите язык интерфейса War Thunder для лучшего OCR."
+        "Включённый Bridge запускается вместе с Windows и работает в фоне. "
+        "Выключенный Bridge останавливает работу и автозапуск. "
+        "Один раз выберите язык интерфейса War Thunder для распознавания."
     ),
     http_port="Порт HTTP",
     open_logs="Открыть журналы",
@@ -534,8 +558,8 @@ RU = Strings(
     lang_en="English",
     lang_uk="Украинский",
     lang_ru="Русский",
-    badge_on="ВКЛ.",
-    badge_off="ВЫКЛ.",
+    badge_on="ВКЛЮЧЕНО",
+    badge_off="ВЫКЛЮЧЕНО",
     badge_idle="ОЖИДАНИЕ",
     badge_active="АКТИВЕН",
     status_disabled="Выключено — нет автозапуска и фоновой работы",
@@ -546,7 +570,7 @@ RU = Strings(
         "В Истории LockOn останутся 0 RP / 0 SL, пока это не исправить.\n\n"
         "Исправление: More ▾ → Разрешить доступ с телефона → Да (затем Да в UAC Windows).\n"
         "Если Defender заблокировал LockOnBridge.exe: Журнал защиты → Разрешить, и снова.\n"
-        "На телефоне: тот же IP ПК, переключатель Bridge ВКЛ., порт {port}."
+        "На телефоне: тот же IP ПК, переключатель Bridge включён, порт {port}."
     ),
     phone_access_ok="Доступ с телефона OK — проверка из браузера телефона:\n{url}",
     phone_test_hint="URL для проверки с телефона (та же Wi‑Fi): {url}",
@@ -671,6 +695,15 @@ RU = Strings(
     processing_body="Распознаём награды. Можно продолжать играть.",
     grab_hold_title="Считываем результаты",
     grab_hold_body="Подождите несколько секунд. Ввод остановлен, чтобы экран результатов остался открытым.",
+    easyocr_preparing="Идёт подготовка EasyOCR. Текущее распознавание продолжает работать.",
+    easyocr_ready="EasyOCR готов и выбран.",
+    easyocr_failed=(
+        "Не удалось подготовить EasyOCR. Текущее распознавание осталось выбранным. "
+        "Повторный выбор EasyOCR начнёт новую попытку.\n\n{detail}"
+    ),
+    pair_phone="Безопасно подключить телефон",
+    pair_phone_hint="Скопируйте этот приватный код в LockOn → Настройки → Код подключения Bridge.",
+    pair_phone_copy="Копировать код",
 )
 
 

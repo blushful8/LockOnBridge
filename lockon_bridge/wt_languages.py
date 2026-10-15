@@ -87,6 +87,37 @@ def wt_language_codes() -> list[str]:
     return [lang.code for lang in WT_LANGUAGES]
 
 
+def easyocr_lang_list(code: str) -> list[str]:
+    """EasyOCR model list for the War Thunder language the user selected.
+
+    EasyOCR does not detect the language. Chinese, Japanese and Korean each
+    need their own model. Ukrainian, Russian and Belarusian share the Cyrillic
+    model; the selected code still has to be in the list.
+    """
+    key = (code or "en").strip().lower()
+    if key.startswith("zh"):
+        return ["ch_sim", "en"]
+    if key == "ja":
+        return ["ja", "en"]
+    if key == "ko":
+        return ["ko", "en"]
+    if key == "sr":
+        return ["rs_latin", "en"]
+    if key in {"uk", "ru", "be"}:
+        return [key, "en"]
+    if key in _BY_CODE:
+        return [key, "en"]
+    return ["en"]
+
+
+def easyocr_fallback_lang_list(code: str) -> list[str]:
+    """One other script to try when the selected model did not see the vehicle row."""
+    primary = easyocr_lang_list(code)[0]
+    if primary in {"ch_sim", "ch_tra", "ja", "ko", "uk", "ru", "be"}:
+        return ["en"]
+    return ["uk", "en"]
+
+
 # Official Apache-2.0 tessdata_fast (smaller / good enough for UI text).
 TESSDATA_FAST_BASE = (
     "https://github.com/tesseract-ocr/tessdata_fast/raw/main/{lang}.traineddata"

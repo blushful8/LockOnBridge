@@ -522,14 +522,13 @@ class BridgeApp:
             bd=0,
             font=("Segoe UI", 10),
         )
-        pair_labels = {"en": "Pair phone securely", "uk": "Безпечно підключити телефон", "ru": "Безопасно подключить телефон"}
-        more_menu.add_command(label=pair_labels.get(self.settings.language, pair_labels["en"]), command=self._show_pairing)
-        more_menu.add_command(label=t.replay_log, command=self._replay_last_ocr)
+        more_menu.add_command(label=t.pair_phone, command=self._show_pairing)
         more_menu.add_command(label=t.open_logs, command=self._open_logs)
         more_menu.add_command(label=t.firewall_menu, command=self._allow_phone_access)
         more_menu.add_command(label=t.check_updates, command=self._check_updates)
         if self._dev_unlocked:
             more_menu.add_separator()
+            more_menu.add_command(label=t.replay_log, command=self._replay_last_ocr)
             more_menu.add_command(label=t.roi_calibrator, command=self._open_roi_calibrator)
             # Dev-only: legacy Messages clipboard / local OCR backends.
             more_menu.add_separator()
@@ -685,7 +684,7 @@ class BridgeApp:
             self.settings = update_settings(ocr_backend=code)
             show_choice(code)
             return
-        self.status_var.set("Готується EasyOCR. Поточний OCR продовжує працювати…")
+        self.status_var.set(self.strings.easyocr_preparing)
 
         def poll() -> None:
             if self._closing or self._ocr_selection_token != token:
@@ -696,13 +695,14 @@ class BridgeApp:
             elif state == "ready":
                 self.settings = update_settings(ocr_backend=code)
                 show_choice(code)
-                self.status_var.set("EasyOCR готовий і ввімкнений")
+                self.status_var.set(self.strings.easyocr_ready)
             else:
                 show_choice(previous)
-                self.status_var.set("EasyOCR не встановлено. Поточний OCR залишився активним")
-                messagebox.showerror(PRODUCT_NAME,
-                    "Не вдалося підготувати EasyOCR. Поточний OCR залишився активним."
-                    "\nПовторний вибір EasyOCR запустить нову спробу.\n\n" + detail[-600:])
+                self.status_var.set(self.strings.easyocr_failed.format(detail="").strip())
+                messagebox.showerror(
+                    PRODUCT_NAME,
+                    self.strings.easyocr_failed.format(detail=detail[-600:]),
+                )
 
         self.root.after(500, poll)
 
@@ -1203,12 +1203,9 @@ class BridgeApp:
 
     def _show_pairing(self) -> None:
         from .security import pairing_code
-        labels = {
-            "en": ("Pair phone securely", "Copy this private code into LockOn → Settings → Bridge pairing code.", "Copy code"),
-            "uk": ("Безпечне підключення", "Вставте цей приватний код у LockOn → Налаштування → Код підключення Bridge.", "Копіювати код"),
-            "ru": ("Безопасное подключение", "Вставьте этот приватный код в LockOn → Настройки → Код подключения Bridge.", "Копировать код"),
-        }
-        title, hint, copy = labels.get(self.settings.language, labels["en"])
+        title = self.strings.pair_phone
+        hint = self.strings.pair_phone_hint
+        copy = self.strings.pair_phone_copy
         try:
             code = pairing_code()
         except Exception as error:

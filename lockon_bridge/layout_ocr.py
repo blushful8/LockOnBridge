@@ -564,6 +564,26 @@ def _overlay_lines_from_payload(data: dict[str, Any]) -> list[OverlayLine]:
     return out
 
 
+def _vehicle_research_chunk(ordered: list[str]) -> str:
+    """Keep the official vehicle-research row when column-split OCR drops it."""
+    from .ocr_parse import _debrief_kind
+
+    for index, text in enumerate(ordered):
+        found = _debrief_kind(text)
+        if found is None or found[0] != "vehicle":
+            continue
+        chunk = [text]
+        for nxt in ordered[index + 1 : index + 4]:
+            if _debrief_kind(nxt) is not None:
+                break
+            if re.search(r"\d", nxt):
+                chunk.append(nxt)
+                continue
+            break
+        return "\n".join(chunk)
+    return ""
+
+
 def select_structured_text(
     full_text: str,
     overlay_lines: list[Any],
@@ -600,8 +620,11 @@ def select_structured_text(
                 elif len(chunk) > 1:
                     break
             bundles.append("\n".join(chunk))
+        vehicle = _vehicle_research_chunk(ordered)
+        if vehicle and vehicle not in bundles:
+            bundles.append(vehicle)
         if bundles:
-            return "\n\n".join(bundles[:3])
+            return "\n\n".join(bundles[:4])
         amountish = [
             t
             for t in ordered
@@ -687,7 +710,7 @@ def ocrspace_layout_variants(
                 variants = _local(name, wait=wait)
             except RuntimeError as exc:
                 log.warning("local OCR %s skipped: %s", name, exc)
-                if "ще встановлюється" in str(exc):
+                if "still being prepared" in str(exc):
                     return []
                 continue
             if variants:

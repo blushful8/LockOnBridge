@@ -34,6 +34,15 @@ from .lang_labels import (
     WITH_PREMIUM,
     WITHOUT_PREMIUM,
 )
+from .wt_debrief_labels import (
+    CONVERTIBLE_RP,
+    MODIFICATION_RESEARCH,
+    MODIFICATION_RESEARCH_ROW,
+    VEHICLE_RESEARCH,
+    VEHICLE_RESEARCH_BONUS,
+    WITH_PREMIUM as WT_WITH_PREMIUM,
+    WITHOUT_PREMIUM as WT_WITHOUT_PREMIUM,
+)
 
 
 @dataclass
@@ -574,6 +583,111 @@ def _pair_from_total_block(text: str) -> tuple[int | None, int | None]:
     return None, None
 
 
+_LABEL_ZW = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+
+
+def _compact_debrief(text: str) -> str:
+    """Compare official strings with OCR: drop word-joiners, the datamine \\t, and spaces."""
+    text = text.replace("\\t", " ").replace("\t", " ")
+    text = _LABEL_ZW.sub("", text)
+    return re.sub(r"\s+", "", text).casefold()
+
+
+def _debrief_phrase_table() -> list[tuple[str, str, str]]:
+    """Longest-prefix table: (compact phrase, kind, original phrase)."""
+    groups = (
+        ("vehicle", VEHICLE_RESEARCH),
+        ("bonus", VEHICLE_RESEARCH_BONUS),
+        ("mods", MODIFICATION_RESEARCH),
+        ("mods", MODIFICATION_RESEARCH_ROW),
+        ("free", CONVERTIBLE_RP),
+        ("with", WT_WITH_PREMIUM),
+        ("without", WT_WITHOUT_PREMIUM),
+    )
+    rows: list[tuple[str, str, str]] = []
+    for kind, mapping in groups:
+        for phrase in mapping.values():
+            compact = _compact_debrief(phrase)
+            if compact:
+                rows.append((compact, kind, phrase))
+    rows.sort(key=lambda item: len(item[0]), reverse=True)
+    return rows
+
+
+_DEBRIEF_PHRASES = _debrief_phrase_table()
+
+
+def _debrief_kind(line: str) -> tuple[str, str] | None:
+    """Longest official label that the line starts with, and that label's original text."""
+    compact = _compact_debrief(line)
+    if not compact:
+        return None
+    for phrase, kind, original in _DEBRIEF_PHRASES:
+        if compact.startswith(phrase):
+            return kind, original
+    return None
+
+
+def _remainder_after_phrase(line: str, phrase: str) -> str:
+    cleaned = phrase.replace("\\t", " ").replace("\t", " ")
+    cleaned = _LABEL_ZW.sub("", cleaned)
+    parts = [re.escape(part) for part in re.split(r"\s+", cleaned.strip()) if part]
+    if not parts:
+        return ""
+    match = re.search(r"\s*".join(parts), line, re.IGNORECASE)
+    if match is None:
+        return ""
+    return line[match.end() :]
+
+
+def vehicle_research_amount(text: str, *, prefer_with: bool) -> int | None:
+    """
+    RP on the official «vehicle research» row only.
+
+    The number after the label is the one that counts. A second number on that
+    same row is the other premium column (with, then without). Neighbour rows
+    such as modification research are not used, and the search never looks
+    backward into them.
+    """
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").splitlines() if ln.strip()]
+    for index, line in enumerate(lines):
+        found = _debrief_kind(line)
+        if found is None or found[0] != "vehicle":
+            continue
+        amounts = _amounts_in(
+            _remainder_after_phrase(line, found[1]), min_value=_MIN_GRID_REWARD
+        )
+        if not amounts:
+            collected: list[int] = []
+            for nxt in lines[index + 1 : index + 4]:
+                if _debrief_kind(nxt) is not None:
+                    break
+                found_amounts = _amounts_in(nxt, min_value=_MIN_GRID_REWARD)
+                if not found_amounts:
+                    break
+                # A caption mixed into the line ends the row. Pure amount lines
+                # may continue once, for the other premium column.
+                if re.search(r"[^\d\s.,'’+\-]", nxt):
+                    if not collected:
+                        collected = found_amounts
+                    break
+                collected.extend(found_amounts)
+                if len(collected) >= 2:
+                    break
+            amounts = collected[:2]
+            if len(amounts) >= 2:
+                return amounts[0] if prefer_with else amounts[1]
+            if len(amounts) == 1:
+                return amounts[0]
+            continue
+        if not amounts:
+            continue
+        if len(amounts) >= 2:
+            return amounts[0] if prefer_with else amounts[1]
+        return amounts[0]
+    return None
+
+
 def _mods_research_rp(text: str) -> int | None:
     """Without-premium RP equals «Дослідження модифікацій» on the results screen."""
     flat = re.sub(r"\s+", " ", text)
@@ -1070,29 +1184,20 @@ def parse_rewards_from_ocr_text(
     if not place_hit and rp is not None and sl is not None:
         rp, sl = _prefer_deglued_pair(cleaned, rp, sl)
 
-    # Require a plausible pair — never publish RP=1 / SL=0 junk or swapped columns.
-    if place_hit:
-        acceptable = _plausible_grid_pair(rp, sl)
-    else:
-        acceptable = _plausible_reward_pair(rp, sl)
+    # Vehicle research is the only RP that counts toward the phone's goal.
+    # Silver still comes from the premium column / total row above.
+    vehicle_rp = vehicle_research_amount(
+        cleaned, prefer_with=bool(prefer_premium_rewards)
+    )
+    if vehicle_rp is None:
+        return None
+    rp = vehicle_rp
+
+    # The label is authoritative, including short battles under 50 RP.
+    # Do not replace it with the summary grid or «Total» when the pair looks odd.
+    if not _plausible_grid_pair(rp, sl):
+        return None
     structural_hit = False
-    if not acceptable:
-        # Preserve the original final totals recovery before the safety net.
-        if premium_hit:
-            tot_rp, tot_sl = _pair_from_total_block(cleaned)
-            if _plausible_reward_pair(tot_rp, tot_sl):
-                rp, sl = tot_rp, tot_sl
-                premium_hit = False
-                acceptable = True
-        if not acceptable:
-            # Language-independent safety net only where the original parser
-            # would return None. Never override a successful primary parse.
-            rp, sl = _pair_from_structural_reward_grid(
-                text, prefer_with=bool(prefer_premium_rewards)
-            )
-            if rp is None or sl is None:
-                return None
-            structural_hit = True
     assert rp is not None and sl is not None
 
     outcome = "undecided"

@@ -1,3 +1,5 @@
+import pytest
+
 from lockon_bridge.lang_labels import LANGUAGE_FIXTURES, MANGLED_LANGUAGE_FIXTURES
 from lockon_bridge.ocr_parse import (
     choose_best_report,
@@ -10,7 +12,7 @@ def test_parses_english_total_block():
     text = """
     Mission results
     Victory
-    Research Points 1 250
+    Vehicle research 1 250
     Silver Lions 8 400
     Total
     """
@@ -22,7 +24,7 @@ def test_parses_english_total_block():
 
 
 def test_parses_inline_labels():
-    text = "Reward +2,100 Research Points and +15 000 Silver Lions"
+    text = "Vehicle research 2 100\nSilver Lions 15 000"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.research_points == 2100
@@ -31,7 +33,7 @@ def test_parses_inline_labels():
 
 def test_parses_stacked_labels():
     text = """
-    Research Points
+    Vehicle research
     3 420
     Silver Lions
     12 800
@@ -43,7 +45,7 @@ def test_parses_stacked_labels():
 
 
 def test_parses_russian_labels():
-    text = "Очки исследований 890\nСеребряные львы 4500\nПобеда"
+    text = "Исследование техники 890\nСеребряные львы 4500\nПобеда"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.research_points == 890
@@ -52,7 +54,7 @@ def test_parses_russian_labels():
 
 
 def test_parses_total_pair():
-    text = "Session\nTotal 2 100  7 500\nContinue"
+    text = "Session\nTotal 2 100  7 500\nИсследование техники\n2 100\nContinue"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.research_points == 2100
@@ -64,7 +66,8 @@ def test_parses_mangled_5b_without_premium_row():
     text = (
         "Haropona 3a yuacTb B Micii: *34% , Baue Micue B KOMaHAi: 3 "
         "3 npeMiYMOM 2 927' 23 574' 3HhUeHO "
-        "5B npeMiyxa 1 708 15 902' nponycTMT Bcboro 1 708 15 902'"
+        "5B npeMiyxa 1 708 15 902' nponycTMT Bcboro 1 708 15 902'\n"
+        "Дослідження техніки\n1 708"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -78,7 +81,8 @@ def test_parses_without_row_before_activity_noise():
         "Haropona 3a yuacTb B Micii: *34% , Baue Micue B KOMaHAi: 3 "
         "3 npeMiYMOM 2 927' 23 574' 3HhUeHO nosiTp9Hhx uinei "
         "5B npeMiyxa 1 708 15 902' nponycTMT 6 8 3 6 41 2:58 604 1 708 "
-        "11:36 13:02 1 288' 1064' 1 637' 416 15 902' 1 708"
+        "11:36 13:02 1 288' 1064' 1 637' 416 15 902' 1 708\n"
+        "Дослідження техніки\n1 708"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -91,7 +95,7 @@ def test_parses_ua_results_screen_with_cyrillic_z_premium():
     text = (
         "Ваше місце в команді: 3 Місія провалена "
         "Без З npeMiyM0M 2 927' 1 708 23 574 15 902' "
-        "Всього 1 708 15 902"
+        "Всього 1 708 15 902\nДослідження техніки\n1 708"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -104,7 +108,7 @@ def test_rejects_swapped_premium_junk_sixty():
     """en-US OCR lost with-RP and glued «60» from «бойових» → must not return 15902/60."""
     text = (
         "MiciR npoBaneHa Ee3 npeMiyxa 3 npeMiyM0M 1 708 23 574 15 902' "
-        "60hOBhX 3aBnaHHA 604 1 708' 15 902' 1 708'"
+        "60hOBhX 3aBnaHHA 604 1 708' 15 902' 1 708'\nДослідження техніки\n1 708"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -117,7 +121,7 @@ def test_parses_sl_columns_swapped_by_ocr():
     text = (
         "Місія провалена Ваше місце в команді: 3 "
         "З npeMiyM0M 2 927' 1 708 15 902' 23 574 "
-        "Всього 1 708 15 902"
+        "Всього 1 708 15 902\nДослідження техніки\n1 708"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -132,7 +136,7 @@ def test_parses_short_arcade_without_premium_grid():
         "3 npeMiyM0M Sea npexiyxa Baue Micue B KOMaHAi: 13 "
         "672 336 4 608 2 912 "
         "nocqrHeHHA Bcsoro 748 2 912 336 336 336 "
-        "nocninxeHHR M0A14$iKauii"
+        "nocninxeHHR M0A14$iKauii\nДослідження техніки\n336"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -151,7 +155,7 @@ def test_amount_tokenizer_does_not_glue_three_groups():
 def test_team_place_stripped_before_premium_grid():
     text = (
         "3 npeMiyM0M Sea npexiyxa Baue Micue B KOMaHAi: 13 "
-        "672 336 4 608 2 912"
+        "672 336 4 608 2 912\nДослідження техніки\n336"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -164,7 +168,7 @@ def test_vsego_ignores_combat_sl_pair_as_totals():
     text = (
         "Bawe Micue B KOMaHAi: 3 3 npeMiyM0M 3064 18 926 "
         "3HnueH0 2 388 3 109 критичні 389 "
-        "Всього 1 779 1 783 12 446 1 909 1 276"
+        "Всього 1 779 1 783 12 446 1 909 1 276\nДослідження техніки\n1 909"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -175,7 +179,8 @@ def test_vsego_ignores_combat_sl_pair_as_totals():
 def test_choose_best_prefers_full_totals_over_partial():
     partial = "3HnueH0 noBiTpRHX 5 143 2 388 3 109"
     full = (
-        "Sea npexiyxa 1 788 12 446 Всього 1 779 1 783 12 446 1 788 1 909 1 276"
+        "Sea npexiyxa 1 788 12 446 Всього 1 779 1 783 12 446 1 788 1 909 1 276\n"
+        "Дослідження техніки\n1 788"
     )
     best = choose_best_report(
         [
@@ -193,7 +198,7 @@ def test_parses_column_major_premium_table():
     text = (
         "Місія провалена Ваше місце в команді: 5 "
         "З преміумом Без преміуму 2 108 1 128 11 221 7 804 "
-        "Всього 1 128 7 804"
+        "Всього 1 128 7 804\nДослідження техніки\n1 128"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -205,7 +210,7 @@ def test_parses_column_major_premium_table():
 def test_parses_mangled_column_major_from_real_ocr():
     text = (
         "Ваше в 5 днагорода за участь в Micii: , 3 npeMiYM0M без npeMiYHa "
-        "2 108' 1128' 11 221' 7804 знищено Всього 1 128' 7 804'"
+        "2 108' 1128' 11 221' 7804 знищено Всього 1 128' 7 804'\nДослідження техніки\n1 128"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -218,7 +223,7 @@ def test_parses_latinized_ukrainian_premium_columns():
         "Bepciq 2.59.0.13 Micifl npoBaneHa APGAHi 60i, "
         "Haropona 3a yuacTb B Micii: +34% , +20%' "
         "3 npeMiYM0M 9 426' be3 npeMiYMa 1 088 6 016' "
-        "nporpec nocninxeHb"
+        "nporpec nocninxeHb\nДослідження техніки\n1 088"
     )
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
@@ -228,7 +233,7 @@ def test_parses_latinized_ukrainian_premium_columns():
 
 
 def test_parses_victory_boost_line():
-    text = "Haropona 3a nepeMory: +100% , +47%' 1 148 2 732'"
+    text = "Haropona 3a nepeMory: +100% , +47%' 1 148 2 732'\nДослідження техніки\n1 148"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.research_points == 1148
@@ -237,7 +242,7 @@ def test_parses_victory_boost_line():
 
 
 def test_parses_bare_second_premium_header():
-    text = "Micifl npoBaneHa 3 npeMiYMOM 9 596' npeMiYMa 1 088 6 127'"
+    text = "Micifl npoBaneHa 3 npeMiYMOM 9 596' npeMiYMa 1 088 6 127'\nДослідження техніки\n1 088"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.research_points == 1088
@@ -245,12 +250,10 @@ def test_parses_bare_second_premium_header():
 
 
 def test_alone_with_premium_not_banked_as_without():
-    """Phone has premium OFF — alone «З преміумом RP SL» must not publish."""
+    """A premium header without the vehicle-research row must not publish RP."""
     text = "З преміумом 436 4172"
     assert parse_rewards_from_ocr_text(text, prefer_premium_rewards=False) is None
-    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=True)
-    assert report is not None
-    assert (report.research_points, report.silver_lions) == (436, 4172)
+    assert parse_rewards_from_ocr_text(text, prefer_premium_rewards=True) is None
     best = choose_best_report(
         [(text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=False))],
         prefer_premium_rewards=False,
@@ -290,48 +293,35 @@ def test_returns_none_without_currency():
     assert parse_rewards_from_ocr_text("Player shot down enemy") is None
 
 
-def test_all_language_fixtures_parse():
+def test_generic_research_label_is_not_the_vehicle_row():
+    """Guessed phrases such as «Research Points» are not the official vehicle row."""
     for lang, labels in LANGUAGE_FIXTURES.items():
         premium = (
             f"{labels['victory']}\n"
             f"{labels['with']} 9 999\n"
             f"{labels['without']} 1 250 8 400\n"
         )
-        report = parse_rewards_from_ocr_text(premium)
-        assert report is not None, lang
-        assert report.research_points == 1250, lang
-        assert report.silver_lions == 8400, lang
-
+        assert parse_rewards_from_ocr_text(premium) is None, lang
         labeled = f"{labels['rp']} 2 100\n{labels['sl']} 7 500\n"
-        report2 = parse_rewards_from_ocr_text(labeled)
-        assert report2 is not None, lang
-        assert report2.research_points == 2100, lang
-        assert report2.silver_lions == 7500, lang
+        assert parse_rewards_from_ocr_text(labeled) is None, lang
 
 
-def test_mangled_non_en_ru_fixtures_parse():
-    """Wrong OCR pack strips diacritics / Latinizes — same failure class as UA."""
+def test_mangled_labels_are_not_the_vehicle_row():
+    """A Latinized caption is not the official vehicle-research string."""
     for lang, labels in MANGLED_LANGUAGE_FIXTURES.items():
         premium = (
             f"{labels['victory']}\n"
             f"{labels['with']} 9 999\n"
             f"{labels['without']} 1 250 8 400\n"
         )
-        report = parse_rewards_from_ocr_text(premium)
-        assert report is not None, f"mangled premium {lang}"
-        assert report.research_points == 1250, lang
-        assert report.silver_lions == 8400, lang
-
+        assert parse_rewards_from_ocr_text(premium) is None, lang
         labeled = f"{labels['rp']} 2 100\n{labels['sl']} 7 500\n"
-        report2 = parse_rewards_from_ocr_text(labeled)
-        assert report2 is not None, f"mangled labels {lang}: {labeled!r}"
-        assert report2.research_points == 2100, lang
-        assert report2.silver_lions == 7500, lang
+        assert parse_rewards_from_ocr_text(labeled) is None, lang
 
 
 def test_choose_best_ignores_bad_engine():
     bad = "Chinese OCR garbage 银 1 2 3 random"
-    good = "Without premium 1 088 6 016"
+    good = "Without premium 1 088 6 016\nVehicle research\n1 088"
     chinese_only = "有高级账号 9 999 无高级账号 1 250 8 400"
     best = choose_best_report(
         [
@@ -349,7 +339,7 @@ def test_choose_best_ignores_bad_engine():
 
 def test_ocrspace_garbled_earned_line():
     """OCR.space often mangles «Зароблено» and glues icon digits onto amounts."""
-    text = "Бонус навичок\n3apooneH0:11 8490,3 0129\nАктивність: 93%"
+    text = "Бонус навичок\n3apooneH0:11 8490,3 0129\nАктивність: 93%\nДослідження техніки\n3 012"
     report = parse_rewards_from_ocr_text(text)
     assert report is not None
     assert report.silver_lions == 11849
@@ -380,6 +370,9 @@ def test_engine3_team_place_grid_without_premium():
         "1 811\n"
         "8 808\n"
         "5 671\n"
+        "Дослідження техніки\n"
+        "3 238\n"
+        "1 811\n"
     )
     report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
     assert report is not None
@@ -398,6 +391,9 @@ def test_engine3_team_place_grid_with_premium():
         "1 811\n"
         "8 808\n"
         "5 671\n"
+        "Дослідження техніки\n"
+        "3 238\n"
+        "1 811\n"
     )
     report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=True)
     assert report is not None
@@ -407,7 +403,7 @@ def test_engine3_team_place_grid_with_premium():
 
 def test_four_amount_lines_without_place_are_the_grid_not_two_rp_columns():
     """Mid-animation zone text has no «місце» line yet. Do not swap the RP cells."""
-    text = "Без преміума\n1 263\n559\n3748\n2313\n"
+    text = "Без преміума\n1 263\n559\n3748\n2313\nДослідження техніки\n559\n"
     report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
     assert report is not None
     assert report.research_points == 559
@@ -417,7 +413,7 @@ def test_four_amount_lines_without_place_are_the_grid_not_two_rp_columns():
 
 
 def test_short_grid_and_trailing_dash_still_make_a_pair():
-    text = "Без преміума\n40\n22\n302-\n202\n"
+    text = "Без преміума\n40\n22\n302-\n202\nДослідження техніки\n22\n"
     report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
     assert report is not None
     assert report.research_points == 22
@@ -425,12 +421,13 @@ def test_short_grid_and_trailing_dash_still_make_a_pair():
 
 
 def test_phone_preview_uses_latest_report_fields():
+    pytest.importorskip("tkinter")
     from lockon_bridge.ocr_parse import parse_rewards_from_ocr_text
     from lockon_bridge.parse_zone_ui import _phone_view
 
     text = (
         "3 преміумом\nБез преміума\nВаше місце в команді: 9\n"
-        "3 238\n1 811\n8 808\n5 671\n"
+        "3 238\n1 811\n8 808\n5 671\nДослідження техніки\n1 811\n"
     )
     report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
     view = _phone_view(report, premium=False)

@@ -42,7 +42,9 @@ _FIXTURE_TEXTS: list[tuple[str, int, int]] = [
 
 def test_fixture_column_split_texts():
     for text, rp, sl in _FIXTURE_TEXTS:
-        report = parse_rewards_from_ocr_text(text)
+        # Historical crops omitted the vehicle row. RP is taken only from that row.
+        labeled = f"{text}\nДослідження техніки\n{rp}\n"
+        report = parse_rewards_from_ocr_text(labeled)
         assert report is not None, text[:60]
         assert report.research_points == rp, (text[:40], report.research_points, rp)
         assert report.silver_lions == sl, (text[:40], report.silver_lions, sl)
@@ -58,6 +60,8 @@ def test_overlay_select_keeps_without_premium_amounts():
         OverlayLine("Всього", Box(10, 200, 80, 220)),
         OverlayLine("555", Box(200, 200, 240, 220)),
         OverlayLine("2040", Box(200, 225, 250, 245)),
+        OverlayLine("Дослідження техніки", Box(10, 260, 180, 280)),
+        OverlayLine("555", Box(200, 260, 240, 280)),
     ]
     text = select_structured_text("noise", lines)
     report = parse_rewards_from_ocr_text(text)
