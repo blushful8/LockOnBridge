@@ -12,7 +12,7 @@ No Gaijin account or game login is required.
 4. Allow phone access when prompted. In **More → Pair phone securely**, copy the private pairing code. On the phone, enable Bridge, enter this PC's IP and port **8112**, and paste the code into **Settings → Bridge pairing code**.
 5. Keep the phone and PC on the same local network.
 
-The Windows build is unsigned and distributed as a folder-based ZIP without UPX. Check that the download comes from this repository; the release notes include the archive's SHA256 checksum.
+The Windows build is unsigned and distributed as a folder-based ZIP without UPX. Check that the download comes from this repository; each release includes `SHA256SUMS.txt` for the archive.
 
 ## Reading battle rewards
 
@@ -20,7 +20,7 @@ While enabled, Bridge monitors War Thunder and captures a short sequence of game
 
 Bridge reads all six captured screenshots before choosing a result. When the recognized RP and SL stay equal or increase, it uses the latest successfully read screenshot, even if the last two differ. If either value decreases, it uses the last matching neighboring pair before the first decrease. If there is no earlier matching pair, it falls back to the latest successful read. OCR can misread animated, obscured or incomplete results; a report is not guaranteed for every battle.
 
-The phone's premium-account preference determines whether Bridge reads the with-premium or without-premium rewards. A battle session ID connects the report to its battle and remains available until a new battle starts.
+Research Points sent to the phone are the number on the official vehicle-research row, in the same wording War Thunder uses for that language. Summary cells, modification research and convertible RP are not used. If that row is not recognized, Bridge does not publish a reward report. The phone's premium-account preference selects the with-premium or without-premium column when the row shows two numbers; a single number is used either way. Silver Lions follow that same premium column. A battle session ID connects the report to its battle and remains available until a new battle starts.
 
 ## OCR backends
 
@@ -29,13 +29,13 @@ The phone's premium-account preference determines whether Bridge reads the with-
 
 Prepare EasyOCR before starting a battle if you want local recognition. If OCR.space is unavailable or its usage limit is reached, Bridge can attempt local fallback, but a report may be missed while local setup is incomplete.
 
-The app interface supports **English, Ukrainian and Russian**. EasyOCR currently loads **Ukrainian and English** models; changing the War Thunder language selector does not change that model set. OCR.space uses automatic language detection.
+The app interface supports **English, Ukrainian and Russian**. EasyOCR loads the recognition model for the War Thunder language selected in Bridge. If that pass does not see the vehicle-research row, it tries one other script. OCR.space is still requested with automatic language detection.
 
 ## Everyday controls
 
 | Control | Behavior |
 |---|---|
-| **Bridge ON** | Enables capture, local HTTP access and Windows logon startup. |
+| **Bridge ON** | Enables capture, the local HTTPS service and Windows logon startup. |
 | **Bridge OFF** | Stops the background agent and removes logon startup. The control window can remain open. |
 | **OCR** | Selects OCR.space or prepares and selects EasyOCR. |
 | **HTTP port** | Sets the local connection port; the default is 8112. |
