@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import sys
@@ -99,14 +100,16 @@ class BridgeApp:
 
         enable_windows_dpi_awareness()
         self.root = tk.Tk()
+        # Stay hidden until the first layout is locked. A later scale or
+        # geometry change makes Windows recreate the window several times.
+        self.root.withdraw()
         sync_tk_scaling(self.root)
         self.root.title(f"{PRODUCT_NAME} {__version__}")
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self._apply_window_icon()
         self._window_size_locked = False
-        # Re-sync after the HWND exists (per-monitor DPI), then lock size once.
-        self.root.after(50, self._after_dpi_ready)
+        self.root.after(300, self._poll_show_request)
         self._ocr_busy = False
 
         # First open of the .exe installs a stable LocalAppData copy + Desktop shortcut.
@@ -149,28 +152,38 @@ class BridgeApp:
 
         self.root.after(400, self._refresh_phone_access_ui)
         self.root.after(5_000, self._poll_phone_access_loop)
-        # Remeasure after fonts/DPI settle, then lock permanently.
-        self.root.after(200, self._lock_window_size_final)
 
         if start_hidden and self.settings.enabled:
-            self.root.withdraw()
             self._ensure_tray()
         elif start_hidden and not self.settings.enabled:
             self.root.after(50, self._exit_clean)
+        else:
+            self.root.deiconify()
 
     def run(self) -> int:
         self.root.mainloop()
         return 0
 
-    def _after_dpi_ready(self) -> None:
-        sync_tk_scaling(self.root)
-        self._window_size_locked = False
-        self._apply_window_size(initial=True)
-
-    def _lock_window_size_final(self) -> None:
-        """Final measure after fonts settle — then size stays fixed."""
-        self._window_size_locked = False
-        self._apply_window_size(initial=True)
+    def _poll_show_request(self) -> None:
+        """A second launch asks this window to come forward instead of opening another."""
+        if self._closing:
+            return
+        event = _UI_SHOW_EVENT
+        if event:
+            try:
+                kernel = _kernel32()
+                kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+                kernel.WaitForSingleObject.restype = ctypes.c_uint32
+                if kernel.WaitForSingleObject(event, 0) == 0:
+                    self.root.deiconify()
+                    self.root.lift()
+                    self.root.focus_force()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self.root.after(300, self._poll_show_request)
+        except tk.TclError:
+            pass
 
     def _content_req_size(self) -> tuple[int, int]:
         """Required width/height for all packed root children (post-layout)."""
@@ -268,6 +281,10 @@ class BridgeApp:
     def _build_ui(self) -> None:
         for child in self.root.winfo_children():
             child.destroy()
+        try:
+            ttk.Style().theme_use("clam")
+        except tk.TclError:
+            pass
 
         t = self.strings
         pad = {"padx": 20, "pady": 6}
@@ -578,11 +595,6 @@ class BridgeApp:
 
         self.btn_quit = self._btn(btns, t.quit, self._quit_keep_enabled)
         self.btn_quit.pack(fill="x", pady=(8, 3))
-
-        try:
-            ttk.Style().theme_use("clam")
-        except tk.TclError:
-            pass
 
         self._refresh_badge_for_status(self._last_agent_status)
 
@@ -1677,6 +1689,65 @@ class BridgeApp:
             pass
 
 
+_UI_MUTEX = None
+_UI_SHOW_EVENT = None
+_UI_MUTEX_NAME = "Local\\LockOnBridge.UI"
+_UI_SHOW_EVENT_NAME = "Local\\LockOnBridge.UI.Show"
+
+
+def _kernel32():
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _focus_existing_window() -> None:
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    user32.SetForegroundWindow.restype = ctypes.c_bool
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def visit(hwnd, _lparam):
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        if buf.value.startswith(PRODUCT_NAME):
+            found.append(hwnd or 0)
+            return False
+        return True
+
+    user32.EnumWindows(visit, 0)
+    if not found or not found[0]:
+        return
+    hwnd = found[0]
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.SetForegroundWindow(hwnd)
+
+
+def _acquire_ui_instance() -> bool:
+    """Own the UI process. A second launch asks the open window to come forward."""
+    global _UI_MUTEX, _UI_SHOW_EVENT
+    kernel = _kernel32()
+    _UI_MUTEX = kernel.CreateMutexW(None, False, _UI_MUTEX_NAME)
+    if ctypes.get_last_error() == 183:
+        event = kernel.OpenEventW(0x0002, False, _UI_SHOW_EVENT_NAME)
+        if event:
+            kernel.SetEvent(event)
+            kernel.CloseHandle(event)
+        _focus_existing_window()
+        return False
+    _UI_SHOW_EVENT = kernel.CreateEventW(None, False, False, _UI_SHOW_EVENT_NAME)
+    return True
+
+
 def run_ui(*, start_hidden: bool = False) -> int:
+    if not _acquire_ui_instance():
+        return 0
     app = BridgeApp(start_hidden=start_hidden)
     return app.run()

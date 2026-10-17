@@ -1,7 +1,9 @@
-"""Notice over the results screen while the six shots are taken.
+"""Notice while the six shots are taken.
 
-The card stays outside the reward crop. Keyboard and mouse are paused until
-the shots are stored, then both the card and the pause are released before OCR.
+The card is never placed over the game window. A topmost window on that
+swapchain turns off independent flip, and Windows leaves the slower path on
+until Alt+Tab. Keyboard and mouse are paused until the shots are stored, then
+the pause is released before OCR.
 """
 
 from __future__ import annotations
@@ -208,6 +210,54 @@ def _swallow_input(n_code, w_param, l_param):
     return user32.CallNextHookEx(None, n_code, w_param, l_param)
 
 
+def _monitor_work_areas() -> list[tuple[int, int, int, int]]:
+    """Work rectangles of every attached monitor, in screen pixels."""
+
+    class _MONITORINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    areas: list[tuple[int, int, int, int]] = []
+    enum_proc = ctypes.WINFUNCTYPE(
+        wintypes.BOOL,
+        wintypes.HMONITOR,
+        wintypes.HDC,
+        ctypes.POINTER(wintypes.RECT),
+        wintypes.LPARAM,
+    )
+
+    @enum_proc
+    def _enum(monitor, _hdc, _rect, _lparam) -> bool:
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            work = info.rcWork
+            if work.right > work.left and work.bottom > work.top:
+                areas.append((int(work.left), int(work.top), int(work.right), int(work.bottom)))
+        return True
+
+    user32.EnumDisplayMonitors.argtypes = [
+        wintypes.HDC,
+        ctypes.c_void_p,
+        enum_proc,
+        wintypes.LPARAM,
+    ]
+    user32.EnumDisplayMonitors.restype = wintypes.BOOL
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.c_void_p]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    if user32.EnumDisplayMonitors(None, None, _enum, 0) and areas:
+        return areas
+    work = wintypes.RECT()
+    if user32.SystemParametersInfoW(48, 0, ctypes.byref(work), 0):
+        if work.right > work.left and work.bottom > work.top:
+            return [(int(work.left), int(work.top), int(work.right), int(work.bottom))]
+    return []
+
+
 def _fullscreen_game() -> bool:
     """True when the game window covers its monitor.
 
@@ -247,13 +297,80 @@ def _fullscreen_game() -> bool:
     return mon_w > 0 and mon_h > 0 and abs(win_w - mon_w) <= 8 and abs(win_h - mon_h) <= 8
 
 
-def _fit_on_rect(
-    x: int, y: int, width: int, height: int, left: int, top: int, right: int, bottom: int
-) -> tuple[int, int]:
-    """Keep the card inside the game window. A scaled position was falling off-screen."""
-    max_x = max(left + 8, right - width - 8)
-    max_y = max(top + 8, bottom - height - 8)
-    return min(max(x, left + 8), max_x), min(max(y, top + 8), max_y)
+def _rects_overlap(
+    a: tuple[int, int, int, int],
+    b: tuple[int, int, int, int],
+    pad: int = 0,
+) -> bool:
+    return not (
+        a[2] + pad <= b[0]
+        or b[2] + pad <= a[0]
+        or a[3] + pad <= b[1]
+        or b[3] + pad <= a[1]
+    )
+
+
+def notice_origin_clear_of(
+    game: tuple[int, int, int, int],
+    work_areas: list[tuple[int, int, int, int]],
+    card_w: int,
+    card_h: int,
+    margin: int = 12,
+) -> tuple[int, int] | None:
+    """Screen origin for a card that does not cover ``game``.
+
+    Other monitors are preferred. A corner of the game's own monitor is used
+    only when the card fits entirely outside the game window. None means every
+    work area is covered, which is a fullscreen game on a single display.
+    """
+    margin = max(0, int(margin))
+    card_w = int(card_w)
+    card_h = int(card_h)
+    if card_w < 1 or card_h < 1:
+        return None
+
+    def _place(area: tuple[int, int, int, int], x: int, y: int) -> tuple[int, int] | None:
+        left, top, right, bottom = area
+        if right - left < card_w + 2 * margin or bottom - top < card_h + 2 * margin:
+            return None
+        x = max(left + margin, min(int(x), right - card_w - margin))
+        y = max(top + margin, min(int(y), bottom - card_h - margin))
+        card = (x, y, x + card_w, y + card_h)
+        if card[2] > right or card[3] > bottom:
+            return None
+        if _rects_overlap(card, game, pad=1):
+            return None
+        return x, y
+
+    others: list[tuple[int, int, int, int]] = []
+    same: list[tuple[int, int, int, int]] = []
+    for area in work_areas:
+        if _rects_overlap(area, game):
+            same.append(area)
+        else:
+            others.append(area)
+    for area in others:
+        left, top, right, bottom = area
+        origin = _place(area, (left + right - card_w) // 2, bottom - card_h - margin)
+        if origin is not None:
+            return origin
+    for area in same:
+        left, top, right, bottom = area
+        candidates = (
+            (left + margin, bottom - card_h - margin),
+            (right - card_w - margin, bottom - card_h - margin),
+            ((left + right - card_w) // 2, bottom - card_h - margin),
+            (left + margin, top + margin),
+            (right - card_w - margin, top + margin),
+            ((left + right - card_w) // 2, top + margin),
+            (right - card_w - margin, (top + bottom - card_h) // 2),
+            (left + margin, (top + bottom - card_h) // 2),
+        )
+        for x, y in candidates:
+            origin = _place(area, x, y)
+            if origin is not None:
+                return origin
+    return None
 
 
 def _enable_per_monitor_dpi() -> None:
@@ -565,7 +682,13 @@ class ResultHold:
         scale = _dpi_scale()
         self._card_w = int(560 * scale)
         self._card_h = int(188 * scale)
-        self._origin = self._screen_origin(self._card_w, self._card_h)
+        origin = self._screen_origin(self._card_w, self._card_h)
+        if origin is None:
+            log.info(
+                "result notice skipped — placing it over the game leaves FPS low until Alt+Tab"
+            )
+            return
+        self._origin = origin
         user32.CreateWindowExW.restype = wintypes.HWND
         # Do not make the game the owner. That drops its frame buffer and
         # every shot comes back empty, so nothing is saved or sent.
@@ -605,48 +728,31 @@ class ResultHold:
             self._card_h,
         )
 
-    def _screen_origin(self, card_w: int, card_h: int) -> tuple[int, int]:
+    def _screen_origin(self, card_w: int, card_h: int) -> tuple[int, int] | None:
         from .capture import find_war_thunder_hwnd
-        from .roi_calib import load_parse_zone
 
+        game: tuple[int, int, int, int] | None = None
         hwnd = find_war_thunder_hwnd()
         if hwnd:
             rect = wintypes.RECT()
-            if user32.GetClientRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
-                width = int(rect.right - rect.left)
-                height = int(rect.bottom - rect.top)
-                if width >= 400 and height >= 300:
-                    zone = load_parse_zone()
-                    local = card_top_left(
-                        width,
-                        height,
-                        (zone.left, zone.top, zone.right, zone.bottom),
-                        card_w,
-                        card_h,
-                        margin=int(28 * _dpi_scale()),
+            if user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+                if rect.right > rect.left and rect.bottom > rect.top:
+                    game = (
+                        int(rect.left),
+                        int(rect.top),
+                        int(rect.right),
+                        int(rect.bottom),
                     )
-                    point = wintypes.POINT(local[0], local[1])
-                    if user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(point)):
-                        outer = wintypes.RECT()
-                        if user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(outer)):
-                            return _fit_on_rect(
-                                int(point.x),
-                                int(point.y),
-                                card_w,
-                                card_h,
-                                int(outer.left),
-                                int(outer.top),
-                                int(outer.right),
-                                int(outer.bottom),
-                            )
-                        return int(point.x), int(point.y)
-        work = wintypes.RECT()
-        if user32.SystemParametersInfoW(48, 0, ctypes.byref(work), 0):
-            return (
-                int(work.left + (work.right - work.left - card_w) // 2),
-                int(work.bottom - card_h - int(48 * _dpi_scale())),
-            )
-        return 80, 80
+        areas = _monitor_work_areas()
+        if game is None:
+            return None
+        return notice_origin_clear_of(
+            game,
+            areas,
+            card_w,
+            card_h,
+            margin=int(16 * _dpi_scale()),
+        )
 
     def _clip_cursor(self) -> None:
         if not self._block_enabled or not self._hwnd:

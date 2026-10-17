@@ -6,7 +6,6 @@ import logging
 from ctypes import wintypes
 from io import BytesIO
 
-import mss
 from PIL import Image, ImageEnhance, ImageOps
 from winrt.windows.globalization import Language
 from winrt.windows.graphics.imaging import BitmapDecoder
@@ -192,8 +191,10 @@ def is_war_thunder_foreground() -> bool:
 
 def _grab_hwnd_gdi(hwnd: int) -> Image.Image | None:
     """
-    BitBlt / PrintWindow the window client — avoids DXGI Desktop Duplication, which
-    can drop exclusive-fullscreen WT onto the desktop.
+    BitBlt / PrintWindow the window client.
+
+    Not used for a live game. PrintWindow and a window BitBlt mark the swapchain
+    as GDI content, and independent flip stays off until Alt+Tab.
     """
     gdi32 = ctypes.windll.gdi32
     rect = wintypes.RECT()
@@ -300,11 +301,10 @@ def _frame_stamp(image: Image.Image) -> bytes:
 
 
 def _grab_hwnd_screen(hwnd: int) -> Image.Image | None:
-    """What is on the monitor over the game, without DXGI.
+    """Desktop BitBlt of the game rectangle.
 
-    The window DC can keep a frame from the previous battle. Desktop
-    duplication is not used here: that is what pulls exclusive fullscreen
-    back to the desktop.
+    Not used for a live game. Reading a flip-model window through the screen
+    DC disables fullscreen optimizations until the game is focused again.
     """
     point = wintypes.POINT(0, 0)
     if not user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(point)):
@@ -383,7 +383,12 @@ def _grab_hwnd_screen(hwnd: int) -> Image.Image | None:
 
 
 def _grab_hwnd_mss(hwnd: int) -> Image.Image | None:
-    """Screen-region grab via mss (DXGI). Fallback only — can hitch fullscreen games."""
+    """Screen-region grab via mss (DXGI). Not used for a live game.
+
+    Desktop duplication pulls exclusive fullscreen back to the desktop.
+    """
+    import mss
+
     bounds = _window_rect(hwnd)
     if bounds is None:
         return None
@@ -435,10 +440,10 @@ def grab_wt_client_image(
     Never captures the desktop / other apps. When ``require_foreground`` is set
     (default), returns None unless WT is the active window — privacy + no junk OCR.
 
-    Prefer DXGI/mss (real composited frame) when ``allow_mss`` is True. GDI BitBlt
-    often returns a washed / semi-transparent HUD on fullscreen WT — OCR then sees
-    nothing useful — but mss/DXGI can drop exclusive fullscreen to the desktop.
-    Messages navigation therefore passes ``allow_mss=False``.
+    Windows Graphics Capture only. GDI BitBlt, PrintWindow and DXGI desktop
+    duplication leave the game presenting through DWM until Alt+Tab, so they
+    are not a fallback. ``allow_mss`` and ``prefer_window_buffer`` are accepted
+    for callers and ignored.
 
     Never use ``ShowWindow(SW_RESTORE)`` (FPS hitch until Alt+Tab).
     """
@@ -460,54 +465,15 @@ def grab_wt_client_image(
         except Exception:  # noqa: BLE001
             pass
 
-    if prefer_window_buffer:
-        # A topmost notice sits on the desktop. The window buffer does not
-        # include it; mss does. Use the buffer when it is sharp enough.
-        gdi_hold = _grab_hwnd_gdi(hwnd)
-        gdi_hold_score = _panel_contrast_score(gdi_hold) if gdi_hold is not None else -1.0
-        if gdi_hold is not None and gdi_hold_score >= 32.0:
-            log.debug("OCR grab via gdi (hold) contrast=%.1f", gdi_hold_score)
-            return gdi_hold
+    del allow_mss, prefer_window_buffer
+    from .wgc_capture import grab_window_client
 
-    if not allow_mss:
-        # Read the visible client first: a successful PrintWindow may contain
-        # a stale previous battle. Do not reject a live dark results panel by
-        # an arbitrary contrast threshold.
-        live = _grab_hwnd_screen(hwnd)
-        if live is not None:
-            log.info("OCR grab via live screen contrast=%.1f", _panel_contrast_score(live))
-            return live
-        buffered = _grab_hwnd_gdi(hwnd)
-        if buffered is not None:
-            log.info("OCR grab via window buffer (screen unavailable)")
-        else:
-            log.warning("OCR grab failed: both screen and window buffers empty")
-        return buffered
-
-    # mss first — matches what the user actually sees.
-    mss_img = _grab_hwnd_mss(hwnd)
-    mss_score = _panel_contrast_score(mss_img) if mss_img is not None else -1.0
-    if mss_img is not None and mss_score >= 32.0:
-        log.debug("OCR grab via mss contrast=%.1f", mss_score)
-        return mss_img
-
-    gdi_img = _grab_hwnd_gdi(hwnd)
-    gdi_score = _panel_contrast_score(gdi_img) if gdi_img is not None else -1.0
-    if gdi_img is not None and gdi_score > mss_score and gdi_score >= 32.0:
-        log.debug("OCR grab via gdi contrast=%.1f (mss=%.1f)", gdi_score, mss_score)
-        return gdi_img
-
-    if mss_img is not None:
-        if mss_score < 32.0:
-            log.warning(
-                "OCR grab mss contrast low (%.1f) — likely pre-results / washed frame",
-                mss_score,
-            )
-        return mss_img
-    if gdi_img is not None:
-        log.warning("OCR grab gdi contrast=%.1f (mss failed)", gdi_score)
-        return gdi_img
-    return None
+    frame = grab_window_client(hwnd)
+    if frame is None:
+        log.warning("OCR grab failed: Windows Graphics Capture returned no frame")
+        return None
+    log.info("OCR grab via WGC contrast=%.1f", _panel_contrast_score(frame))
+    return frame
 
 
 def _grab_wt_client_image() -> Image.Image | None:

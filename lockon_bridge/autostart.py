@@ -149,12 +149,9 @@ def ensure_desktop_shortcut(target: Path | None = None) -> bool:
 
     shortcut = desktop_shortcut_path()
     icon = _shortcut_icon_location(exe)
-    # Delete first so Explorer drops a stale shell icon cache entry for this .lnk.
-    try:
-        if shortcut.is_file():
-            shortcut.unlink()
-    except OSError:
-        pass
+    # Replacing the shortcut on every launch makes Explorer open Bridge again.
+    if shortcut.is_file():
+        return True
     script = f"""
 $ErrorActionPreference = 'Stop'
 $shell = New-Object -ComObject WScript.Shell

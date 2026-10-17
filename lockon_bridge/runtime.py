@@ -503,144 +503,168 @@ class BridgeRuntime:
             )
             worker = None
 
-        last_preview = ""
         total = len(buffer)
-        decoded: list[tuple[int, int] | None] = []
-        reads: list[tuple[object | None, object]] = []
+        from .win_priority import yield_cpu_to_foreground
+
         try:
-            for index, frame in enumerate(buffer):
-                if self._stop.is_set():
-                    return
-                try:
-                    hold.set_processing_progress(index + 1, total)
-                    breadcrumb(f"ocr_buffer frame {index + 1}/{total}")
-                    set_last_ocr_frame(frame)
-                    png, variants = ocr_saved_frame(
-                        frame,
-                        worker=worker,
-                        prefer_with=prefer,
-                    )
-
-                    breadcrumb(
-                        f"ocr_buffer frame {index + 1}/{total} variants={len(variants)}"
-                    )
-                    pair_now: tuple[int, int] | None = None
-                    dump_parts: list[str] = []
-                    best = None
-                    if variants:
-                        candidates = [
-                            (
-                                text,
-                                parse_rewards_from_ocr_text(
-                                    text, prefer_premium_rewards=prefer
-                                ),
-                            )
-                            for _tag, text in variants
-                        ]
-                        best = choose_best_report(
-                            candidates, prefer_premium_rewards=prefer
-                        )
-                        for tag, text in variants:
-                            parsed = parse_rewards_from_ocr_text(
-                                text, prefer_premium_rewards=prefer
-                            )
-                            if parsed is None:
-                                dump_parts.append(f"[{tag}]\n{text}\n=> (no parse)")
-                            else:
-                                dump_parts.append(
-                                    f"[{tag}]\n{text}\n"
-                                    f"=> RP={parsed.research_points} "
-                                    f"SL={parsed.silver_lions}"
-                                )
-                    self._write_ocr_dump(
-                        "\n\n---OCR---\n\n".join(dump_parts), png=png
-                    )
-                    if best is not None and best[1].confidence >= _MIN_CONFIDENT_REPORT:
-                        pair_now = (
-                            best[1].research_points,
-                            best[1].silver_lions,
-                        )
-                        last_preview = summarize_ocr_text(best[0])
-                    elif variants:
-                        last_preview = summarize_ocr_text(variants[0][1])
-                    else:
-                        last_preview = "(empty OCR)"
-                    decoded.append(pair_now)
-                    reads.append((best[1] if pair_now is not None and best is not None else None, frame))
-                    log.info(
-                        "ocr %s/%s: %s | waiting for all captured shots",
-                        index + 1,
-                        total,
-                        "none" if pair_now is None else f"RP={pair_now[0]} SL={pair_now[1]}",
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("ocr %s/%s failed: %s", index + 1, total, exc)
-                    if len(decoded) <= index:
-                        decoded.append(None)
-                        reads.append((None, frame))
-                    try:
-                        from .crashguard import write_crash_report
-                        import traceback
-
-                        write_crash_report(
-                            f"burst-ocr-{index + 1}",
-                            "".join(
-                                traceback.format_exception(
-                                    type(exc), exc, exc.__traceback__
-                                )
-                            ),
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-                    breadcrumb(f"ocr_buffer frame {index + 1} error: {exc}")
-
-            shot_i, reason = select_reward_read(decoded)
-            if shot_i is not None:
-                report, _shot = reads[shot_i]
-                log.info(
-                    "all %s shots decoded — selected shot %s/%s RP=%s SL=%s | %s",
-                    total,
-                    shot_i + 1,
-                    total,
-                    report.research_points,
-                    report.silver_lions,
-                    reason,
+            with yield_cpu_to_foreground():
+                return self._decode_burst(
+                    buffer,
+                    prefer=prefer,
+                    publish=publish,
+                    worker=worker,
+                    hold=hold,
+                    total=total,
                 )
-                report = self.match.stamp(report)
-                if publish and self.store.publish(report):
-                    log.info(
-                        "ocr shot %s: selected RP=%s SL=%s session=%s — sent",
-                        shot_i + 1,
-                        report.research_points,
-                        report.silver_lions,
-                        report.session_id or "—",
-                    )
-                elif publish:
-                    log.info(
-                        "ocr shot %s: selected duplicate RP=%s SL=%s",
-                        shot_i + 1,
-                        report.research_points,
-                        report.silver_lions,
-                    )
-                else:
-                    log.info(
-                        "ocr shot %s: selected RP=%s SL=%s — not sent",
-                        shot_i + 1,
-                        report.research_points,
-                        report.silver_lions,
-                    )
-                return report
-            log.info(
-                "burst finished without a recognized pair | shots=%s | last_ocr=%s",
-                len(decoded),
-                last_preview or "(none)",
-            )
         finally:
             if worker is not None:
                 try:
                     worker.close()
                 except Exception:  # noqa: BLE001
                     pass
+
+    def _decode_burst(
+        self,
+        buffer,
+        *,
+        prefer: bool,
+        publish: bool,
+        worker,
+        hold,
+        total: int,
+    ):
+        from .crashguard import breadcrumb
+
+        last_preview = ""
+        decoded: list[tuple[int, int] | None] = []
+        reads: list[tuple[object | None, object]] = []
+        for index, frame in enumerate(buffer):
+            if self._stop.is_set():
+                return
+            try:
+                hold.set_processing_progress(index + 1, total)
+                breadcrumb(f"ocr_buffer frame {index + 1}/{total}")
+                set_last_ocr_frame(frame)
+                png, variants = ocr_saved_frame(
+                    frame,
+                    worker=worker,
+                    prefer_with=prefer,
+                )
+
+                breadcrumb(
+                    f"ocr_buffer frame {index + 1}/{total} variants={len(variants)}"
+                )
+                pair_now: tuple[int, int] | None = None
+                dump_parts: list[str] = []
+                best = None
+                if variants:
+                    candidates = [
+                        (
+                            text,
+                            parse_rewards_from_ocr_text(
+                                text, prefer_premium_rewards=prefer
+                            ),
+                        )
+                        for _tag, text in variants
+                    ]
+                    best = choose_best_report(
+                        candidates, prefer_premium_rewards=prefer
+                    )
+                    for tag, text in variants:
+                        parsed = parse_rewards_from_ocr_text(
+                            text, prefer_premium_rewards=prefer
+                        )
+                        if parsed is None:
+                            dump_parts.append(f"[{tag}]\n{text}\n=> (no parse)")
+                        else:
+                            dump_parts.append(
+                                f"[{tag}]\n{text}\n"
+                                f"=> RP={parsed.research_points} "
+                                f"SL={parsed.silver_lions}"
+                            )
+                self._write_ocr_dump(
+                    "\n\n---OCR---\n\n".join(dump_parts), png=png
+                )
+                if best is not None and best[1].confidence >= _MIN_CONFIDENT_REPORT:
+                    pair_now = (
+                        best[1].research_points,
+                        best[1].silver_lions,
+                    )
+                    last_preview = summarize_ocr_text(best[0])
+                elif variants:
+                    last_preview = summarize_ocr_text(variants[0][1])
+                else:
+                    last_preview = "(empty OCR)"
+                decoded.append(pair_now)
+                reads.append((best[1] if pair_now is not None and best is not None else None, frame))
+                log.info(
+                    "ocr %s/%s: %s | waiting for all captured shots",
+                    index + 1,
+                    total,
+                    "none" if pair_now is None else f"RP={pair_now[0]} SL={pair_now[1]}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("ocr %s/%s failed: %s", index + 1, total, exc)
+                if len(decoded) <= index:
+                    decoded.append(None)
+                    reads.append((None, frame))
+                try:
+                    from .crashguard import write_crash_report
+                    import traceback
+
+                    write_crash_report(
+                        f"burst-ocr-{index + 1}",
+                        "".join(
+                            traceback.format_exception(
+                                type(exc), exc, exc.__traceback__
+                            )
+                        ),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                breadcrumb(f"ocr_buffer frame {index + 1} error: {exc}")
+
+        shot_i, reason = select_reward_read(decoded)
+        if shot_i is not None:
+            report, _shot = reads[shot_i]
+            log.info(
+                "all %s shots decoded — selected shot %s/%s RP=%s SL=%s | %s",
+                total,
+                shot_i + 1,
+                total,
+                report.research_points,
+                report.silver_lions,
+                reason,
+            )
+            report = self.match.stamp(report)
+            if publish and self.store.publish(report):
+                log.info(
+                    "ocr shot %s: selected RP=%s SL=%s session=%s — sent",
+                    shot_i + 1,
+                    report.research_points,
+                    report.silver_lions,
+                    report.session_id or "—",
+                )
+            elif publish:
+                log.info(
+                    "ocr shot %s: selected duplicate RP=%s SL=%s",
+                    shot_i + 1,
+                    report.research_points,
+                    report.silver_lions,
+                )
+            else:
+                log.info(
+                    "ocr shot %s: selected RP=%s SL=%s — not sent",
+                    shot_i + 1,
+                    report.research_points,
+                    report.silver_lions,
+                )
+            return report
+        log.info(
+            "burst finished without a recognized pair | shots=%s | last_ocr=%s",
+            len(decoded),
+            last_preview or "(none)",
+        )
 
     def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:
         try:

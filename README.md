@@ -16,7 +16,7 @@ The Windows build is unsigned and distributed as a folder-based ZIP without UPX.
 
 ## Reading battle rewards
 
-While enabled, Bridge monitors War Thunder and captures a short sequence of game-window screenshots after a battle. Keep the results screen visible and in the foreground until capture finishes. Input is temporarily paused during capture, then released while recognition continues. A progress notice remains visible during processing.
+While enabled, Bridge monitors War Thunder and captures a short sequence of game-window screenshots after a battle. Keep the results screen visible and in the foreground until capture finishes. Input is temporarily paused during capture, then released while recognition continues. The progress notice stays off the game window, so fullscreen performance is left unchanged.
 
 Bridge reads all six captured screenshots before choosing a result. When the recognized RP and SL stay equal or increase, it uses the latest successfully read screenshot, even if the last two differ. If either value decreases, it uses the last matching neighboring pair before the first decrease. If there is no earlier matching pair, it falls back to the latest successful read. OCR can misread animated, obscured or incomplete results; a report is not guaranteed for every battle.
 

@@ -39,6 +39,9 @@ def test_session_id_survives_battle_end_and_changes_only_on_the_next_battle(tmp_
     assert rt._battle_just_ended(True) is False
     assert rt.match.current_id() == first
 
+    assert rt._battle_just_ended(False) is False
+    assert rt.match.current_id() == first
+    assert rt.match.view().active is True
     assert rt._battle_just_ended(False) is True
     assert rt.match.current_id() == first
     assert rt.match.view().active is True

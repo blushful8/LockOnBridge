@@ -43,7 +43,10 @@ def _worker_cmd(*, loop: bool = False) -> list[str]:
 
 def _creationflags() -> int:
     if sys.platform == "win32":
-        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        from .win_priority import BELOW_NORMAL_PRIORITY_CLASS
+
+        # Below-normal so Tesseract / Windows OCR lose the CPU to the game.
+        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | BELOW_NORMAL_PRIORITY_CLASS
     return 0
 
 
@@ -531,6 +534,9 @@ def ocr_worker_main(
 ) -> int:
     """Child entry: load PNG, run ROI (+ optional panel) OCR, write JSON."""
     os.environ[_WORKER_ENV] = "1"
+    from .win_priority import deprioritize_current_process
+
+    deprioritize_current_process()
     from .crashguard import breadcrumb, install_crash_guard
 
     install_crash_guard()
@@ -560,6 +566,9 @@ def ocr_worker_main(
 def ocr_worker_loop_main() -> int:
     """Long-lived child: JSON lines on stdin, JSON lines on stdout."""
     os.environ[_WORKER_ENV] = "1"
+    from .win_priority import deprioritize_current_process
+
+    deprioritize_current_process()
     from .crashguard import breadcrumb, install_crash_guard
 
     install_crash_guard()
