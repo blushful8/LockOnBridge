@@ -57,7 +57,35 @@ DEFAULT_WINDOW_H = 820
 # Extra chrome so the last button is never flush against the bottom edge.
 _WINDOW_CHROME_PAD = 28
 # Reserved height so packing the phone-access banner never needs a resize.
-_PHONE_BANNER_RESERVE_H = 100
+# Ukrainian copy at 150% DPI wraps to several lines inside the card.
+_PHONE_BANNER_RESERVE_H = 180
+
+
+def _label_wraplength(label: tk.Label) -> int | None:
+    """Text width that fits inside the label as it is actually laid out.
+
+    ``wraplength`` wider than the widget draws past the clip edge. With the
+    default center anchor, both ends of the line disappear.
+    """
+    try:
+        if not label.winfo_exists() or not label.winfo_manager():
+            return None
+        width = int(label.winfo_width())
+    except tk.TclError:
+        return None
+    if width <= 1:
+        return None
+    pad = _screen_px(label, label.cget("padx"))
+    border = _screen_px(label, label.cget("borderwidth"))
+    # A few extra pixels: font ink can extend past Tk's wrap measurement.
+    return max(160, width - 2 * pad - 2 * border - 8)
+
+
+def _screen_px(widget: tk.Widget, value) -> int:
+    try:
+        return int(float(widget.tk.call("winfo", "pixels", widget._w, str(value))))
+    except (tk.TclError, TypeError, ValueError):
+        return 0
 
 
 def _asset_path(name: str) -> Path | None:
@@ -107,6 +135,7 @@ class BridgeApp:
         self.root.title(f"{PRODUCT_NAME} {__version__}")
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_window)
+        self.root.bind("<Map>", self._on_root_mapped, add="+")
         self._apply_window_icon()
         self._window_size_locked = False
         self.root.after(300, self._poll_show_request)
@@ -129,6 +158,7 @@ class BridgeApp:
         self.debug_rois_var = tk.BooleanVar(value=False)
         self._dev_unlocked = False
         self._quota_var: tk.StringVar | None = None
+        self._quota_label: tk.Label | None = None
         self._version_clicks = 0
 
         self._build_ui()
@@ -159,6 +189,17 @@ class BridgeApp:
             self.root.after(50, self._exit_clean)
         else:
             self.root.deiconify()
+            self.root.update_idletasks()
+            self._fit_wrapped_labels()
+
+    def _on_root_mapped(self, _event=None) -> None:
+        """Withdrawn windows report no width, so wrap is applied once they are shown."""
+        if self._closing:
+            return
+        try:
+            self.root.after_idle(self._fit_wrapped_labels)
+        except tk.TclError:
+            pass
 
     def run(self) -> int:
         self.root.mainloop()
@@ -192,21 +233,23 @@ class BridgeApp:
         height = 0
         for child in self.root.winfo_children():
             try:
-                width = max(width, int(child.winfo_reqwidth()))
-                height += int(child.winfo_reqheight())
+                child_w = int(child.winfo_reqwidth())
+                child_h = int(child.winfo_reqheight())
                 info = child.pack_info()
             except tk.TclError:
                 continue
             padx = info.get("padx", 0)
             pady = info.get("pady", 0)
             if isinstance(padx, (tuple, list)):
-                width += int(padx[0]) + int(padx[1])
+                child_w += int(padx[0]) + int(padx[1])
             else:
-                width += int(padx) * 2
+                child_w += int(padx) * 2
             if isinstance(pady, (tuple, list)):
-                height += int(pady[0]) + int(pady[1])
+                child_h += int(pady[0]) + int(pady[1])
             else:
-                height += int(pady) * 2
+                child_h += int(pady) * 2
+            width = max(width, child_w)
+            height += child_h
         # Fallback when children are not mapped yet.
         if width <= 1:
             width = DEFAULT_WINDOW_W
@@ -224,24 +267,15 @@ class BridgeApp:
 
     def _apply_window_size(self, *, initial: bool) -> None:
         """
-        Size the window once so every control fits, then keep it fixed.
+        Size the window once so every control fits, then keep the width fixed.
 
-        Phone banner / status text may pack later — height reserves space for that
-        so the window does not grow or shrink on its own.
+        Wrapped labels are measured after layout. Height stays put unless a
+        later wrap (phone banner, language) needs another line.
         """
         del initial  # always measure + lock (or only refresh wrap if already locked)
         self.root.update_idletasks()
-        wrap_w = max(280, DEFAULT_WINDOW_W - 48)
-        try:
-            self.tip_label.configure(wraplength=wrap_w)
-            self.phone_banner.configure(wraplength=max(280, DEFAULT_WINDOW_W - 56))
-            self.phone_url_label.configure(wraplength=max(280, DEFAULT_WINDOW_W - 56))
-            self.status_label.configure(wraplength=max(280, DEFAULT_WINDOW_W - 48))
-            self.root.update_idletasks()
-        except Exception:  # noqa: BLE001
-            pass
-
         if self._window_size_locked:
+            self._fit_wrapped_labels()
             return
 
         req_w, req_h = self._content_req_size()
@@ -257,14 +291,16 @@ class BridgeApp:
         max_h = max(MIN_WINDOW_H, screen_h - 96)
         final_w = min(need_w, max_w)
         final_h = min(need_h, max_h)
+        # Width first so labels receive their real inner width, then wrap.
+        self.root.geometry(f"{final_w}x{final_h}")
+        self.root.update_idletasks()
+        self._fit_wrapped_labels()
+        self.root.update_idletasks()
+        _width, fitted_h = self._content_req_size()
+        final_h = min(max(final_h, fitted_h + _PHONE_BANNER_RESERVE_H), max_h)
         self._lock_root_geometry(final_w, final_h)
-        try:
-            self.tip_label.configure(wraplength=max(280, final_w - 48))
-            self.phone_banner.configure(wraplength=max(280, final_w - 56))
-            self.phone_url_label.configure(wraplength=max(280, final_w - 56))
-            self.status_label.configure(wraplength=max(280, final_w - 48))
-        except Exception:  # noqa: BLE001
-            pass
+        self.root.update_idletasks()
+        self._fit_wrapped_labels()
 
     def _apply_window_icon(self) -> None:
         ico = _asset_path("lockon_bridge.ico")
@@ -278,7 +314,68 @@ class BridgeApp:
         except Exception as exc:  # noqa: BLE001
             log.debug("window icon skipped: %s", exc)
 
+    def _wrapped_labels(self) -> list[tk.Label]:
+        labels = [
+            self.status_label,
+            self.phone_banner,
+            self.phone_url_label,
+            self.tip_label,
+        ]
+        quota = getattr(self, "_quota_label", None)
+        if quota is not None:
+            labels.append(quota)
+        return labels
+
+    def _fit_wrapped_labels(self) -> None:
+        """Keep wrapped lines inside the label. Grow the window if that adds lines."""
+        if getattr(self, "_fitting_wrap", False) or not hasattr(self, "status_label"):
+            return
+        self._fitting_wrap = True
+        try:
+            self._fit_wrapped_labels_now()
+        finally:
+            self._fitting_wrap = False
+
+    def _fit_wrapped_labels_now(self) -> None:
+        self.root.update_idletasks()
+        changed = False
+        for label in self._wrapped_labels():
+            target = _label_wraplength(label)
+            if target is None:
+                continue
+            try:
+                current = int(float(label.cget("wraplength")))
+            except (tk.TclError, TypeError, ValueError):
+                continue
+            if current != target:
+                label.configure(wraplength=target)
+                changed = True
+        if not changed:
+            return
+        self.root.update_idletasks()
+        if not self._window_size_locked:
+            return
+        try:
+            _width, req_h = self._content_req_size()
+            cur_w = int(self.root.winfo_width())
+            cur_h = int(self.root.winfo_height())
+            screen_h = int(self.root.winfo_screenheight())
+        except tk.TclError:
+            return
+        banner_packed = False
+        try:
+            banner_packed = bool(self.phone_banner.winfo_manager())
+        except tk.TclError:
+            banner_packed = False
+        if not banner_packed:
+            req_h += _PHONE_BANNER_RESERVE_H
+        max_h = max(MIN_WINDOW_H, screen_h - 96)
+        need_h = min(max(cur_h, req_h), max_h)
+        if need_h > cur_h + 2 and cur_w > 1:
+            self._lock_root_geometry(cur_w, need_h)
+
     def _build_ui(self) -> None:
+        self._quota_label = None
         for child in self.root.winfo_children():
             child.destroy()
         try:
@@ -362,10 +459,11 @@ class BridgeApp:
             font=("Segoe UI", 10),
             fg=MUTED,
             bg=PANEL,
-            wraplength=MIN_WINDOW_W - 80,
+            wraplength=MIN_WINDOW_W - 120,
             justify="left",
+            anchor="w",
         )
-        self.status_label.pack(anchor="w", padx=16, pady=(12, 12))
+        self.status_label.pack(fill="x", anchor="w", padx=16, pady=(12, 12))
 
         self.phone_banner = tk.Label(
             card,
@@ -374,7 +472,8 @@ class BridgeApp:
             fg="#fecaca",
             bg=DANGER_BG,
             justify="left",
-            wraplength=MIN_WINDOW_W - 90,
+            anchor="w",
+            wraplength=MIN_WINDOW_W - 120,
             padx=10,
             pady=8,
         )
@@ -387,9 +486,10 @@ class BridgeApp:
             fg=MUTED,
             bg=PANEL,
             justify="left",
-            wraplength=MIN_WINDOW_W - 90,
+            anchor="w",
+            wraplength=MIN_WINDOW_W - 120,
         )
-        self.phone_url_label.pack(anchor="w", padx=16, pady=(0, 12))
+        self.phone_url_label.pack(fill="x", anchor="w", padx=16, pady=(0, 12))
 
         self.tip_label = tk.Label(
             self.root,
@@ -398,9 +498,10 @@ class BridgeApp:
             fg=MUTED,
             bg=BG,
             justify="left",
-            wraplength=390,
+            anchor="w",
+            wraplength=MIN_WINDOW_W - 120,
         )
-        self.tip_label.pack(anchor="w", padx=20, pady=(0, 4))
+        self.tip_label.pack(fill="x", anchor="w", padx=20, pady=(0, 4))
 
         port_row = tk.Frame(self.root, bg=BG)
         port_row.pack(fill="x", padx=20, pady=2)
@@ -501,16 +602,17 @@ class BridgeApp:
 
         if self._dev_unlocked:
             self._quota_var = tk.StringVar(value="")
-            tk.Label(
+            self._quota_label = tk.Label(
                 self.root,
                 textvariable=self._quota_var,
                 font=("Segoe UI", 9),
                 fg=MUTED,
                 bg=BG,
-                wraplength=480,
+                wraplength=MIN_WINDOW_W - 120,
                 justify="left",
                 anchor="w",
-            ).pack(fill="x", padx=20, pady=(2, 4))
+            )
+            self._quota_label.pack(fill="x", padx=20, pady=(2, 4))
             self._apply_quota_label()
             self.root.after(200, self._refresh_quota_remote)
 
@@ -1057,6 +1159,7 @@ class BridgeApp:
                 text=t.phone_test_hint.format(url=url),
                 fg="#fca5a5",
             )
+        self._fit_wrapped_labels()
 
     def _poll_phone_access_loop(self) -> None:
         if self._closing:
