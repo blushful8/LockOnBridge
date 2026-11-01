@@ -616,11 +616,8 @@ class BridgeApp:
             self._apply_quota_label()
             self.root.after(200, self._refresh_quota_remote)
 
-        # Primary action: post-battle OCR test (no hangar navigation).
         btns = tk.Frame(self.root, bg=BG)
         btns.pack(fill="x", padx=20, pady=(8, 4))
-        self.btn_test_ocr = self._btn(btns, t.test_ocr, self._test_ocr)
-        self.btn_test_ocr.pack(fill="x", pady=3)
 
         more_row = tk.Frame(btns, bg=BG)
         more_row.pack(fill="x", pady=3)
@@ -647,6 +644,7 @@ class BridgeApp:
         more_menu.add_command(label=t.check_updates, command=self._check_updates)
         if self._dev_unlocked:
             more_menu.add_separator()
+            more_menu.add_command(label=t.test_ocr, command=self._test_ocr)
             more_menu.add_command(label=t.replay_log, command=self._replay_last_ocr)
             more_menu.add_command(label=t.roi_calibrator, command=self._open_roi_calibrator)
             # Dev-only: legacy Messages clipboard / local OCR backends.
@@ -1464,7 +1462,7 @@ class BridgeApp:
         tick(countdown)
 
     def _test_ocr(self) -> None:
-        if getattr(self, "_ocr_busy", False):
+        if not self._dev_unlocked or getattr(self, "_ocr_busy", False):
             return
         self._ocr_busy = True
         countdown = 5
