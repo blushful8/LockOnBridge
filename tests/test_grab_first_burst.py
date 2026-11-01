@@ -269,3 +269,72 @@ def test_default_shot_gaps_stretch_the_tail():
     assert [shot_gap_after(i) for i in range(5)] == [0.5, 0.65, 0.65, 1.0, 2.0]
     assert abs(sum(shot_gap_after(i) for i in range(5)) - 4.8) < 0.01
     assert shot_gap_after(0, frames=6, uniform=0.0) == 0.0
+
+
+def test_shots_five_and_six_win_over_an_earlier_stable_pair():
+    """A dip on shot 5 must not roll the burst back to shots 1-2."""
+    from lockon_bridge.runtime import select_reward_read
+
+    pairs = [
+        (4307, 18703),
+        (4307, 18703),
+        (4730, 18703),
+        (4738, 20129),
+        (4307, 8614),
+        (4738, 8614),
+    ]
+    assert select_reward_read(pairs) == (5, "primary: shot 6")
+
+
+def test_shot_five_is_kept_when_shot_six_drops_or_is_blank():
+    from lockon_bridge.runtime import select_reward_read
+
+    dropped = [
+        (100, 1000),
+        (100, 1000),
+        (200, 2000),
+        (300, 3000),
+        (4738, 20592),
+        (4307, 8614),
+    ]
+    assert select_reward_read(dropped) == (4, "primary: shot 5, shot 6 dropped")
+
+    blank = [
+        (100, 1000),
+        (200, 2000),
+        (300, 3000),
+        (400, 4000),
+        (4738, 20592),
+        None,
+    ]
+    assert select_reward_read(blank) == (4, "primary: shot 5, shot 6 unreadable")
+
+
+def test_first_four_shots_are_used_only_when_the_tail_is_unreadable():
+    from lockon_bridge.runtime import select_reward_read
+
+    pairs = [
+        (4307, 18703),
+        (4307, 18703),
+        (4730, 18703),
+        (4738, 20129),
+        None,
+        None,
+    ]
+    assert select_reward_read(pairs) == (
+        3,
+        "spare: shots 5-6 unreadable, latest recognized",
+    )
+
+    regressed = [
+        (4307, 18703),
+        (4307, 18703),
+        (2000, 9000),
+        (1500, 8000),
+        None,
+        None,
+    ]
+    assert select_reward_read(regressed) == (
+        1,
+        "spare: shots 5-6 unreadable, earlier neighbor match",
+    )

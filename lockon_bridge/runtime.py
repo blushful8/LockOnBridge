@@ -48,6 +48,73 @@ def select_reward_read(
 ) -> tuple[int | None, str]:
     """Select only after every captured frame has been decoded.
 
+    The last two frames are the settled read (shots 5 and 6 of a six-shot
+    burst). Send the later one when it stays at or above the earlier one.
+    If that later frame is missing or drops, send the earlier of the pair.
+    Frames before that pair are spare: they are used only when both settled
+    frames are unreadable.
+    """
+    if len(pairs) >= 2:
+        spare, settled = pairs[:-2], pairs[-2:]
+        settled_at = len(pairs) - 2
+    else:
+        spare, settled, settled_at = [], list(pairs), 0
+
+    index, reason = _select_settled_pair(settled, six_shot=len(pairs) == 6)
+    if index is not None:
+        return settled_at + index, reason
+
+    spare_index, spare_reason = _select_countup_read(spare)
+    if spare_index is None:
+        if len(pairs) == 6:
+            return None, "shots 5-6 unreadable, no spare read"
+        return None, "no readable shot"
+    if len(pairs) == 6:
+        return spare_index, f"spare: shots 5-6 unreadable, {spare_reason}"
+    return spare_index, f"spare: final frames unreadable, {spare_reason}"
+
+
+def _select_settled_pair(
+    pair: list[tuple[int, int] | None],
+    *,
+    six_shot: bool,
+) -> tuple[int | None, str]:
+    """Pick within the last two frames. Index is relative to that pair."""
+    if len(pair) == 1:
+        if pair[0] is None:
+            return None, ""
+        return 0, "primary: latest settled frame"
+    if len(pair) != 2:
+        return None, ""
+    earlier, later = pair
+    if later is not None and (
+        earlier is None or (later[0] >= earlier[0] and later[1] >= earlier[1])
+    ):
+        if six_shot:
+            return 1, "primary: shot 6"
+        return 1, "primary: latest settled frame"
+    if earlier is None:
+        return None, ""
+    if later is None:
+        reason = (
+            "primary: shot 5, shot 6 unreadable"
+            if six_shot
+            else "primary: previous settled frame, last unreadable"
+        )
+    else:
+        reason = (
+            "primary: shot 5, shot 6 dropped"
+            if six_shot
+            else "primary: previous settled frame, last dropped"
+        )
+    return 0, reason
+
+
+def _select_countup_read(
+    pairs: list[tuple[int, int] | None],
+) -> tuple[int | None, str]:
+    """Latest readable spare, unless a drop follows a repeated neighbor.
+
     A count-up may pause at equal neighbors before its final value. Prefer
     the latest readable frame unless either reward regresses. In that case,
     use the latest equal neighboring pair preceding the first regression.
@@ -64,17 +131,17 @@ def select_reward_read(
             pair[0] < previous[0] or pair[1] < previous[1]
         ):
             regression = True
-        if (
-            not regression
-            and index > 0
-            and pairs[index - 1] == pair
-        ):
+        if not regression and index > 0 and pairs[index - 1] == pair:
             confirmed = index
         previous = pair
         latest = index
+    if latest is None:
+        return None, "no spare read"
     if regression and confirmed is not None:
-        return confirmed, "regression: earlier neighbor match"
-    return latest, "latest recognized (no earlier match)" if regression else "latest recognized"
+        return confirmed, "earlier neighbor match"
+    if regression:
+        return latest, "latest recognized (no earlier match)"
+    return latest, "latest recognized"
 
 # Align with LockOn Android BridgeRepository default minConfidence.
 _MIN_CONFIDENT_REPORT = 0.7
@@ -427,7 +494,7 @@ class BridgeRuntime:
         )
         log.info(
             "battle ended — waiting %.2fs then 6 shots at 0.50/0.65/0.65/1.00/2.00s; "
-            "decode every captured shot before selecting RP/SL",
+            "send shot 5 or 6, shots 1-4 only if those two are unreadable",
             cfg.capture_delay_sec,
         )
         # --- Phase A: shots while the results screen is held still ---
