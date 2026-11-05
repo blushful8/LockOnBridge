@@ -239,8 +239,8 @@ def main() -> int:
     patched = dict(original)
     patched["language"] = "en"
     patched["wt_ui_language"] = "en"
+    # OFF only — enabled UI can show the LAN IP in the phone-access line.
     shots = [
-        ("main-en.png", True),
         ("main-off-en.png", False),
     ]
     try:

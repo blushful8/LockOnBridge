@@ -5,8 +5,9 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-CSV = Path(r"C:\Users\User\.cursor\projects\d-projects-LockOn\agent-tools\e5c4441d-5c99-4155-8860-ff9f2ea19313.txt")
-OUT = Path(r"D:\projects\LockOnBridge\lockon_bridge\wt_debrief_labels.py")
+# Local one-off dump path — pass via env or edit before running.
+CSV = Path(__file__).resolve().parents[1] / "menu_debriefing.csv"
+OUT = Path(__file__).resolve().parents[1] / "lockon_bridge" / "wt_debrief_labels.py"
 
 # Column index in Gaijin lang CSV → LockOnBridge language code.
 COLUMNS = {
