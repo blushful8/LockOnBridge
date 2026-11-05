@@ -42,6 +42,7 @@ class Strings:
     status_disabled: str
     status_enabled_waiting: str
     status_firewall_needed: str
+    status_http_down: str
     phone_access_banner: str
     phone_access_ok: str
     phone_test_hint: str
@@ -175,6 +176,7 @@ EN = Strings(
     status_disabled="Disabled — no autostart, no background work",
     status_enabled_waiting="Enabled — waiting for War Thunder",
     status_firewall_needed="Enabled — phone access not allowed yet",
+    status_http_down="Enabled — local server is not listening",
     phone_access_banner=(
         "⚠ PHONE CANNOT REACH THIS PC\n"
         "LockOn History will stay at 0 RP / 0 SL until you fix this.\n\n"
@@ -369,6 +371,7 @@ UK = Strings(
     status_disabled="Вимкнено — немає автозапуску й фонової роботи",
     status_enabled_waiting="Увімкнено — очікування War Thunder",
     status_firewall_needed="Увімкнено — доступ з телефона ще не дозволено",
+    status_http_down="Увімкнено — локальний сервер не слухає порт",
     phone_access_banner=(
         "⚠ ТЕЛЕФОН НЕ ДОХОДИТЬ ДО ЦЬОГО ПК\n"
         "В Історії LockOn лишатимуться 0 RP / 0 SL, доки це не виправите.\n\n"
@@ -565,6 +568,7 @@ RU = Strings(
     status_disabled="Выключено — нет автозапуска и фоновой работы",
     status_enabled_waiting="Включено — ожидание War Thunder",
     status_firewall_needed="Включено — доступ с телефона ещё не разрешён",
+    status_http_down="Включено — локальный сервер не слушает порт",
     phone_access_banner=(
         "⚠ ТЕЛЕФОН НЕ ДОХОДИТ ДО ЭТОГО ПК\n"
         "В Истории LockOn останутся 0 RP / 0 SL, пока это не исправить.\n\n"

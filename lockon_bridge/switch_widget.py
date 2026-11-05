@@ -1,4 +1,4 @@
-"""Compact iOS-style toggle switch for Tkinter (no ttk theme deps)."""
+"""Compact toggle switch — prefers brand PNG assets, Canvas fallback."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ class SwitchButton(tk.Canvas):
     """
     Pill track + sliding knob bound to a ``BooleanVar``.
 
-    Click anywhere on the control to toggle. Optional ``command`` fires after
-    the variable changes (same contract as ``ttk.Checkbutton``).
+    Uses ``assets/ui/switch_on.png`` / ``switch_off.png`` when present
+    (no Tk stipple grain). Optional ``command`` fires after the variable changes.
     """
 
     def __init__(
@@ -22,7 +22,7 @@ class SwitchButton(tk.Canvas):
         command: Callable[[], None] | None = None,
         width: int = 52,
         height: int = 30,
-        on_color: str = "#3d9a6a",
+        on_color: str = "#2ec4b6",
         off_color: str = "#4b5563",
         knob_color: str = "#ffffff",
         bg: str = "#242830",
@@ -40,7 +40,6 @@ class SwitchButton(tk.Canvas):
         )
         self._var = variable
         self._command = command
-        # Never use self._w / self._h — those are Tkinter's Tcl widget path attrs.
         self._track_w = int(width)
         self._track_h = int(height)
         self._on = on_color
@@ -49,11 +48,23 @@ class SwitchButton(tk.Canvas):
         self._pad = 3
         self._knob_r = max(8, (height // 2) - self._pad)
         self._trace_id: str | None = None
+        self._photo_on = None
+        self._photo_off = None
+        self._load_photos()
 
         self.bind("<Button-1>", self._on_click)
         self.bind("<Destroy>", self._on_destroy, add="+")
         self._trace_id = self._var.trace_add("write", self._on_var_write)
         self._redraw()
+
+    def _load_photos(self) -> None:
+        try:
+            from .ui_assets import photo
+        except Exception:  # noqa: BLE001
+            return
+        size = (self._track_w, self._track_h)
+        self._photo_on = photo("switch_on.png", size=size)
+        self._photo_off = photo("switch_off.png", size=size)
 
     def _on_destroy(self, _event: Any = None) -> None:
         self._drop_trace()
@@ -73,7 +84,6 @@ class SwitchButton(tk.Canvas):
 
     def _on_click(self, _event: Any = None) -> None:
         self._var.set(not bool(self._var.get()))
-        # Flush paint before any heavy command (registry / schtasks / agent).
         try:
             self.update_idletasks()
         except Exception:  # noqa: BLE001
@@ -89,9 +99,19 @@ class SwitchButton(tk.Canvas):
             return
         self.delete("all")
         on = bool(self._var.get())
+        photo = self._photo_on if on else self._photo_off
+        if photo is not None:
+            self.create_image(
+                self._track_w // 2,
+                self._track_h // 2,
+                image=photo,
+                anchor="center",
+            )
+            return
+
+        # Fallback vector draw (no stipple — avoids grainy dither).
         track = self._on if on else self._off
         tw, th = self._track_w, self._track_h
-        # Rounded track via overlapping ovals + rectangle.
         r = th // 2
         self.create_oval(0, 0, th, th, fill=track, outline="")
         self.create_oval(tw - th, 0, tw, th, fill=track, outline="")
@@ -99,16 +119,6 @@ class SwitchButton(tk.Canvas):
 
         cx = (tw - self._pad - self._knob_r) if on else (self._pad + self._knob_r)
         cy = th // 2
-        # Soft shadow under knob.
-        self.create_oval(
-            cx - self._knob_r + 1,
-            cy - self._knob_r + 2,
-            cx + self._knob_r + 1,
-            cy + self._knob_r + 2,
-            fill="#000000",
-            outline="",
-            stipple="gray50",
-        )
         self.create_oval(
             cx - self._knob_r,
             cy - self._knob_r,

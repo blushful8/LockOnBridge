@@ -43,6 +43,7 @@ a = Analysis(
     datas=datas + [
         ("assets/lockon_bridge.png", "assets"),
         ("assets/lockon_bridge.ico", "assets"),
+        ("assets/ui", "assets/ui"),
         ("lockon_bridge/roi_calibrated.json", "lockon_bridge"),
         ("lockon_bridge/reward_icons", "lockon_bridge/reward_icons"),
         ("lockon_bridge/message_icons", "lockon_bridge/message_icons"),

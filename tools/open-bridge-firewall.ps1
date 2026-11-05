@@ -4,7 +4,16 @@
 $port = 8112
 $name = "LockOn Bridge $port"
 $appAllow = "LockOn Bridge App Allow"
-$exe = Join-Path $env:LOCALAPPDATA "LockOnBridge\app\LockOnBridge.exe"
+
+$installRoot = $null
+$regApp = "HKCU:\Software\LockOnBridge"
+if (Test-Path $regApp) {
+    $installRoot = (Get-ItemProperty -Path $regApp -ErrorAction SilentlyContinue).DataRoot
+}
+if (-not $installRoot) {
+    $installRoot = Join-Path $env:LOCALAPPDATA "LockOnBridge"
+}
+$exe = Join-Path $installRoot "app\LockOnBridge.exe"
 
 $blockNames = @(
     "lockonbridge.exe",
@@ -23,7 +32,7 @@ if (Test-Path $exe) {
     netsh advfirewall firewall add rule name="$appAllow" dir=in action=allow program="$exe" enable=yes profile=any protocol=TCP | Out-Null
 }
 try {
-    Add-MpPreference -ExclusionPath (Join-Path $env:LOCALAPPDATA "LockOnBridge") -ErrorAction SilentlyContinue
+    Add-MpPreference -ExclusionPath $installRoot -ErrorAction SilentlyContinue
     Add-MpPreference -ExclusionProcess "LockOnBridge.exe" -ErrorAction SilentlyContinue
 } catch {}
 

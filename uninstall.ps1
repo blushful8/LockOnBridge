@@ -3,7 +3,28 @@ $ErrorActionPreference = "Continue"
 $ProductName = "LockOn Bridge"
 $ProductId = "LockOnBridge"
 $TaskName = "LockOn Bridge"
-$InstallRoot = Join-Path $env:LOCALAPPDATA "LockOnBridge"
+
+function Get-LockOnInstallRoot {
+    $fromUninstall = $null
+    $regUninstall = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$ProductId"
+    if (Test-Path $regUninstall) {
+        $fromUninstall = (Get-ItemProperty -Path $regUninstall -ErrorAction SilentlyContinue).InstallLocation
+    }
+    $fromApp = $null
+    $regApp = "HKCU:\Software\$ProductId"
+    if (Test-Path $regApp) {
+        $fromApp = (Get-ItemProperty -Path $regApp -ErrorAction SilentlyContinue).DataRoot
+    }
+    foreach ($candidate in @($fromApp, $fromUninstall)) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+    return (Join-Path $env:LOCALAPPDATA $ProductId)
+}
+
+$InstallRoot = Get-LockOnInstallRoot
+$LegacyRoot = Join-Path $env:LOCALAPPDATA $ProductId
 
 Write-Host "Uninstalling $ProductName…"
 
@@ -21,11 +42,19 @@ try {
 
 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$ProductId"
 if (Test-Path $regPath) { Remove-Item -Path $regPath -Recurse -Force }
+$regApp = "HKCU:\Software\$ProductId"
+if (Test-Path $regApp) { Remove-Item -Path $regApp -Recurse -Force }
 
-# Remove install tree (schedule after this process exits if we live inside it)
+$roots = @($InstallRoot)
+if ($LegacyRoot -and ($LegacyRoot -ne $InstallRoot)) {
+    $roots += $LegacyRoot
+}
+$removeLines = foreach ($r in ($roots | Select-Object -Unique)) {
+    "Remove-Item -LiteralPath '$($r -replace "'","''")' -Recurse -Force -ErrorAction SilentlyContinue"
+}
 $removeCmd = @"
 Start-Sleep -Seconds 2
-Remove-Item -LiteralPath '$InstallRoot' -Recurse -Force -ErrorAction SilentlyContinue
+$($removeLines -join "`n")
 "@
 Start-Process powershell.exe -ArgumentList @("-NoProfile", "-Command", $removeCmd) -WindowStyle Hidden
 

@@ -91,8 +91,13 @@ def _launch_parts() -> tuple[str, str, str]:
 
 def ensure_install_copy() -> Path | None:
     """
-    Copy the onedir bundle (exe + _internal) into LocalAppData\\LockOnBridge\\app
+    Copy the onedir bundle (exe + _internal) into ``<data_root>/app``
     and create a Desktop shortcut to the installed exe.
+
+    After the first install, never refresh by copying ZIP/Downloads over the
+    live tree — that hits WinError 32 while the process holds ``_internal``.
+    Updates go through the updater; autostart/shortcut always target the
+    installed exe.
     """
     if not is_frozen():
         return None
@@ -103,19 +108,40 @@ def ensure_install_copy() -> Path | None:
     data_root().mkdir(parents=True, exist_ok=True)
     log_dir().mkdir(parents=True, exist_ok=True)
     try:
-        if src_exe.resolve() != dst_exe.resolve():
-            if dst_dir.exists():
-                for item in src_dir.iterdir():
-                    target = dst_dir / item.name
-                    if item.is_dir():
-                        if target.exists():
-                            shutil.rmtree(target, ignore_errors=True)
-                        shutil.copytree(item, target, dirs_exist_ok=True)
-                    else:
-                        shutil.copy2(item, target)
-            else:
-                shutil.copytree(src_dir, dst_dir)
-            log.info("Installed onedir copy → %s", dst_dir)
+        src_resolved = src_exe.resolve()
+        try:
+            dst_resolved = dst_exe.resolve()
+        except OSError:
+            dst_resolved = dst_exe
+
+        # Already running from the install tree — never copy onto ourselves.
+        if src_resolved == dst_resolved:
+            ensure_desktop_shortcut(dst_exe if dst_exe.is_file() else src_exe)
+            return dst_exe if dst_exe.is_file() else src_exe
+
+        # Install already present: keep it. Re-copy from Downloads/ZIP while
+        # Bridge (or a leftover) holds files → WinError 32.
+        if dst_exe.is_file():
+            log.info(
+                "Install already at %s — skip re-copy from %s",
+                dst_dir,
+                src_dir,
+            )
+            ensure_desktop_shortcut(dst_exe)
+            return dst_exe
+
+        if dst_dir.exists():
+            for item in src_dir.iterdir():
+                target = dst_dir / item.name
+                if item.is_dir():
+                    if target.exists():
+                        shutil.rmtree(target, ignore_errors=True)
+                    shutil.copytree(item, target, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, target)
+        else:
+            shutil.copytree(src_dir, dst_dir)
+        log.info("Installed onedir copy → %s", dst_dir)
         ensure_desktop_shortcut(dst_exe if dst_exe.is_file() else src_exe)
         return dst_exe if dst_exe.is_file() else src_exe
     except OSError as exc:
@@ -605,6 +631,10 @@ def prepare_enabled_runtime(
     """
     One-shot setup when Bridge is turned ON / starts enabled.
     Firewall elevation is opt-in from the UI (clear prompt before UAC).
+
+    ``ensure_install_copy`` only seeds ``<data_root>/app`` once; it will not
+    overwrite an existing install from a ZIP/Downloads launch (WinError 32).
+    Autostart always points at the installed exe after that.
     """
     stop_other_bridge_processes()
     ensure_install_copy()
@@ -617,16 +647,29 @@ def prepare_enabled_runtime(
 
 
 def full_uninstall() -> None:
+    from .paths import clear_data_root_registry, default_local_appdata_root
+
     unregister_autostart()
     stop_other_bridge_processes()
     remove_firewall_rule(8112)
     remove_uninstall_entry()
     remove_desktop_shortcut()
-    root = str(data_root()).replace("'", "''")
-    remove_cmd = (
-        f"Start-Sleep -Seconds 2; "
-        f"Remove-Item -LiteralPath '{root}' -Recurse -Force -ErrorAction SilentlyContinue"
+    root = data_root()
+    legacy = default_local_appdata_root()
+    roots = {str(root.resolve())}
+    try:
+        if legacy.exists() and legacy.resolve() != root.resolve():
+            # Old C: tree left behind after a custom-folder install.
+            roots.add(str(legacy.resolve()))
+    except OSError:
+        pass
+    clear_data_root_registry()
+    quoted = "; ".join(
+        f"Remove-Item -LiteralPath '{p.replace(chr(39), chr(39)+chr(39))}' "
+        f"-Recurse -Force -ErrorAction SilentlyContinue"
+        for p in roots
     )
+    remove_cmd = f"Start-Sleep -Seconds 2; {quoted}"
     startupinfo = None
     if sys.platform == "win32":
         startupinfo = subprocess.STARTUPINFO()

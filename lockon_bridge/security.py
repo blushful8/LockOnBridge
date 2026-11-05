@@ -26,9 +26,13 @@ def security_root() -> Path:
     override = os.environ.get("LOCKON_BRIDGE_SECURITY_DIR")
     if override:
         return Path(override)
-    if Path("D:/").is_dir():
-        return Path("D:/CodexData/LockOnBridge/security")
-    return data_root() / "security"
+    preferred = data_root() / "security"
+    legacy = Path("D:/CodexData/LockOnBridge/security")
+    if preferred.is_dir() and any(preferred.iterdir()):
+        return preferred
+    if legacy.is_dir() and any(legacy.iterdir()):
+        return legacy
+    return preferred
 
 
 def _protect(data: bytes, decrypt: bool = False) -> bytes:

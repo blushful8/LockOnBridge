@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import socket
 import sys
 import threading
 import tkinter as tk
@@ -43,10 +44,12 @@ FG = "#e8eaed"
 MUTED = "#9aa0a6"
 ACCENT = "#c45c26"
 ACCENT_DIM = "#8a3f1a"
-OK = "#3d9a6a"
+OK = "#2ec4b6"  # brand cyan (matches assets/ui switch_on)
 OFF = "#6b7280"
 DANGER = "#b91c1c"
 DANGER_BG = "#3f1515"
+IDLE_BADGE = "#eab308"
+ACTIVE_BADGE = "#38bdf8"
 
 # Keep enough room for toggle, languages, port, primary actions, More menu,
 # and the optional phone-access banner (UK strings wrap taller).
@@ -125,6 +128,10 @@ class BridgeApp:
         self._closing = False
         self._last_agent_status = AgentStatus.DISABLED
         self._updating = False
+        # Serialize enable/disable: start during an in-flight stop left
+        # settings.enabled=true with no HTTP listener.
+        self._lifecycle_busy = False
+        self._phone_check_busy = False
 
         enable_windows_dpi_awareness()
         self.root = tk.Tk()
@@ -141,7 +148,7 @@ class BridgeApp:
         self.root.after(300, self._poll_show_request)
         self._ocr_busy = False
 
-        # First open of the .exe installs a stable LocalAppData copy + Desktop shortcut.
+        # First open of the .exe installs a stable copy under the chosen folder + Desktop shortcut.
         if is_frozen():
             ensure_install_copy()
             register_uninstall_entry()
@@ -385,11 +392,19 @@ class BridgeApp:
 
         t = self.strings
         pad = {"padx": 20, "pady": 6}
+        self._ui_photos: dict[str, object] = {}
 
         header = tk.Frame(self.root, bg=BG)
         header.pack(fill="x", **pad)
+        title_row = tk.Frame(header, bg=BG)
+        title_row.pack(fill="x", anchor="w")
+        mark = self._ui_photo("header_mark.png", size=(40, 40))
+        if mark is not None:
+            tk.Label(title_row, image=mark, bg=BG, bd=0).pack(side="left", padx=(0, 10))
+        title_col = tk.Frame(title_row, bg=BG)
+        title_col.pack(side="left", fill="x", expand=True)
         title = tk.Label(
-            header,
+            title_col,
             text=PRODUCT_NAME,
             font=("Segoe UI Semibold", 18),
             fg=FG,
@@ -397,7 +412,7 @@ class BridgeApp:
         )
         title.pack(anchor="w")
         self._version_label = tk.Label(
-            header,
+            title_col,
             text=f"v{__version__}",
             font=("Segoe UI", 9),
             fg=MUTED,
@@ -414,8 +429,15 @@ class BridgeApp:
             bg=BG,
         )
         self.subtitle_label.pack(anchor="w")
+        self._accent_bar(header, height=4).pack(fill="x", pady=(10, 0))
 
-        card = tk.Frame(self.root, bg=PANEL, highlightthickness=0)
+        card = tk.Frame(
+            self.root,
+            bg=PANEL,
+            highlightthickness=1,
+            highlightbackground="#1f6f68",
+            highlightcolor=OK,
+        )
         card.pack(fill="x", padx=20, pady=10)
 
         # Bridge ON/OFF — primary switch row
@@ -502,6 +524,7 @@ class BridgeApp:
             wraplength=MIN_WINDOW_W - 120,
         )
         self.tip_label.pack(fill="x", anchor="w", padx=20, pady=(0, 4))
+        self._accent_bar(self.root, height=3).pack(fill="x", padx=20, pady=(4, 8))
 
         port_row = tk.Frame(self.root, bg=BG)
         port_row.pack(fill="x", padx=20, pady=2)
@@ -698,7 +721,55 @@ class BridgeApp:
 
         self._refresh_badge_for_status(self._last_agent_status)
 
+    def _ui_photo(self, name: str, size: tuple[int, int] | None = None):
+        """Load a compressed UI asset and keep a strong ref (Tk GC)."""
+        try:
+            from .ui_assets import photo
+        except Exception:  # noqa: BLE001
+            return None
+        key = f"{name}:{size}"
+        cached = self._ui_photos.get(key)
+        if cached is not None:
+            return cached
+        img = photo(name, size=size)
+        if img is not None:
+            self._ui_photos[key] = img
+        return img
+
+    def _accent_bar(self, parent: tk.Widget, *, height: int = 4) -> tk.Frame:
+        """Full-width cyan→amber bar (scales with the window; no fixed PNG width)."""
+        wrap = tk.Frame(parent, bg=BG, height=height)
+        wrap.pack_propagate(False)
+        canvas = tk.Canvas(
+            wrap,
+            height=height,
+            bg=BG,
+            highlightthickness=0,
+            bd=0,
+        )
+        canvas.pack(fill="both", expand=True)
+
+        def _paint(_event=None) -> None:
+            canvas.delete("all")
+            w = max(int(canvas.winfo_width()), 2)
+            h = max(int(canvas.winfo_height()), 1)
+            steps = min(w, 240)
+            for i in range(steps):
+                t = i / max(steps - 1, 1)
+                r = int(0x2E + (0xC4 - 0x2E) * t)
+                g = int(0xC4 + (0x5C - 0xC4) * t)
+                b = int(0xB6 + (0x26 - 0xB6) * t)
+                x0 = int(i * w / steps)
+                x1 = int((i + 1) * w / steps)
+                canvas.create_rectangle(
+                    x0, 0, x1, h, outline="", fill=f"#{r:02x}{g:02x}{b:02x}"
+                )
+
+        canvas.bind("<Configure>", _paint)
+        return wrap
+
     def _btn(self, parent: tk.Widget, text: str, command, *, danger: bool = False) -> tk.Button:
+        # Flat buttons only — PNG frames with HUD corners sat under the label text.
         return tk.Button(
             parent,
             text=text,
@@ -712,6 +783,10 @@ class BridgeApp:
             padx=12,
             pady=8,
             cursor="hand2",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#1f6f68" if not danger else ACCENT_DIM,
+            highlightcolor=OK if not danger else ACCENT,
         )
 
     def _open_more_menu(self) -> None:
@@ -1029,12 +1104,20 @@ class BridgeApp:
         self._setup_tesseract()
 
     def _on_toggle(self) -> None:
+        if self._lifecycle_busy:
+            # Switch already flipped visually — snap back until the in-flight op ends.
+            self.enabled_var.set(bool(self.settings.enabled))
+            return
         if bool(self.enabled_var.get()):
             self._start_enabled(persist=True)
         else:
             self._disable_completely()
 
     def _start_enabled(self, *, persist: bool) -> None:
+        if self._lifecycle_busy:
+            self.enabled_var.set(bool(self.settings.enabled))
+            return
+        self._lifecycle_busy = True
         port = self._read_port()
         # Bridge ON = agent + Windows logon autostart (one switch).
         self.settings = update_settings(
@@ -1042,36 +1125,58 @@ class BridgeApp:
             port=port,
             autostart_with_windows=True,
         )
-        # Paint / agent first — schtasks, install copy, netsh stay off the UI thread.
+        # Paint first — agent.start may wait out a dying stop thread; keep that
+        # (and schtasks / install copy / netsh) off the UI thread.
         self._set_ui_enabled(True)
         self.status_var.set(self.strings.status_enabled_waiting)
-        self.agent.start(self.settings)
         self._ensure_tray()
 
         def work() -> None:
             try:
-                prepare_enabled_runtime(
-                    port=port,
-                    allow_firewall_elevate=False,
-                    autostart=True,
-                )
-            except Exception:  # noqa: BLE001
-                log.exception("prepare_enabled_runtime failed")
-            self.root.after(0, self._after_enabled_runtime)
+                try:
+                    self.agent.start(self.settings)
+                except Exception:  # noqa: BLE001
+                    log.exception("agent.start failed")
+                try:
+                    prepare_enabled_runtime(
+                        port=port,
+                        allow_firewall_elevate=False,
+                        autostart=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception("prepare_enabled_runtime failed")
+            finally:
+                self.root.after(0, self._after_enabled_runtime)
 
         threading.Thread(target=work, name="bridge-enable", daemon=True).start()
-
     def _after_enabled_runtime(self) -> None:
+        self._lifecycle_busy = False
         if self._closing or not self.settings.enabled:
             return
         self.root.after(200, lambda: self._ensure_phone_access(interactive=True))
+        # Confirm HTTPS is actually bound — green OK must not lie about firewall alone.
+        self.root.after(400, lambda: self._verify_serving_after_enable(attempt=0))
         # Offer official Microsoft OCR packs once (or when still missing).
-        self.root.after(400, lambda: self._maybe_prompt_ocr_packs(force=False))
+        self.root.after(600, lambda: self._maybe_prompt_ocr_packs(force=False))
 
     def _allow_phone_access(self) -> None:
         self._ensure_phone_access(interactive=True, force_prompt=True)
 
-    def _phone_access_ok(self, port: int | None = None) -> bool:
+    @staticmethod
+    def _tcp_listening(port: int, *, host: str = "127.0.0.1", timeout: float = 0.35) -> bool:
+        try:
+            with socket.create_connection((host, int(port)), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _local_bridge_ready(self, port: int) -> bool:
+        """True when HTTPS is up locally (agent runtime or TCP accept on :port)."""
+        if self.agent.http_serving:
+            return True
+        return self._tcp_listening(port)
+
+    def _firewall_phone_ok(self, port: int | None = None) -> bool:
         p = int(port if port is not None else self._read_port())
         return (
             firewall_rule_present(p)
@@ -1079,10 +1184,13 @@ class BridgeApp:
             and not _firewall_has_block_on_bridge()
         )
 
+    def _phone_access_ok(self, port: int | None = None) -> bool:
+        """Green OK only when the local server is live AND firewall allows the phone."""
+        p = int(port if port is not None else self._read_port())
+        return self._local_bridge_ready(p) and self._firewall_phone_ok(p)
+
     @staticmethod
     def _lan_ipv4() -> str | None:
-        import socket
-
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.connect(("8.8.8.8", 80))
@@ -1112,20 +1220,32 @@ class BridgeApp:
             return
 
         # netsh / firewall queries are slow — never block the Tk thread.
-        if getattr(self, "_phone_check_busy", False):
+        if self._phone_check_busy:
             return
         self._phone_check_busy = True
 
         def work() -> None:
+            listening = False
+            firewall_ok = False
             try:
-                ok = self._phone_access_ok(port)
+                listening = self._local_bridge_ready(port)
+                firewall_ok = self._firewall_phone_ok(port)
             except Exception:  # noqa: BLE001
-                ok = False
-            self.root.after(0, lambda: self._apply_phone_access_ui(ok, port, url))
+                listening = False
+                firewall_ok = False
+            ok = listening and firewall_ok
+            self.root.after(
+                0,
+                lambda: self._apply_phone_access_ui(
+                    ok, port, url, listening=listening
+                ),
+            )
 
         threading.Thread(target=work, name="phone-access-check", daemon=True).start()
 
-    def _apply_phone_access_ui(self, ok: bool, port: int, url: str) -> None:
+    def _apply_phone_access_ui(
+        self, ok: bool, port: int, url: str, *, listening: bool = True
+    ) -> None:
         self._phone_check_busy = False
         if self._closing or not bool(self.enabled_var.get()):
             return
@@ -1135,13 +1255,19 @@ class BridgeApp:
                 self.phone_banner.pack_forget()
             except tk.TclError:
                 pass
+            phone_icon = self._ui_photo("icon_phone_ok.png", size=(18, 18))
             self.phone_url_label.configure(
                 text=t.phone_access_ok.format(url=url),
                 fg=OK,
+                image=phone_icon or "",
+                compound="left" if phone_icon is not None else "none",
+                padx=4 if phone_icon is not None else 0,
             )
             self.status_label.configure(fg=MUTED)
         else:
-            self.status_var.set(t.status_firewall_needed)
+            self.status_var.set(
+                t.status_http_down if not listening else t.status_firewall_needed
+            )
             self.status_label.configure(fg="#fca5a5")
             self.phone_banner.configure(
                 text=t.phone_access_banner.format(port=port),
@@ -1153,11 +1279,33 @@ class BridgeApp:
             except tk.TclError:
                 pass
             self.phone_banner.pack(fill="x", padx=16, pady=(0, 8), before=self.phone_url_label)
+            phone_icon = self._ui_photo("icon_phone_warn.png", size=(18, 18))
             self.phone_url_label.configure(
                 text=t.phone_test_hint.format(url=url),
                 fg="#fca5a5",
+                image=phone_icon or "",
+                compound="left" if phone_icon is not None else "none",
+                padx=4 if phone_icon is not None else 0,
             )
         self._fit_wrapped_labels()
+
+    def _verify_serving_after_enable(self, *, attempt: int = 0) -> None:
+        """After ON: poll until :port accepts, else keep the red HTTP-down status."""
+        if self._closing or not self.settings.enabled:
+            return
+        port = self._read_port()
+        if self._local_bridge_ready(port):
+            self._refresh_phone_access_ui()
+            return
+        if attempt < 15:
+            self.root.after(
+                200, lambda: self._verify_serving_after_enable(attempt=attempt + 1)
+            )
+            return
+        log.warning("Bridge enabled but nothing listening on port %s", port)
+        self.status_var.set(self.strings.status_http_down)
+        self.status_label.configure(fg="#fca5a5")
+        self._refresh_phone_access_ui()
 
     def _poll_phone_access_loop(self) -> None:
         if self._closing:
@@ -1176,8 +1324,8 @@ class BridgeApp:
 
     def _ensure_phone_access(self, *, interactive: bool, force_prompt: bool = False) -> None:
         port = self._read_port()
-        # Port Allow alone is not enough — Defender Block on the exe still drops :8112.
-        already_ok = self._phone_access_ok(port)
+        # Firewall prompt only — HTTP listen is checked separately for the green OK.
+        already_ok = self._firewall_phone_ok(port)
         if already_ok:
             if force_prompt:
                 messagebox.showinfo(
@@ -1270,6 +1418,10 @@ class BridgeApp:
             self.root.after(200, self._maybe_offer_tesseract)
 
     def _disable_completely(self) -> None:
+        if self._lifecycle_busy:
+            self.enabled_var.set(bool(self.settings.enabled))
+            return
+        self._lifecycle_busy = True
         self.settings = update_settings(enabled=False, autostart_with_windows=False)
         self._set_ui_enabled(False)
         self.status_var.set(self.strings.status_disabled)
@@ -1278,16 +1430,22 @@ class BridgeApp:
 
         def work() -> None:
             try:
-                self.agent.stop(join=True)
-            except Exception:  # noqa: BLE001
-                log.exception("agent.stop failed")
-            try:
-                unregister_autostart()
-            except Exception:  # noqa: BLE001
-                log.exception("unregister_autostart failed")
-            log.info("Bridge disabled")
+                try:
+                    self.agent.stop(join=True)
+                except Exception:  # noqa: BLE001
+                    log.exception("agent.stop failed")
+                try:
+                    unregister_autostart()
+                except Exception:  # noqa: BLE001
+                    log.exception("unregister_autostart failed")
+                log.info("Bridge disabled")
+            finally:
+                self.root.after(0, self._after_disabled_runtime)
 
         threading.Thread(target=work, name="bridge-disable", daemon=True).start()
+
+    def _after_disabled_runtime(self) -> None:
+        self._lifecycle_busy = False
 
     def _set_ui_enabled(self, enabled: bool) -> None:
         self.enabled_var.set(enabled)
@@ -1299,20 +1457,30 @@ class BridgeApp:
         t = self.strings
         if status == AgentStatus.ACTIVE:
             self.badge_var.set(t.badge_active)
-            self.badge.configure(bg=ACCENT)
+            kind, solid = "badge_active.png", ACTIVE_BADGE
         elif status == AgentStatus.IDLE:
             self.badge_var.set(t.badge_idle)
-            self.badge.configure(bg=OK)
+            kind, solid = "badge_idle.png", IDLE_BADGE
         elif status == AgentStatus.STOPPING:
             self.badge_var.set(t.badge_off)
-            self.badge.configure(bg=OFF)
+            kind, solid = "badge_off.png", OFF
         else:
             if self.settings.enabled:
                 self.badge_var.set(t.badge_on)
-                self.badge.configure(bg=OK)
+                kind, solid = "badge_on.png", OK
             else:
                 self.badge_var.set(t.badge_off)
-                self.badge.configure(bg=OFF)
+                kind, solid = "badge_off.png", OFF
+        img = self._ui_photo(kind, size=(120, 28))
+        if img is not None:
+            self.badge.configure(
+                image=img,
+                compound="center",
+                bg=PANEL,
+                fg="#0b1220" if kind in ("badge_on.png", "badge_idle.png", "badge_active.png") else "#ffffff",
+            )
+        else:
+            self.badge.configure(image="", bg=solid, fg="#ffffff")
 
     def _show_pairing(self) -> None:
         from .security import pairing_code

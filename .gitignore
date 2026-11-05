@@ -66,6 +66,17 @@ tools/_*.json
 # Local diagnostic scripts
 tools/probe_*.py
 
+# UI asset pipeline intermediates (ship only assets/ui/*.png after ILoveImg)
+assets/ui_raw/
+assets/_ilove_work/
+assets/_ilove_preview_raw/
+assets/_ilove_preview_work/
+assets/switch_*.jpg
+assets/badge_*.jpg
+assets/card_panel.jpg
+assets/ai_*.jpg
+assets/ai_*.png
+
 # Real screenshot fixtures are local-only, never published.
 /tests/fixtures/
 

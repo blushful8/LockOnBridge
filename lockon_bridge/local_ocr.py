@@ -47,14 +47,20 @@ _spawn_lock = threading.Lock()
 
 
 def _runtime_root() -> Path:
-    # Keep the large private Python, wheels and models on D: when available.
-    if Path("D:/").is_dir():
-        root = Path("D:/CodexData/LockOnBridge/ocr")
-    else:
-        from .paths import data_root
-        root = data_root() / "ocr"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    """Large EasyOCR runtime lives under the chosen install root (not on C: by default)."""
+    from .paths import data_root
+
+    preferred = data_root() / "ocr"
+    legacy = Path("D:/CodexData/LockOnBridge/ocr")
+    if (preferred / "ready.json").is_file() or (preferred / "venv" / "Scripts" / "python.exe").is_file():
+        preferred.mkdir(parents=True, exist_ok=True)
+        return preferred
+    if legacy.is_dir() and (
+        (legacy / "ready.json").is_file() or (legacy / "venv" / "Scripts" / "python.exe").is_file()
+    ):
+        return legacy
+    preferred.mkdir(parents=True, exist_ok=True)
+    return preferred
 
 
 def _child_env() -> dict[str, str]:

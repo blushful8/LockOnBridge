@@ -67,6 +67,13 @@ class BridgeAgent:
             return None
         return runtime.store
 
+    @property
+    def http_serving(self) -> bool:
+        """True when the Bridge HTTPS server object is live."""
+        with self._lock:
+            runtime = self._runtime
+        return runtime is not None and runtime.running
+
     def _set_status(self, status: AgentStatus, detail: str) -> None:
         self._status = status
         self._detail = detail
@@ -80,9 +87,27 @@ class BridgeAgent:
     def start(self, settings: BridgeSettings) -> None:
         with self._lock:
             self._settings = settings
+            thread = self._thread
+            alive = thread is not None and thread.is_alive()
+            stopping = alive and self._stop.is_set()
+            if alive and not stopping:
+                return
+            stopping_thread = thread if stopping else None
+
+        # Enable raced ahead of a background disable: wait out the dying thread,
+        # then raise a fresh loop. Returning early left enabled=true with no HTTP.
+        if stopping_thread is not None:
+            stopping_thread.join(timeout=5.0)
+
+        with self._lock:
+            self._settings = settings
             if self._thread is not None and self._thread.is_alive():
+                if not self._stop.is_set():
+                    return
+                log.warning("agent start skipped: previous thread still stopping")
                 return
             self._stop.clear()
+            self._runtime = None
             self._thread = threading.Thread(
                 target=self._loop,
                 name="lockon-agent",
@@ -110,10 +135,23 @@ class BridgeAgent:
         with self._lock:
             self._settings = settings
             runtime = self._runtime
-        if runtime is not None and runtime.running:
-            runtime.stop()
-            with self._lock:
-                self._runtime = None
+            loop_alive = (
+                self._thread is not None
+                and self._thread.is_alive()
+                and not self._stop.is_set()
+            )
+        if runtime is None or not runtime.running:
+            return
+        runtime.stop()
+        with self._lock:
+            self._runtime = None
+        # Must bring HTTP back immediately — the agent loop may be asleep for
+        # idle_poll_sec (often 120s) and would otherwise leave a dead port.
+        if loop_alive:
+            try:
+                self._ensure_http(settings)
+            except Exception:  # noqa: BLE001
+                log.exception("failed to restart Bridge HTTP after settings change")
 
     def _ensure_http(self, settings: BridgeSettings) -> BridgeRuntime:
         with self._lock:

@@ -135,8 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--log-file",
-        default=str(log_file()),
-        help="Rotating log path (empty string disables file log)",
+        default=None,
+        help="Rotating log path (omit for default under the install folder; empty disables)",
     )
     parser.add_argument(
         "--self-test",
@@ -185,7 +185,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-sl", type=int, default=6016, help="SL for --serve-test")
     args = parser.parse_args(argv)
 
-    log_path = Path(args.log_file) if args.log_file else None
+    # Resolve install folder before creating logs under data_root (frozen first run).
+    want_ui = args.ui or args.background or getattr(sys, "frozen", False)
+    if (
+        want_ui
+        and not args.session
+        and not args.uninstall
+        and not args.ocr_worker
+        and not args.ocr_worker_loop
+        and not args.self_test
+        and not args.ocr_once
+        and not args.serve_test
+    ):
+        from .install_location import ensure_data_root_ready
+
+        if not ensure_data_root_ready(interactive=not bool(args.background)):
+            return 0
+
+    if args.log_file is None:
+        log_path: Path | None = log_file()
+    elif args.log_file == "":
+        log_path = None
+    else:
+        log_path = Path(args.log_file)
     # Persistent OCR worker speaks JSON on stdout — never mix logs there.
     log_stream = sys.stderr if args.ocr_worker_loop else None
     _configure_logging(log_path, verbose=args.verbose, stream=log_stream)
@@ -276,7 +298,6 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # Default for frozen exe: UI. For python -m: keep CLI unless --ui/--background.
-    want_ui = args.ui or args.background or getattr(sys, "frozen", False)
     if want_ui and not args.session:
         from .dpi import enable_windows_dpi_awareness
 

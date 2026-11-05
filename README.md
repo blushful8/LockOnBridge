@@ -4,13 +4,24 @@ LockOn Bridge is a Windows companion for War Thunder. It reads Research Points (
 
 No Gaijin account or game login is required.
 
+## Preview
+
+<p align="center">
+  <img src="docs/preview/main-en.png" alt="LockOn Bridge main window (English)" width="480" />
+</p>
+
+<p align="center">
+  <img src="docs/preview/main-off-en.png" alt="LockOn Bridge disabled (English)" width="480" />
+</p>
+
 ## Install and connect
 
 1. Download **LockOnBridge.zip** from the [latest release](https://github.com/blushful8/LockOnBridge/releases/latest).
 2. Extract the entire folder and run **LockOnBridge.exe**. Keep the accompanying files next to the executable.
-3. Choose the app language and OCR backend, then turn **Bridge ON**.
-4. Allow phone access when prompted. In **More → Pair phone securely**, copy the private pairing code. On the phone, enable Bridge, enter this PC's IP and port **8112**, and paste the code into **Settings → Bridge pairing code**.
-5. Keep the phone and PC on the same local network.
+3. On first install, choose an install folder when prompted (a non-system drive such as `D:\LockOnBridge` is recommended when available). Bridge copies itself there and creates a Desktop shortcut.
+4. Choose the app language and OCR backend, then turn **Bridge ON**.
+5. Allow phone access when prompted. In **More → Pair phone securely**, copy the private pairing code. On the phone, enable Bridge, enter this PC's IP and port **8112**, and paste the code into **Settings → Bridge pairing code**.
+6. Keep the phone and PC on the same local network.
 
 The Windows build is unsigned and distributed as a folder-based ZIP without UPX. Check that the download comes from this repository; each release includes `SHA256SUMS.txt` for the archive.
 
@@ -63,9 +74,11 @@ Reports include RP, SL, capture time, OCR confidence, outcome and session ID. Ol
 
 ## Data and privacy
 
-Reports, settings and diagnostic logs are stored on the PC. The latest capture sequence can retain up to six game-window screenshots locally. Captures can contain information visible in the game window.
+Reports, settings, logs and the installed app copy live under the folder chosen at first install (remembered in the Windows user registry). Captures can retain up to six game-window screenshots locally and may show information visible in the game window.
 
-With OCR.space selected, the reward crop is sent to that external service. With EasyOCR selected and ready, recognition runs locally; initial setup still downloads software and models. A saved OCR.space key is encrypted for the current Windows account.
+With OCR.space selected, the reward crop is sent to that external service. With EasyOCR selected and ready, recognition runs locally under the install folder’s `ocr` directory (an older layout under `D:\CodexData\LockOnBridge\ocr` is still reused when present). Initial EasyOCR setup still downloads software and models. A saved OCR.space key is encrypted for the current Windows account.
+
+Pairing identity (TLS pin and access token) is encrypted with DPAPI for the current Windows user and stored under the install folder’s `security` directory (legacy `D:\CodexData\LockOnBridge\security` is reused when present). Keep this identity when updating Bridge; deleting it requires pairing the phone again.
 
 The release ZIP contains application resources, not personal captures, logs, reports or saved keys. Real screenshot fixtures are excluded from the current source tree. Older commits and release source archives can still contain historical test screenshots.
 
@@ -75,10 +88,6 @@ The release ZIP contains application resources, not personal captures, logs, rep
 - Check that the phone uses the correct PC IP and port on the same network.
 - Use **Allow phone access** if Windows firewall prevents the connection.
 - Use **More → Pair phone securely**, paste the code into the Android settings, then use **Test Bridge**. A browser without pairing credentials cannot read the API.
-- Logs are normally under `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`.
+- Logs are under `<install folder>\logs\bridge.log` (older installs may still use `%LOCALAPPDATA%\LockOnBridge\logs\bridge.log`).
 
-Uninstall from the app, Windows Installed apps, or **uninstall.exe** next to the installed executable. Separately downloaded EasyOCR files may remain: on PCs with a D: drive, they are stored under `D:\CodexData\LockOnBridge\ocr`; otherwise they are stored under the app's local data directory.
-
-## Secure pairing storage
-
-On Windows, the TLS identity and access token are encrypted for the current user using DPAPI. Security data is stored under `D:/CodexData/LockOnBridge/security` when D: is available, otherwise under the existing app data directory. Keep this identity when updating Bridge; deleting it requires pairing the phone again. Personal identity files are never included in release archives.
+Uninstall from the app, Windows Installed apps, or **uninstall.exe** next to the installed executable. Separately downloaded EasyOCR files under the install folder (or the legacy CodexData path) may remain until removed manually.
