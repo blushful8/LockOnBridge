@@ -1,4 +1,4 @@
-"""Capture English UI previews into docs/preview/."""
+"""Capture English UI previews into docs/preview/ (clean window only, no desktop)."""
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ import sys
 import time
 from pathlib import Path
 
-from PIL import ImageGrab
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "preview"
 PY = Path(r"D:\CodexData\LockOnBridge\build-python\pythonw.exe")
 if not PY.is_file():
     PY = Path(r"D:\CodexData\LockOnBridge\build-python\python.exe")
+
+SRCCOPY = 0x00CC0020
 
 
 def _enable_dpi() -> None:
@@ -75,13 +77,101 @@ def _find_hwnd() -> int:
     return int(found.value or 0)
 
 
-def _window_bbox(hwnd: int) -> tuple[int, int, int, int]:
+def _client_screen_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """Client area in screen coordinates (excludes the OS title bar / borders)."""
     import ctypes
     from ctypes import wintypes
 
+    user32 = ctypes.windll.user32
     rect = wintypes.RECT()
-    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    return rect.left, rect.top, rect.right, rect.bottom
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    pt_tl = wintypes.POINT(rect.left, rect.top)
+    pt_br = wintypes.POINT(rect.right, rect.bottom)
+    user32.ClientToScreen(hwnd, ctypes.byref(pt_tl))
+    user32.ClientToScreen(hwnd, ctypes.byref(pt_br))
+    return pt_tl.x, pt_tl.y, pt_br.x, pt_br.y
+
+
+def _capture_client_bitmap(hwnd: int) -> Image.Image:
+    """BitBlt only the client area — no desktop shadow fringe, no white title bar."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+
+    left, top, right, bottom = _client_screen_rect(hwnd)
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+
+    screen_dc = user32.GetDC(0)
+    if not screen_dc:
+        raise RuntimeError("GetDC failed")
+    mem_dc = gdi32.CreateCompatibleDC(screen_dc)
+    bmp = gdi32.CreateCompatibleBitmap(screen_dc, width, height)
+    old = gdi32.SelectObject(mem_dc, bmp)
+    gdi32.BitBlt(mem_dc, 0, 0, width, height, screen_dc, left, top, SRCCOPY)
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wintypes.DWORD),
+            ("biWidth", wintypes.LONG),
+            ("biHeight", wintypes.LONG),
+            ("biPlanes", wintypes.WORD),
+            ("biBitCount", wintypes.WORD),
+            ("biCompression", wintypes.DWORD),
+            ("biSizeImage", wintypes.DWORD),
+            ("biXPelsPerMeter", wintypes.LONG),
+            ("biYPelsPerMeter", wintypes.LONG),
+            ("biClrUsed", wintypes.DWORD),
+            ("biClrImportant", wintypes.DWORD),
+        ]
+
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+
+    bmi = BITMAPINFO()
+    bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.bmiHeader.biWidth = width
+    bmi.bmiHeader.biHeight = -height  # top-down
+    bmi.bmiHeader.biPlanes = 1
+    bmi.bmiHeader.biBitCount = 32
+    bmi.bmiHeader.biCompression = 0
+
+    buf_size = width * height * 4
+    buf = (ctypes.c_ubyte * buf_size)()
+    gdi32.GetDIBits(mem_dc, bmp, 0, height, ctypes.byref(buf), ctypes.byref(bmi), 0)
+
+    gdi32.SelectObject(mem_dc, old)
+    gdi32.DeleteObject(bmp)
+    gdi32.DeleteDC(mem_dc)
+    user32.ReleaseDC(0, screen_dc)
+
+    image = Image.frombuffer("RGB", (width, height), bytes(buf), "raw", "BGRX", 0, 1)
+    return image.copy()
+
+
+def _trim_black_margins(image: Image.Image, *, thr: int = 8) -> Image.Image:
+    """Remove PrintWindow/DWM black padding outside the opaque window frame."""
+    px = image.load()
+    w, h = image.size
+
+    def dark(p: tuple[int, int, int]) -> bool:
+        return p[0] <= thr and p[1] <= thr and p[2] <= thr
+
+    left = 0
+    while left < w and all(dark(px[left, y]) for y in range(h)):
+        left += 1
+    right = w - 1
+    while right > left and all(dark(px[right, y]) for y in range(h)):
+        right -= 1
+    top = 0
+    while top < h and all(dark(px[x, top]) for x in range(left, right + 1)):
+        top += 1
+    bottom = h - 1
+    while bottom > top and all(dark(px[x, bottom]) for x in range(left, right + 1)):
+        bottom -= 1
+    return image.crop((left, top, right + 1, bottom + 1))
 
 
 def _capture(path: Path) -> None:
@@ -92,25 +182,26 @@ def _capture(path: Path) -> None:
     for _ in range(60):
         hwnd = _find_hwnd()
         if hwnd:
-            left, top, right, bottom = _window_bbox(hwnd)
-            if right - left >= 480 and bottom - top >= 600:
+            left, top, right, bottom = _client_screen_rect(hwnd)
+            if right - left >= 480 and bottom - top >= 560:
                 break
         time.sleep(0.25)
     if not hwnd:
         raise RuntimeError("LockOn Bridge window not found")
-    user32.ShowWindow(hwnd, 9)
+
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     user32.SetForegroundWindow(hwnd)
-    time.sleep(0.6)
-    left, top, right, bottom = _window_bbox(hwnd)
-    # Pad slightly so chrome is included; clamp to screen.
-    bbox = (left, top, right, bottom)
-    img = ImageGrab.grab(bbox=bbox, all_screens=True)
-    # Crop empty letterbox if grab overshot.
-    if img.width < 400:
-        raise RuntimeError(f"capture too narrow: {img.size} bbox={bbox}")
+    # Move fully on-screen so BitBlt of the client area cannot clip into desktop.
+    # Place near top-left so the client BitBlt cannot clip into desktop chrome.
+    user32.SetWindowPos(hwnd, 0, 40, 40, 0, 0, 0x0001 | 0x0004)  # NOSIZE | NOZORDER
+    time.sleep(0.5)
+
+    image = _trim_black_margins(_capture_client_bitmap(hwnd))
+    if image.width < 400:
+        raise RuntimeError(f"capture too narrow: {image.size}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(path, "PNG", optimize=True)
-    print(f"saved {path} {img.size} bbox={bbox}")
+    image.save(path, "PNG", optimize=True)
+    print(f"saved {path} {image.size}")
 
 
 def _launch() -> subprocess.Popen:
