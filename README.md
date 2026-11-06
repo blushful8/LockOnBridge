@@ -27,7 +27,7 @@ While enabled, Bridge monitors War Thunder and captures a short sequence of game
 
 Bridge reads all six captured screenshots before choosing a result. When the recognized RP and SL stay equal or increase, it uses the latest successfully read screenshot, even if the last two differ. If either value decreases, it uses the last matching neighboring pair before the first decrease. If there is no earlier matching pair, it falls back to the latest successful read. OCR can misread animated, obscured or incomplete results; a report is not guaranteed for every battle.
 
-Research Points sent to the phone are the number on the official vehicle-research row, in the same wording War Thunder uses for that language. Summary cells, modification research and convertible RP are not used when that row is visible. If the row is missing, Bridge falls back to the earlier results-screen reading. The phone's premium-account preference selects the with-premium or without-premium column when the row shows two numbers; a single number is used either way. Silver Lions follow that same premium column. A battle session ID connects the report to its battle and remains available until a new battle starts.
+Research Points sent to the phone are the number on the official vehicle-research row, in the same wording War Thunder uses for that language. Summary cells, modification research and convertible RP are not used when that row is visible. If the row is missing, Bridge falls back to the earlier results-screen reading (including single-column on-screen totals when the old with/without-premium table is absent). Labels are matched in every War Thunder UI language Bridge knows — not Ukrainian alone. Silver Lions follow that same results-screen reading. A battle session ID connects the report to its battle and remains available until a new battle starts.
 
 ## OCR backends
 
@@ -59,12 +59,12 @@ The HTTPS API uses port **8112** by default. All endpoints require the paired ph
 
 | Endpoint | Response |
 |---|---|
-| `GET /v1/health` | Service status, app version and premium-account preference. |
+| `GET /v1/health` | Service status and app version. |
 | `GET /v1/session` | Current battle session ID and its active state. |
 | `GET /v1/latest-report` | Latest saved report, or HTTP 204 when none exists. |
 | `GET /v1/reports` | Saved reports inside a `reports` array. |
-| `GET /v1/preferences` | Current `hasPremiumAccount` preference. |
-| `PUT /v1/preferences` | Updates `hasPremiumAccount` with a JSON body. |
+| `GET /v1/preferences` | Legacy compatibility endpoint (ignored by OCR). |
+| `PUT /v1/preferences` | Legacy compatibility endpoint (ignored by OCR). |
 
 Reports include RP, SL, capture time, OCR confidence, outcome and session ID. Older saved reports may have an empty session ID. The phone pins the exact PC certificate from the locally supplied pairing code; unpaired clients are rejected. There is no insecure HTTP fallback. Update both the Android app and Bridge together. The code grants access to this Bridge, so keep it private.
 

@@ -243,7 +243,7 @@ EN = Strings(
     ),
     test_ocr_fail=(
         "No RP/SL found on screen.\n\n"
-        "You need the post-battle RESULTS screen (with / without premium totals),\n"
+        "You need the post-battle RESULTS screen (reward totals),\n"
         "not the hangar or main menu.\n\n"
         "1) Open that screen in War Thunder (or a full-screen screenshot of it)\n"
         "2) Click «Test OCR» — Bridge hides and waits 5 seconds\n"
@@ -440,7 +440,7 @@ UK = Strings(
     ),
     test_ocr_fail=(
         "RP/SL на екрані не знайдено.\n\n"
-        "Потрібен екран РЕЗУЛЬТАТІВ після бою (з / без преміуму),\n"
+        "Потрібен екран РЕЗУЛЬТАТІВ після бою (суми нагород),\n"
         "а не ангар чи головне меню.\n\n"
         "1) Відкрий цей екран у War Thunder (або повноекранний скрін)\n"
         "2) Натисни «Перевірити OCR» — Bridge сховається на 5 с\n"
@@ -637,7 +637,7 @@ RU = Strings(
     ),
     test_ocr_fail=(
         "RP/SL на экране не найдены.\n\n"
-        "Нужен экран РЕЗУЛЬТАТОВ после боя (с / без премиума),\n"
+        "Нужен экран РЕЗУЛЬТАТОВ после боя (суммы наград),\n"
         "а не ангар или главное меню.\n\n"
         "1) Откройте этот экран в War Thunder (или полноэкранный скрин)\n"
         "2) Нажмите «Проверить OCR» — Bridge спрячется на 5 с\n"
