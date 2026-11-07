@@ -19,7 +19,13 @@ No Gaijin account or game login is required.
 5. Allow phone access when prompted. In **More → Pair phone securely**, copy the private pairing code. On the phone, enable Bridge, enter this PC's IP and port **8112**, and paste the code into **Settings → Bridge pairing code**.
 6. Keep the phone and PC on the same local network.
 
-The Windows build is unsigned and distributed as a folder-based ZIP without UPX. Check that the download comes from this repository; each release includes `SHA256SUMS.txt` for the archive.
+## Safety and antivirus
+
+LockOn Bridge does not require a Gaijin account, does not modify War Thunder installation files, and exchanges data only with the paired LockOn phone app on the local network.
+
+The published Windows build is currently **unsigned**. Without a commercial code-signing certificate, Microsoft SmartScreen may display a warning such as “Windows protected your PC” or “Unknown publisher.” That notice indicates an unrecognized publisher for an unsigned application. It is not equivalent to Microsoft Defender reporting malware. If you obtained the archive from this repository’s official releases, you may continue through **More info → Run anyway**.
+
+Each [GitHub release](https://github.com/blushful8/LockOnBridge/releases/latest) documents an antivirus scan of that release archive (including Microsoft Defender and VirusTotal) and provides `SHA256SUMS.txt` for integrity verification. Download only from those releases and confirm the checksum when possible. An isolated detection by a single antivirus engine on an unsigned build is commonly a false positive; when this occurs, the release notes identify the engine and detection name.
 
 ## Reading battle rewards
 
