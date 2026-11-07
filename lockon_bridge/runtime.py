@@ -19,7 +19,12 @@ from .capture import (
 from .capture_archive import save_result_shots
 from .debrief_quality import report_is_publishable
 from .match_session import MatchSession
-from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
+from .ocr_parse import (
+    BattleReport,
+    choose_best_report,
+    parse_rewards_from_ocr_text,
+    summarize_ocr_text,
+)
 from .paths import log_dir
 from .phase import read_phase
 from .report_store import ReportStore
@@ -28,7 +33,6 @@ from .server import serve
 log = logging.getLogger("lockon_bridge")
 
 _GRAB_LOCK = threading.Lock()
-_OCR_RETRY_WAIT_SEC = 8.0
 
 def shot_gap_after(index: int, *, frames: int = 6, uniform: float = 0.5) -> float:
     """Pause after a 0-based shot before the next one.
@@ -416,7 +420,7 @@ class BridgeRuntime:
                 self._ocr_jobs.task_done()
 
     def _enqueue_capture_burst(self) -> None:
-        """Grab-first, latch session, finish results, queue OCR (+ one retry)."""
+        """Grab-first, latch session, finish results, queue OCR (no second grab)."""
         from .crashguard import breadcrumb
 
         breadcrumb("capture_burst ocrspace begin")
@@ -442,28 +446,8 @@ class BridgeRuntime:
         )
 
     def _run_ocr_job(self, session_id: str, buffer: list) -> None:
-        """Decode one buffer; on miss/reject, re-grab once after a short wait."""
-        if self._decode_burst_publish(buffer, session_id=session_id) is not None:
-            return
-        log.info(
-            "OCR miss/reject — retry in %.0fs session=%s",
-            _OCR_RETRY_WAIT_SEC,
-            (session_id or "—")[:12],
-        )
-        self._stop.wait(_OCR_RETRY_WAIT_SEC)
-        if self._stop.is_set():
-            return
-        if not _GRAB_LOCK.acquire(blocking=False):
-            log.info("retry grab skipped — another grab in progress")
-            return
-        try:
-            retry_buffer = self._grab_burst_frames()
-        finally:
-            _GRAB_LOCK.release()
-        if not retry_buffer:
-            log.info("OCR retry: no frames")
-            return
-        self._decode_burst_publish(retry_buffer, session_id=session_id)
+        """Decode the already-grabbed buffer only — never re-screenshot mid-match."""
+        self._decode_burst_publish(buffer, session_id=session_id)
 
     def _capture_burst(self) -> None:
         """Sync path for tests / selftest — grab + OCR on the caller thread."""
@@ -679,6 +663,38 @@ class BridgeRuntime:
                 except Exception:  # noqa: BLE001
                     pass
 
+    def _publish_zero_miss(self, session_id: str, *, reason: str):
+        """Bank RP=0/SL=0 when every OCR fallback was unusable junk."""
+        import hashlib
+
+        sid = (session_id or "").strip()
+        stamp_ms = int(time.time() * 1000)
+        raw = f"zero-miss:{sid}:{reason}:{stamp_ms}"
+        report = BattleReport(
+            captured_at_epoch_millis=stamp_ms,
+            research_points=0,
+            silver_lions=0,
+            outcome="undecided",
+            raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32],
+            confidence=0.0,
+            source="ocr-miss",
+            session_id=sid,
+        )
+        report = self.match.stamp(report, session_id=sid or None)
+        if self.store.publish(report):
+            log.info(
+                "OCR miss — published RP=0 SL=0 (%s) session=%s",
+                reason,
+                (sid or "—")[:12],
+            )
+        else:
+            log.info(
+                "OCR miss — zero report duplicate (%s) session=%s",
+                reason,
+                (sid or "—")[:12],
+            )
+        return report
+
     def _decode_burst(
         self,
         buffer,
@@ -696,6 +712,9 @@ class BridgeRuntime:
         decoded: list[tuple[int, int] | None] = []
         # (report|None, ocr_text, frame)
         reads: list[tuple[object | None, str, object]] = []
+        # Parsed reward fallbacks that quality gates rejected (overlays, junk, …).
+        weird_reasons: list[str] = []
+        parsed_fallbacks = 0
         for index, frame in enumerate(buffer):
             if self._stop.is_set():
                 return None
@@ -745,23 +764,30 @@ class BridgeRuntime:
                     "\n\n---OCR---\n\n".join(dump_parts), png=png
                 )
                 best_text = best[0] if best is not None else ""
-                if best is not None and best[1].confidence >= _MIN_CONFIDENT_REPORT:
-                    ok, reason = report_is_publishable(
+                if best is not None:
+                    parsed_fallbacks += 1
+                    ok, gate_reason = report_is_publishable(
                         best_text, best[1], prefer_with=prefer
                     )
-                    if ok:
+                    if ok and best[1].confidence >= _MIN_CONFIDENT_REPORT:
                         pair_now = (
                             best[1].research_points,
                             best[1].silver_lions,
                         )
                         last_preview = summarize_ocr_text(best_text)
                     else:
+                        why = (
+                            gate_reason
+                            if not ok
+                            else "low-confidence"
+                        )
+                        weird_reasons.append(why)
                         last_preview = summarize_ocr_text(best_text)
                         log.info(
                             "ocr %s/%s: gated (%s) RP=%s SL=%s",
                             index + 1,
                             total,
-                            reason,
+                            why,
                             best[1].research_points,
                             best[1].silver_lions,
                         )
@@ -817,45 +843,55 @@ class BridgeRuntime:
                     gate_reason,
                     reason,
                 )
-                return None
-            log.info(
-                "all %s shots decoded — selected shot %s/%s RP=%s SL=%s | %s",
-                total,
-                shot_i + 1,
-                total,
-                report.research_points,
-                report.silver_lions,
-                reason,
-            )
-            report = self.match.stamp(report, session_id=session_id or None)
-            if publish and self.store.publish(report):
-                log.info(
-                    "ocr shot %s: selected RP=%s SL=%s session=%s — sent",
-                    shot_i + 1,
-                    report.research_points,
-                    report.silver_lions,
-                    report.session_id or "—",
-                )
-            elif publish:
-                log.info(
-                    "ocr shot %s: selected duplicate RP=%s SL=%s",
-                    shot_i + 1,
-                    report.research_points,
-                    report.silver_lions,
-                )
+                weird_reasons.append(gate_reason)
             else:
                 log.info(
-                    "ocr shot %s: selected RP=%s SL=%s — not sent",
+                    "all %s shots decoded — selected shot %s/%s RP=%s SL=%s | %s",
+                    total,
                     shot_i + 1,
+                    total,
                     report.research_points,
                     report.silver_lions,
+                    reason,
                 )
-            return report
+                report = self.match.stamp(report, session_id=session_id or None)
+                if publish and self.store.publish(report):
+                    log.info(
+                        "ocr shot %s: selected RP=%s SL=%s session=%s — sent",
+                        shot_i + 1,
+                        report.research_points,
+                        report.silver_lions,
+                        report.session_id or "—",
+                    )
+                elif publish:
+                    log.info(
+                        "ocr shot %s: selected duplicate RP=%s SL=%s",
+                        shot_i + 1,
+                        report.research_points,
+                        report.silver_lions,
+                    )
+                else:
+                    log.info(
+                        "ocr shot %s: selected RP=%s SL=%s — not sent",
+                        shot_i + 1,
+                        report.research_points,
+                        report.silver_lions,
+                    )
+                return report
         log.info(
             "burst finished without a recognized pair | shots=%s | last_ocr=%s",
             len(decoded),
             last_preview or "(none)",
         )
+        # Only bank zeros when every parsed fallback was unexpected junk
+        # (deferred overlay, preliminary mismatch, …). Empty OCR → no report.
+        if (
+            publish
+            and parsed_fallbacks > 0
+            and len(weird_reasons) >= parsed_fallbacks
+        ):
+            summary = ",".join(sorted(set(weird_reasons))) or "unusable"
+            return self._publish_zero_miss(session_id, reason=summary)
         return None
 
     def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:

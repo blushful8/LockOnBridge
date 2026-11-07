@@ -190,7 +190,9 @@ def test_blank_sixth_shot_sends_the_previous_recognized_read(monkeypatch, tmp_pa
     ]
 
 
-def test_deferred_overlay_is_not_published(monkeypatch, tmp_path):
+def test_deferred_overlay_publishes_zero_when_all_fallbacks_are_weird(
+    monkeypatch, tmp_path
+):
     pool = [_frame((i, 0, 0)) for i in range(2)]
     overlay = (
         "Active boosters\n"
@@ -215,8 +217,68 @@ def test_deferred_overlay_is_not_published(monkeypatch, tmp_path):
     rt = BridgeRuntime(RuntimeConfig(frames=2, grab_frame_gap=0.0, capture_delay_sec=0.0))
     rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
     found = rt._capture_burst_ocr(publish=True)
+    assert found is not None
+    assert (found.research_points, found.silver_lions) == (0, 0)
+    assert found.source == "ocr-miss"
+    assert [(r.research_points, r.silver_lions, r.source) for r in published] == [
+        (0, 0, "ocr-miss")
+    ]
+
+
+def test_empty_ocr_does_not_publish_zero(monkeypatch, tmp_path):
+    pool = [_frame((i, 0, 0)) for i in range(2)]
+
+    def fake_grab(*, focus=False, require_foreground=True, **kwargs):
+        return pool.pop(0) if pool else None
+
+    def fake_ocr(frame, **kwargs):
+        return b"", []
+
+    monkeypatch.setattr("lockon_bridge.runtime.grab_wt_client_image", fake_grab)
+    monkeypatch.setattr("lockon_bridge.runtime.ocr_saved_frame", fake_ocr)
+    monkeypatch.setattr("lockon_bridge.ocr_isolate.PersistentOcrWorker", _FakeWorker)
+    monkeypatch.setattr("lockon_bridge.runtime.last_capture_meta", lambda: None)
+    monkeypatch.setattr("lockon_bridge.paths.data_root", lambda: tmp_path)
+    _patch_stable_pixels(monkeypatch)
+
+    published: list[BattleReport] = []
+    rt = BridgeRuntime(RuntimeConfig(frames=2, grab_frame_gap=0.0, capture_delay_sec=0.0))
+    rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
+    found = rt._capture_burst_ocr(publish=True)
     assert found is None
     assert published == []
+
+
+def test_ocr_job_never_regrabs_on_miss(monkeypatch, tmp_path):
+    grabs = {"n": 0}
+
+    def fake_grab(*, focus=False, require_foreground=True, **kwargs):
+        grabs["n"] += 1
+        return _frame((1, 2, 3))
+
+    def fake_ocr(frame, **kwargs):
+        return b"png", [
+            (
+                "roi:calib-p1",
+                "Active boosters\nwill be credited after the battle ends\n"
+                "Без преміума 100 200",
+            )
+        ]
+
+    monkeypatch.setattr("lockon_bridge.runtime.grab_wt_client_image", fake_grab)
+    monkeypatch.setattr("lockon_bridge.runtime.ocr_saved_frame", fake_ocr)
+    monkeypatch.setattr("lockon_bridge.ocr_isolate.PersistentOcrWorker", _FakeWorker)
+    monkeypatch.setattr("lockon_bridge.runtime.last_capture_meta", lambda: None)
+    monkeypatch.setattr("lockon_bridge.paths.data_root", lambda: tmp_path)
+    _patch_stable_pixels(monkeypatch)
+
+    rt = BridgeRuntime(RuntimeConfig(frames=2, grab_frame_gap=0.0, capture_delay_sec=0.0))
+    buffer = [_frame((9, 9, 9)), _frame((8, 8, 8))]
+    rt._run_ocr_job("session-a", buffer)
+    assert grabs["n"] == 0
+    latest = rt.store.latest()
+    assert latest is not None
+    assert (latest.research_points, latest.silver_lions) == (0, 0)
 
 
 def test_matching_tail_is_sent_when_an_earlier_shot_was_lower(monkeypatch, tmp_path):
