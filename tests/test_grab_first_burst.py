@@ -89,8 +89,8 @@ def test_grab_first_settles_from_buffer_without_live_window(monkeypatch, tmp_pat
     assert published[0].silver_lions == 5000
 
 
-def test_grab_first_stops_early_after_settle(monkeypatch, tmp_path):
-    """Do not OCR remaining buffer frames once settle publishes."""
+def test_grab_first_decodes_all_frames_then_publishes(monkeypatch, tmp_path):
+    """All grabbed frames are OCR'd; publish uses the settled tail selection."""
     pool = [_frame((1, 1, 1)) for _ in range(5)]
 
     def fake_grab(*, focus=False, require_foreground=True, **kwargs):
@@ -112,12 +112,17 @@ def test_grab_first_stops_early_after_settle(monkeypatch, tmp_path):
     monkeypatch.setattr("lockon_bridge.paths.data_root", lambda: tmp_path)
     _patch_stable_pixels(monkeypatch)
 
+    published: list[BattleReport] = []
     rt = BridgeRuntime(
         RuntimeConfig(frames=5, grab_frame_gap=0.0, capture_delay_sec=0.0)
     )
+    latched = rt.match.begin()
+    rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
     rt._capture_burst()
-    # First OCR starts the streak; the next identical decode publishes and stops.
-    assert ocr_n["n"] == 2
+    assert ocr_n["n"] == 5
+    assert published
+    assert published[0].session_id == latched
+    assert (published[0].research_points, published[0].silver_lions) == (111, 2222)
 
 
 def test_six_different_shots_send_the_last_planned_read(monkeypatch, tmp_path):
@@ -185,20 +190,33 @@ def test_blank_sixth_shot_sends_the_previous_recognized_read(monkeypatch, tmp_pa
     ]
 
 
-def test_neighbor_match_publishes_and_stops(monkeypatch, tmp_path):
-    from lockon_bridge.runtime import consecutive_reward_verdict
-
-    assert consecutive_reward_verdict(
-        [(1, 2), (1, 2)],
-        final=False,
-    ) == ("success", (1, 2))
-    series = [(10, 20), (11, 21), (12, 22), (13, 23), (14, 24), (15, 25)]
-    assert consecutive_reward_verdict(series, final=True)[0] == "failure"
-    assert consecutive_reward_verdict([(1, 1), (2, 2)], final=False)[0] == "continue"
-    assert consecutive_reward_verdict([(5, 5), (5, 5), (9, 9)], final=True) == (
-        "failure",
-        None,
+def test_deferred_overlay_is_not_published(monkeypatch, tmp_path):
+    pool = [_frame((i, 0, 0)) for i in range(2)]
+    overlay = (
+        "Active boosters\n"
+        "Part of the rewards will be credited after the battle ends\n"
+        "Без преміума 559 2313"
     )
+
+    def fake_grab(*, focus=False, require_foreground=True, **kwargs):
+        return pool.pop(0) if pool else None
+
+    def fake_ocr(frame, **kwargs):
+        return b"png", [("roi:calib-p1", overlay)]
+
+    monkeypatch.setattr("lockon_bridge.runtime.grab_wt_client_image", fake_grab)
+    monkeypatch.setattr("lockon_bridge.runtime.ocr_saved_frame", fake_ocr)
+    monkeypatch.setattr("lockon_bridge.ocr_isolate.PersistentOcrWorker", _FakeWorker)
+    monkeypatch.setattr("lockon_bridge.runtime.last_capture_meta", lambda: None)
+    monkeypatch.setattr("lockon_bridge.paths.data_root", lambda: tmp_path)
+    _patch_stable_pixels(monkeypatch)
+
+    published: list[BattleReport] = []
+    rt = BridgeRuntime(RuntimeConfig(frames=2, grab_frame_gap=0.0, capture_delay_sec=0.0))
+    rt.store.publish = lambda report: published.append(report) or True  # type: ignore[method-assign]
+    found = rt._capture_burst_ocr(publish=True)
+    assert found is None
+    assert published == []
 
 
 def test_matching_tail_is_sent_when_an_earlier_shot_was_lower(monkeypatch, tmp_path):

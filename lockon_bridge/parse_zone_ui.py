@@ -1031,7 +1031,6 @@ def _preview_views(
     from .local_ocr import read_text
     from .ocr_parse import parse_rewards_from_ocr_text
     from .ocr_space import ocr_space_parse, raw_ocr_text
-    from .settings import load_settings
 
     crop = crop_parse_zone(frame, zone)
     title = "EasyOCR" if engine == "easyocr" else "OCR.space Engine 3"
@@ -1056,24 +1055,19 @@ def _preview_views(
         ),
     ]
     raw_view = "\n".join(header) + "\n\n" + dump
-    premium = bool(load_settings().has_premium_account)
-    report = parse_rewards_from_ocr_text(structured, prefer_premium_rewards=premium)
-    return raw_view, _phone_view(report, premium=premium), report
+    report = parse_rewards_from_ocr_text(structured, prefer_premium_rewards=False)
+    return raw_view, _phone_view(report), report
 
 
-def _phone_view(report, *, premium: bool) -> str:
+def _phone_view(report, *, premium: bool = False) -> str:
     """Body the phone reads from GET /v1/latest-report."""
     import json
 
-    account = "увімкнено" if premium else "вимкнено"
+    del premium  # legacy arg; OCR no longer depends on an account toggle
     if report is None:
-        return (
-            "На телефон нічого не піде: RP/SL не зібрались.\n"
-            f"Преміум-акаунт: {account}"
-        )
+        return "На телефон нічого не піде: RP/SL не зібрались.\n"
     payload = report.to_json()
     return (
-        f"Преміум-акаунт: {account}\n"
         f"RP {payload['researchPoints']}\n"
         f"SL {payload['silverLions']}\n\n"
         "GET /v1/latest-report\n"

@@ -6,7 +6,9 @@ from PIL import Image
 def test_default_parse_zone_is_padded_table() -> None:
     zone = default_parse_zone()
     assert zone.left < 0.25
-    assert zone.right > 0.50
+    # Must cover the vehicle/mod research RP column (past the old 0.58 edge).
+    assert zone.right >= 0.66
+    assert zone.bottom >= 0.70
     assert zone.bottom - zone.top > 0.40
 
 

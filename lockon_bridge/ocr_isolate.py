@@ -479,11 +479,7 @@ def _run_ocr_on_image_file(
     image = Image.open(image_path).convert("RGB")
     settings = load_settings()
     use_backend = backend or getattr(settings, "ocr_backend", "auto") or "auto"
-    use_prefer = (
-        bool(prefer_with)
-        if prefer_with is not None
-        else bool(settings.has_premium_account)
-    )
+    use_prefer = bool(prefer_with) if prefer_with is not None else False
 
     breadcrumb("ocr-worker start")
     mode_l = (use_backend or "ocrspace").strip().lower()

@@ -11,6 +11,8 @@ Canonical priority (see parse_rewards_from_ocr_text):
   3. Modification-research RP with Total SL when table cells are mangled
   4. Explicit RP / SL labels
   5. Victory / participation boost line (last resort)
+  6. Single-column on-screen header (no with/without premium table) →
+     take the RP/SL totals shown on the results screen
 
 Amount tokens allow at most **one** thousands separator (``1 788``, ``12 446``).
 Never glue ``13 672 336`` into a single integer. Team place
@@ -152,8 +154,11 @@ _WITHOUT_HEADER = re.compile(
     r"(?i)(?:без\s*премі(?:ум[ау]?)?|without\s*premium|без\s*премиум)",
 )
 _TOTAL_LABEL = re.compile(
-    r"(?i)(?:всього|всего|total|bcboro|всьoro|bcьoro)",
+    r"(?i)(?:всього|всего|total|bcboro|всьoro|bcьoro|всЬого)",
 )
+
+# Official debrief rows that end the on-screen header (all WT UI languages).
+_HEADER_STOP_KINDS = frozenset({"vehicle", "mods", "free", "bonus"})
 
 
 def _deglue_icon_amount(value: int) -> int:
@@ -987,6 +992,107 @@ def _pair_from_premium_columns(
     return None, None
 
 
+def _has_dual_premium_columns(text: str) -> bool:
+    """True when OCR saw both with-premium and without-premium headers."""
+    return bool(WITH_PREMIUM.search(text) and WITHOUT_PREMIUM.search(text))
+
+
+def _has_official_research_anchor(text: str) -> bool:
+    """True when OCR saw any official vehicle / mods / convertible RP row."""
+    for line in text.replace("\r\n", "\n").splitlines():
+        cell = line.strip()
+        if not cell:
+            continue
+        found = _debrief_kind(cell)
+        if found is not None and found[0] in _HEADER_STOP_KINDS:
+            return True
+    return False
+
+
+def _looks_like_single_column_debrief(text: str) -> bool:
+    """
+    Post-battle results with one reward column (no with/without comparison).
+
+    Anchors are language-agnostic: team-place / Total / official Gaijin debrief
+    rows from ``wt_debrief_labels``. Requires ≥2 hits so bare «With premium RP SL»
+    stays rejected when the account is marked without-premium.
+    """
+    if not text or _has_dual_premium_columns(text):
+        return False
+    hits = 0
+    if _TEAM_PLACE.search(text) or re.search(
+        r"(?i)(?:place|platz|plaats|puesto|posto|place\s+dans|"
+        r"місце|место|micue|mict|helyezés|miejsce).{0,40}?\d{1,2}\b",
+        text,
+    ):
+        hits += 1
+    if _TOTAL.search(text):
+        hits += 1
+    if _has_official_research_anchor(text):
+        hits += 1
+    return hits >= 2
+
+
+def _pair_from_onscreen_header(text: str) -> tuple[int | None, int | None]:
+    """
+    Single-column debrief: take the RP/SL totals shown on screen.
+
+    Works for every WT UI language. Stops before official research rows
+    (``VEHICLE_RESEARCH`` / mods / convertible RP from ``wt_debrief_labels``).
+    The pair usually flanks the team-place line at the top of the table.
+    When dual premium columns are missing, those visible totals are the bank
+    (typically a premium account) — until vehicle-research RP overrides.
+    """
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").splitlines() if ln.strip()]
+    header_parts: list[str] = []
+    for line in lines:
+        found = _debrief_kind(line)
+        if found is not None and found[0] in _HEADER_STOP_KINDS:
+            break
+        # Bare Total label (no amounts yet) sits under the detail block.
+        if header_parts and _TOTAL.search(line) and not _AMOUNT.search(line):
+            break
+        header_parts.append(line)
+    if len(header_parts) < 2:
+        return None, None
+    amounts = _amounts_in("\n".join(header_parts), min_value=_MIN_REWARD)
+    amounts = [value for value in amounts if value >= _MIN_REWARD]
+    for index in range(len(amounts) - 1):
+        left, right = amounts[index], amounts[index + 1]
+        if right >= _MIN_TOTAL_SL and _plausible_reward_pair(left, right):
+            return left, right
+        if left >= _MIN_TOTAL_SL and _plausible_reward_pair(right, left):
+            return right, left
+    return None, None
+
+
+def _pair_from_total_completed_by_header(
+    text: str,
+) -> tuple[int | None, int | None]:
+    """
+    When the Total row OCR keeps only RP, complete SL from the on-screen header.
+    """
+    flat = re.sub(r"\s+", " ", text)
+    header_rp, header_sl = _pair_from_onscreen_header(text)
+    if not _plausible_reward_pair(header_rp, header_sl):
+        return None, None
+    assert header_rp is not None and header_sl is not None
+    for match in _TOTAL.finditer(flat):
+        window = flat[match.end() : match.end() + 80]
+        amounts = _amounts_in(window, min_value=_MIN_REWARD)
+        if not amounts:
+            continue
+        # One cell (RP only) or RP then mangled noise — trust matching header RP.
+        if amounts[0] == header_rp:
+            return header_rp, header_sl
+        if len(amounts) >= 2 and _plausible_reward_pair(amounts[0], amounts[1]):
+            return amounts[0], amounts[1]
+        if len(amounts) >= 2 and _plausible_reward_pair(amounts[1], amounts[0]):
+            return amounts[1], amounts[0]
+    # No usable Total amount, but the header pair is still the visible bank.
+    return header_rp, header_sl
+
+
 def _pair_from_reward_boost_line(text: str) -> tuple[int | None, int | None]:
     """
     UA/RU results often show:
@@ -1038,21 +1144,19 @@ def parse_rewards_from_ocr_text(
     Map OCR text to post-battle RP/SL.
 
     [prefer_premium_rewards]:
-      True  → with-premium column (premium account earnings)
-      False → without-premium header column (never free-research «Всього» RP
-              when the premium table already yielded a pair)
-      None  → read Bridge settings.has_premium_account
+      True  → with-premium column (legacy dual-column table only)
+      False → without-premium column / Total / single-column on-screen
+      None  → same as False (no account toggle; WT often shows one column)
+
+    Dual with/without headers are still parsed when OCR sees them. When that
+    table is gone, ``_looks_like_single_column_debrief`` banks visible totals
+    via language-agnostic Gaijin anchors (not UA-only labels).
     """
     if looks_like_desktop_noise(text):
         return None
 
     if prefer_premium_rewards is None:
-        try:
-            from .settings import load_settings
-
-            prefer_premium_rewards = bool(load_settings().has_premium_account)
-        except Exception:  # noqa: BLE001
-            prefer_premium_rewards = False
+        prefer_premium_rewards = False
 
     cleaned = _normalize_results_text(text)
     rp = sl = None
@@ -1180,6 +1284,29 @@ def parse_rewards_from_ocr_text(
         rp = rp if rp is not None else tot_rp
         sl = sl if sl is not None else tot_sl
 
+    # --- 6. Single-column on-screen totals (no with/without premium table) ---
+    # When the results screen shows one reward column, bank what is visible —
+    # typically a premium account. Do not require has_premium_account=True.
+    onscreen_hit = False
+    if (rp is None or sl is None) and _looks_like_single_column_debrief(text):
+        on_rp, on_sl = _pair_from_total_completed_by_header(cleaned)
+        if not _plausible_reward_pair(on_rp, on_sl):
+            on_rp, on_sl = _pair_from_onscreen_header(cleaned)
+        if _plausible_reward_pair(on_rp, on_sl):
+            assert on_rp is not None and on_sl is not None
+            if rp is None and sl is None:
+                rp, sl = on_rp, on_sl
+                onscreen_hit = True
+                premium_hit = True
+            elif rp is not None and sl is None and (on_rp == rp or abs(on_rp - rp) <= 2):
+                sl = on_sl
+                onscreen_hit = True
+                premium_hit = True
+            elif sl is not None and rp is None and (on_sl == sl or abs(on_sl - sl) <= 2):
+                rp = on_rp
+                onscreen_hit = True
+                premium_hit = True
+
     # Deglue OCR (29128 → 2912) when the shorter token is also present.
     if not place_hit and rp is not None and sl is not None:
         rp, sl = _prefer_deglued_pair(cleaned, rp, sl)
@@ -1223,12 +1350,26 @@ def parse_rewards_from_ocr_text(
     elif DEFEAT.search(cleaned):
         outcome = "defeat"
 
+    # Late four-cell / label fills can recover the same visible header pair without
+    # going through the dedicated single-column branch — still mark it.
+    if (
+        not onscreen_hit
+        and rp is not None
+        and sl is not None
+        and _looks_like_single_column_debrief(text)
+    ):
+        on_rp, on_sl = _pair_from_onscreen_header(cleaned)
+        if (on_rp, on_sl) == (rp, sl):
+            onscreen_hit = True
+
     digest = hashlib.sha256(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:32]
     confidence = 0.5
     if structural_hit:
         confidence = 0.7
     elif place_hit or earned_hit:
         confidence = 0.92
+    elif onscreen_hit:
+        confidence = 0.82
     elif premium_hit:
         confidence += 0.2
     if reward_hit:
@@ -1282,18 +1423,13 @@ def choose_best_report(
 ) -> tuple[str, BattleReport] | None:
     """Pick the strongest parse among per-engine OCR texts. Never merges texts."""
     if prefer_premium_rewards is None:
-        try:
-            from .settings import load_settings
-
-            prefer_premium_rewards = bool(load_settings().has_premium_account)
-        except Exception:  # noqa: BLE001
-            prefer_premium_rewards = False
+        prefer_premium_rewards = False
 
     scored: list[tuple[float, str, BattleReport]] = []
     for text, report in candidates:
         if report is None:
             continue
-        # Alone «З преміумом …» must not win when the account is without-premium.
+        # Alone «З преміумом …» must not win when we bank the without column.
         if not prefer_premium_rewards:
             has_with = bool(WITH_PREMIUM.search(text))
             has_without = bool(WITHOUT_PREMIUM.search(text))
@@ -1308,8 +1444,7 @@ def choose_best_report(
                 continue
         score = float(report.confidence)
         # Geometric ROI consensus beats flat full-frame heuristics.
-        lower = text.lower()
-        dual_roi = "без преміума" in lower and "всього" in lower
+        dual_roi = bool(WITHOUT_PREMIUM.search(text) and _TOTAL.search(text))
         if dual_roi:
             score += 0.35
             report = BattleReport(

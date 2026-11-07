@@ -626,11 +626,7 @@ def ocr_saved_frame(
     settings = load_settings()
     lang = wt_ui_language or settings.wt_ui_language or settings.language
     mode = backend or getattr(settings, "ocr_backend", "auto") or "auto"
-    prefer = (
-        bool(prefer_with)
-        if prefer_with is not None
-        else bool(settings.has_premium_account)
-    )
+    prefer = bool(prefer_with) if prefer_with is not None else False
 
     _LAST_OCR_FRAME = frame
     del roi_only, pair_hint, premium_ceiling, skip_expensive_fallback

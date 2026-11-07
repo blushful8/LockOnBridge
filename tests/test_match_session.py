@@ -71,6 +71,19 @@ def test_existing_session_text_is_not_replaced(tmp_path, monkeypatch):
     assert latest.session_id == "744a9c1e2f00"
 
 
+def test_stamp_can_latch_grab_time_session_id():
+    from lockon_bridge.match_session import MatchSession
+
+    session = MatchSession()
+    first = session.begin()
+    session.finish_results()
+    second = session.begin()
+    assert second != first
+    stamped = session.stamp(_report("latched"), session_id=first)
+    assert stamped.session_id == first
+    assert session.current_id() == second
+
+
 def test_session_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr("lockon_bridge.report_store.data_root", lambda: tmp_path)
     store = ReportStore()

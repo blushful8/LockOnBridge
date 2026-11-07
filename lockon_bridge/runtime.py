@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from .capture import (
     set_last_ocr_frame,
 )
 from .capture_archive import save_result_shots
+from .debrief_quality import report_is_publishable
 from .match_session import MatchSession
 from .ocr_parse import choose_best_report, parse_rewards_from_ocr_text, summarize_ocr_text
 from .paths import log_dir
@@ -25,7 +27,8 @@ from .server import serve
 
 log = logging.getLogger("lockon_bridge")
 
-_CAPTURE_LOCK = threading.Lock()
+_GRAB_LOCK = threading.Lock()
+_OCR_RETRY_WAIT_SEC = 8.0
 
 def shot_gap_after(index: int, *, frames: int = 6, uniform: float = 0.5) -> float:
     """Pause after a 0-based shot before the next one.
@@ -202,6 +205,8 @@ class BridgeRuntime:
         self._stop = threading.Event()
         self._watch_stop = threading.Event()
         self._pending_provisional: list[_PendingProvisional] = []
+        self._ocr_jobs: queue.Queue[tuple[str, list] | None] = queue.Queue()
+        self._ocr_worker: Optional[threading.Thread] = None
 
     @property
     def running(self) -> bool:
@@ -290,6 +295,18 @@ class BridgeRuntime:
     def stop(self) -> None:
         self._stop.set()
         self.stop_watch()
+        try:
+            self._ocr_jobs.put_nowait(None)
+        except Exception:  # noqa: BLE001
+            pass
+        worker = self._ocr_worker
+        if (
+            worker is not None
+            and worker.is_alive()
+            and threading.current_thread() is not worker
+        ):
+            worker.join(timeout=2.0)
+        self._ocr_worker = None
         server = self._server
         self._server = None
         if server is not None:
@@ -361,24 +378,116 @@ class BridgeRuntime:
                 self._watch_wait(offline)
                 continue
             if self._battle_just_ended(snapshot.in_battle):
-                try:
-                    self._capture_burst()
-                finally:
-                    # Leave the id in place. The phone is often already in the
-                    # hangar while this report is still being published.
-                    self.match.finish_results()
+                # Grab quickly, idle the session, OCR in the background so the
+                # next battle can start without waiting on EasyOCR.
+                self._enqueue_capture_burst()
                 self._watch_wait(hangar)
             elif snapshot.in_battle:
                 self._watch_wait(battle)
             else:
                 self._watch_wait(hangar)
 
-    def _capture_burst(self) -> None:
-        """Post-battle grab-first OCR (OCR.space) — no hangar navigation."""
+    def _ensure_ocr_worker(self) -> None:
+        worker = self._ocr_worker
+        if worker is not None and worker.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._ocr_worker_loop,
+            name="lockon-ocr-queue",
+            daemon=True,
+        )
+        self._ocr_worker = thread
+        thread.start()
+
+    def _ocr_worker_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                job = self._ocr_jobs.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if job is None:
+                return
+            session_id, buffer = job
+            try:
+                self._run_ocr_job(session_id, buffer)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("OCR job failed session=%s: %s", session_id[:12], exc)
+            finally:
+                self._ocr_jobs.task_done()
+
+    def _enqueue_capture_burst(self) -> None:
+        """Grab-first, latch session, finish results, queue OCR (+ one retry)."""
         from .crashguard import breadcrumb
 
         breadcrumb("capture_burst ocrspace begin")
-        self._capture_burst_ocr()
+        if not _GRAB_LOCK.acquire(blocking=False):
+            log.info("grab already running — skip overlapping burst")
+            return
+        session_id = self.match.current_id()
+        try:
+            buffer = self._grab_burst_frames()
+        finally:
+            _GRAB_LOCK.release()
+            # Idle before OCR so a new battle can begin without retagging this job.
+            self.match.finish_results()
+        if not buffer:
+            log.info("burst finished without frames (no WT foreground)")
+            return
+        self._ensure_ocr_worker()
+        self._ocr_jobs.put((session_id, buffer))
+        log.info(
+            "OCR queued session=%s frames=%s (background)",
+            (session_id or "—")[:12],
+            len(buffer),
+        )
+
+    def _run_ocr_job(self, session_id: str, buffer: list) -> None:
+        """Decode one buffer; on miss/reject, re-grab once after a short wait."""
+        if self._decode_burst_publish(buffer, session_id=session_id) is not None:
+            return
+        log.info(
+            "OCR miss/reject — retry in %.0fs session=%s",
+            _OCR_RETRY_WAIT_SEC,
+            (session_id or "—")[:12],
+        )
+        self._stop.wait(_OCR_RETRY_WAIT_SEC)
+        if self._stop.is_set():
+            return
+        if not _GRAB_LOCK.acquire(blocking=False):
+            log.info("retry grab skipped — another grab in progress")
+            return
+        try:
+            retry_buffer = self._grab_burst_frames()
+        finally:
+            _GRAB_LOCK.release()
+        if not retry_buffer:
+            log.info("OCR retry: no frames")
+            return
+        self._decode_burst_publish(retry_buffer, session_id=session_id)
+
+    def _capture_burst(self) -> None:
+        """Sync path for tests / selftest — grab + OCR on the caller thread."""
+        from .crashguard import breadcrumb
+
+        breadcrumb("capture_burst ocrspace begin")
+        session_id = self.match.current_id()
+        buffer = self._grab_burst_frames()
+        self.match.finish_results()
+        if buffer:
+            self._decode_burst_publish(buffer, session_id=session_id)
+
+    def _capture_burst_ocr(self, *, publish: bool = True):
+        """Sync grab+OCR for UI preview / tests (does not use the OCR queue)."""
+        from .crashguard import breadcrumb
+
+        breadcrumb("capture_burst ocrspace begin")
+        session_id = self.match.current_id()
+        buffer = self._grab_burst_frames()
+        if not buffer:
+            return None
+        return self._decode_burst_publish(
+            buffer, session_id=session_id, publish=publish
+        )
 
     def _publish_capture_report(self, report) -> None:
         """Publish top capture; track / clear provisional pending by session."""
@@ -469,23 +578,10 @@ class BridgeRuntime:
             still.append(pending)
         self._pending_provisional = still
 
-    def _capture_burst_ocr(self, *, publish: bool = True):
-        """One burst at a time, so the notice counter does not run twice."""
-        if not _CAPTURE_LOCK.acquire(blocking=False):
-            log.info("capture already running — skip overlapping burst")
-            return None
-        try:
-            from .result_hold import ResultHold
-
-            with ResultHold(total=self.config.frames) as hold:
-                return self._capture_burst_ocr_body(publish=publish, hold=hold)
-        finally:
-            _CAPTURE_LOCK.release()
-
-    def _capture_burst_ocr_body(self, *, publish: bool = True, hold):
-        """Grab-first burst: snapshot WT quickly, then OCR the buffer offline."""
+    def _grab_burst_frames(self) -> list:
+        """Snapshot WT quickly while the results screen is still open."""
         from .crashguard import breadcrumb
-        from .ocr_isolate import PersistentOcrWorker
+        from .result_hold import ResultHold
 
         cfg = self.config
         breadcrumb(
@@ -497,50 +593,45 @@ class BridgeRuntime:
             "send shot 5 or 6, shots 1-4 only if those two are unreadable",
             cfg.capture_delay_sec,
         )
-        # --- Phase A: shots while the results screen is held still ---
         grab_t0 = time.monotonic()
         buffer: list = []
         taken_at: list[float] = []
-        if cfg.capture_delay_sec > 0:
-            self._stop.wait(cfg.capture_delay_sec)
-        for index in range(cfg.frames):
-            if self._stop.is_set():
-                break
-            hold.set_progress(index + 1)
-            breadcrumb(f"grab_burst frame {index + 1}/{cfg.frames}")
-            frame = grab_wt_client_image(
-                focus=False,
-                require_foreground=True,
-                allow_mss=False,
-            )
-            if frame is None:
-                log.info(
-                    "grab %s/%s: skipped (no frame)",
-                    index + 1,
-                    cfg.frames,
+        with ResultHold(total=cfg.frames) as hold:
+            if cfg.capture_delay_sec > 0:
+                self._stop.wait(cfg.capture_delay_sec)
+            for index in range(cfg.frames):
+                if self._stop.is_set():
+                    break
+                hold.set_progress(index + 1)
+                breadcrumb(f"grab_burst frame {index + 1}/{cfg.frames}")
+                frame = grab_wt_client_image(
+                    focus=False,
+                    require_foreground=True,
+                    allow_mss=False,
                 )
-            else:
-                # Copy so later WT paints cannot mutate our buffer.
-                buffer.append(frame.copy())
-                taken_at.append(time.time())
-                log.info(
-                    "grab %s/%s: ok size=%sx%s",
-                    index + 1,
-                    cfg.frames,
-                    frame.size[0],
-                    frame.size[1],
-                )
-            if index + 1 < cfg.frames:
-                gap = shot_gap_after(
-                    index, frames=cfg.frames, uniform=cfg.grab_frame_gap
-                )
-                self._stop.wait(gap)
-        hold.begin_processing()
+                if frame is None:
+                    log.info(
+                        "grab %s/%s: skipped (no frame)",
+                        index + 1,
+                        cfg.frames,
+                    )
+                else:
+                    buffer.append(frame.copy())
+                    taken_at.append(time.time())
+                    log.info(
+                        "grab %s/%s: ok size=%sx%s",
+                        index + 1,
+                        cfg.frames,
+                        frame.size[0],
+                        frame.size[1],
+                    )
+                if index + 1 < cfg.frames:
+                    gap = shot_gap_after(
+                        index, frames=cfg.frames, uniform=cfg.grab_frame_gap
+                    )
+                    self._stop.wait(gap)
         if buffer:
             save_result_shots(buffer, taken_at=taken_at)
-        if self._stop.is_set():
-            return
-
         grab_elapsed = time.monotonic() - grab_t0
         log.info(
             "grab_burst done frames=%s/%s elapsed=%.2fs",
@@ -549,18 +640,20 @@ class BridgeRuntime:
             grab_elapsed,
         )
         breadcrumb(f"grab_burst done kept={len(buffer)}/{cfg.frames}")
-        if not buffer:
-            log.info("burst finished without frames (no WT foreground)")
-            return
+        return buffer
 
-        try:
-            from .settings import load_settings as _ls
+    def _decode_burst_publish(
+        self, buffer: list, *, session_id: str, publish: bool = True
+    ):
+        """OCR a grabbed buffer and publish when the read clears quality gates."""
+        from .ocr_isolate import PersistentOcrWorker
+        from .win_priority import yield_cpu_to_foreground
 
-            prefer = bool(_ls().has_premium_account)
-        except Exception:  # noqa: BLE001
-            prefer = False
+        # No account toggle: dual-column (if any) → without; else single-column
+        # on-screen totals (multi-lang anchors). Vehicle-research RP still wins.
+        prefer = False
 
-        worker: PersistentOcrWorker | None
+        worker = None
         try:
             worker = PersistentOcrWorker()
             worker.start()
@@ -570,9 +663,6 @@ class BridgeRuntime:
             )
             worker = None
 
-        total = len(buffer)
-        from .win_priority import yield_cpu_to_foreground
-
         try:
             with yield_cpu_to_foreground():
                 return self._decode_burst(
@@ -580,8 +670,7 @@ class BridgeRuntime:
                     prefer=prefer,
                     publish=publish,
                     worker=worker,
-                    hold=hold,
-                    total=total,
+                    session_id=session_id,
                 )
         finally:
             if worker is not None:
@@ -597,19 +686,22 @@ class BridgeRuntime:
         prefer: bool,
         publish: bool,
         worker,
-        hold,
-        total: int,
+        session_id: str = "",
+        hold=None,
     ):
         from .crashguard import breadcrumb
 
+        total = len(buffer)
         last_preview = ""
         decoded: list[tuple[int, int] | None] = []
-        reads: list[tuple[object | None, object]] = []
+        # (report|None, ocr_text, frame)
+        reads: list[tuple[object | None, str, object]] = []
         for index, frame in enumerate(buffer):
             if self._stop.is_set():
-                return
+                return None
             try:
-                hold.set_processing_progress(index + 1, total)
+                if hold is not None:
+                    hold.set_processing_progress(index + 1, total)
                 breadcrumb(f"ocr_buffer frame {index + 1}/{total}")
                 set_last_ocr_frame(frame)
                 png, variants = ocr_saved_frame(
@@ -652,18 +744,39 @@ class BridgeRuntime:
                 self._write_ocr_dump(
                     "\n\n---OCR---\n\n".join(dump_parts), png=png
                 )
+                best_text = best[0] if best is not None else ""
                 if best is not None and best[1].confidence >= _MIN_CONFIDENT_REPORT:
-                    pair_now = (
-                        best[1].research_points,
-                        best[1].silver_lions,
+                    ok, reason = report_is_publishable(
+                        best_text, best[1], prefer_with=prefer
                     )
-                    last_preview = summarize_ocr_text(best[0])
+                    if ok:
+                        pair_now = (
+                            best[1].research_points,
+                            best[1].silver_lions,
+                        )
+                        last_preview = summarize_ocr_text(best_text)
+                    else:
+                        last_preview = summarize_ocr_text(best_text)
+                        log.info(
+                            "ocr %s/%s: gated (%s) RP=%s SL=%s",
+                            index + 1,
+                            total,
+                            reason,
+                            best[1].research_points,
+                            best[1].silver_lions,
+                        )
                 elif variants:
                     last_preview = summarize_ocr_text(variants[0][1])
                 else:
                     last_preview = "(empty OCR)"
                 decoded.append(pair_now)
-                reads.append((best[1] if pair_now is not None and best is not None else None, frame))
+                reads.append(
+                    (
+                        best[1] if pair_now is not None and best is not None else None,
+                        best_text,
+                        frame,
+                    )
+                )
                 log.info(
                     "ocr %s/%s: %s | waiting for all captured shots",
                     index + 1,
@@ -674,7 +787,7 @@ class BridgeRuntime:
                 log.warning("ocr %s/%s failed: %s", index + 1, total, exc)
                 if len(decoded) <= index:
                     decoded.append(None)
-                    reads.append((None, frame))
+                    reads.append((None, "", frame))
                 try:
                     from .crashguard import write_crash_report
                     import traceback
@@ -693,7 +806,18 @@ class BridgeRuntime:
 
         shot_i, reason = select_reward_read(decoded)
         if shot_i is not None:
-            report, _shot = reads[shot_i]
+            report, text, _shot = reads[shot_i]
+            ok, gate_reason = report_is_publishable(
+                text, report, prefer_with=prefer
+            )
+            if not ok:
+                log.info(
+                    "selected shot %s gated (%s) — not sent | %s",
+                    shot_i + 1,
+                    gate_reason,
+                    reason,
+                )
+                return None
             log.info(
                 "all %s shots decoded — selected shot %s/%s RP=%s SL=%s | %s",
                 total,
@@ -703,7 +827,7 @@ class BridgeRuntime:
                 report.silver_lions,
                 reason,
             )
-            report = self.match.stamp(report)
+            report = self.match.stamp(report, session_id=session_id or None)
             if publish and self.store.publish(report):
                 log.info(
                     "ocr shot %s: selected RP=%s SL=%s session=%s — sent",
@@ -732,6 +856,7 @@ class BridgeRuntime:
             len(decoded),
             last_preview or "(none)",
         )
+        return None
 
     def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:
         try:

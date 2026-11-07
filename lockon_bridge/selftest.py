@@ -239,10 +239,8 @@ def make_test_report(
 def ocr_once(*, save_dump: bool = True) -> tuple[str, BattleReport | None, Path | None]:
     from .capture import last_ocr_frame, ocr_screen_capture
     from .layout_ocr import crop_parse_zone
-    from .settings import load_settings
 
-    settings = load_settings()
-    prefer = bool(settings.has_premium_account)
+    prefer = False
     png, variants = ocr_screen_capture()
     candidates = [
         (text, parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer))

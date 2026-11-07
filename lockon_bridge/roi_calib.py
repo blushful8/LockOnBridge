@@ -48,8 +48,12 @@ def default_parse_zone() -> NormRect:
 
     Fractions of the WT client (resolution-independent). Padded so a small
     banner shift still keeps the reward table inside.
+
+    Right edge must reach the RP column on «Дослідження техніки /
+    модифікацій» — those amounts sit further right than the header totals
+    (0.58 cut them off; 948 vehicle RP was outside the crop).
     """
-    return NormRect(0.16, 0.12, 0.58, 0.68, "parse-zone")
+    return NormRect(0.16, 0.12, 0.68, 0.72, "parse-zone")
 
 
 def _zone_from_raw(raw: Any) -> tuple[int, NormRect] | None:

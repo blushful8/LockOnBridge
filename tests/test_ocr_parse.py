@@ -263,6 +263,160 @@ def test_alone_with_premium_not_banked_as_without():
     assert best is None
 
 
+def test_single_column_onscreen_header_without_premium_setting():
+    """
+    Real EasyOCR dump (2026-11-06 shot burst): no with/without premium columns.
+
+    Screen shows RP 12 542 / SL 36 288. Settings may still say without-premium —
+    bank the visible totals anyway when the vehicle-research amount is missing.
+    """
+    text = (
+        "12 542\n"
+        "Ваше місце в команді: 3\n"
+        "36 288\n"
+        "Знищено повітряних цілей\n"
+        "3\n"
+        "Критичні ушкодження\n"
+        "Ушкодження\n"
+        "1\n"
+        "Посадки\n"
+        "ЗЛЬОТИ\n"
+        "2\n"
+        "Час активності\n"
+        "8.33\n"
+        "Активність\n"
+        "89%\n"
+        "Бонус навичок\n"
+        "Нагорода за перемогу\n"
+        "9 193\n"
+        "ВсЬОГо\n"
+        "12 542\n"
+        "Дослідження модифікацій\n"
+        "Дослідження техніки\n"
+        "Час гри\n"
+        "14.22\n"
+        "Тривалість мicii\n"
+        "14.38\n"
+        "Вільні очки досЛідЖень\n"
+        "Ембрсоаг\n"
+        "FrпRппппҐаE\n"
+    )
+    for prefer in (False, True, None):
+        report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer)
+        assert report is not None, prefer
+        assert report.research_points == 12542, prefer
+        assert report.silver_lions == 36288, prefer
+        assert report.confidence >= 0.7
+
+
+def test_single_column_vehicle_research_beats_header_totals():
+    """
+    2026-11-06 21:45 battle: header/mods/Всього = 9 478, but «Дослідження техніки» = 948.
+
+    Bridge must bank vehicle-research RP (efficiency penalty), not the summary total.
+    """
+    text = (
+        "9 478\n"
+        "Ваше місце в команді: 1\n"
+        "35 683\n"
+        "Знищено повітряних цілей\n"
+        "2\n"
+        "Фатальні пошкодження\n"
+        "2\n"
+        "Критичні ушкодження\n"
+        "2\n"
+        "Ушкодження\n"
+        "5\n"
+        "Посадки\n"
+        "1\n"
+        "Зльоти\n"
+        "2\n"
+        "Час активності\n"
+        "2.13\n"
+        "Активність\n"
+        "83%\n"
+        "Бонус навичок\n"
+        "1 164\n"
+        "Нагорода за участь в місії\n"
+        "6 513\n"
+        "Досягнення\n"
+        "200\n"
+        "Всього\n"
+        "9 478\n"
+        "35 683\n"
+        "Дослідження модифікацій\n"
+        "9 478\n"
+        "Дослідження техніки\n"
+        "948\n"
+        "Час гри\n"
+        "16.21\n"
+        "Тривалість місії\n"
+        "16.48\n"
+        "Вільні очки досліджень\n"
+        "8 314\n"
+    )
+    for prefer in (False, True):
+        report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=prefer)
+        assert report is not None, prefer
+        assert report.research_points == 948, prefer
+        assert report.silver_lions == 35683, prefer
+
+
+def test_single_column_vehicle_research_english_and_german():
+    """Same layout in EN/DE — official Gaijin strings, not UA-only heuristics."""
+    en = (
+        "9 478\nYour place in the team: 1\n35 683\n"
+        "Air targets destroyed\n2\nTotal\n9 478\n35 683\n"
+        "Modifications research\n9 478\nVehicle research\n948\n"
+        "Convertible RP\n8 314\n"
+    )
+    de = (
+        "9 478\nPlatz im Team: 1\n35 683\n"
+        "Gesamt\n9 478\n35 683\n"
+        "Modifikationsforschung\n9 478\nFahrzeugforschung\n948\n"
+        "Konvertierbare FP\n8 314\n"
+    )
+    for text in (en, de):
+        report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+        assert report is not None, text[:40]
+        assert report.research_points == 948
+        assert report.silver_lions == 35683
+
+
+def test_wide_parse_zone_keeps_vehicle_research_amount_on_shot6():
+    """Crop must include the 948 RP cell that the old 0.58 right edge clipped."""
+    from pathlib import Path
+
+    from PIL import Image
+
+    from lockon_bridge.roi_calib import default_parse_zone
+
+    shot = (
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "LockOnBridge"
+        / "captures"
+        / "20261106_214540_shot6.png"
+    )
+    if not shot.is_file():
+        pytest.skip("shot6 capture missing")
+    image = Image.open(shot)
+    w, h = image.size
+    zone = default_parse_zone()
+    # Vehicle-research amount sits near ~0.60–0.65 of client width on 2560px.
+    assert int(zone.right * w) >= int(0.66 * w)
+    crop = image.crop(
+        (
+            int(zone.left * w),
+            int(zone.top * h),
+            int(zone.right * w),
+            int(zone.bottom * h),
+        )
+    )
+    assert crop.width > int(0.50 * w)
+
+
 def test_rejects_scoreboard_kd_as_rewards():
     """Real battle-end OCR: participation boost + team board ratios, no premium totals."""
     text = (

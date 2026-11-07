@@ -13,13 +13,13 @@ def test_card_sits_outside_the_default_reward_crop() -> None:
     origin = card_top_left(
         2560,
         1600,
-        (0.16, 0.12, 0.58, 0.68),
+        (0.16, 0.12, 0.68, 0.72),
         460,
         168,
         margin=28,
     )
     card = (origin[0], origin[1], origin[0] + 460, origin[1] + 168)
-    zone = (int(0.16 * 2560), int(0.12 * 1600), int(0.58 * 2560), int(0.68 * 1600))
+    zone = (int(0.16 * 2560), int(0.12 * 1600), int(0.68 * 2560), int(0.72 * 1600))
     assert card[2] <= zone[0] or card[0] >= zone[2] or card[3] <= zone[1] or card[1] >= zone[3]
 
 

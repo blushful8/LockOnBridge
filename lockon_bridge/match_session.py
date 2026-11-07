@@ -60,9 +60,18 @@ class MatchSession:
         if sid:
             log.info("battle session idle session=%s", sid)
 
-    def stamp(self, report: BattleReport) -> BattleReport:
-        """Put this battle's id on an OCR report that does not already have one."""
-        current = self.current_id()
+    def stamp(
+        self,
+        report: BattleReport,
+        *,
+        session_id: str | None = None,
+    ) -> BattleReport:
+        """Put this battle's id on an OCR report that does not already have one.
+
+        Pass [session_id] to latch the id from grab-time so a later battle
+        start during background OCR cannot retag the report.
+        """
+        current = (session_id or "").strip() or self.current_id()
         if not current or (report.session_id or "").strip():
             return report
         return replace(report, session_id=current)
