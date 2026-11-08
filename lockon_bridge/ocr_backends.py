@@ -324,14 +324,25 @@ def describe_ocr_status(wt_ui_language: str) -> str:
     lang = get_wt_language(wt_ui_language)
     parts: list[str] = []
     try:
-        from .ocr_space import active_ocr_engine, resolve_api_key
+        from .ocr_space import (
+            _DEMO_KEY,
+            _mask_key,
+            active_ocr_engine,
+            load_api_keys,
+            preferred_api_key,
+            resolve_api_keys,
+        )
 
-        key = resolve_api_key()
-        masked = (key[:4] + "…" + key[-2:]) if len(key) > 8 else "(set)"
-        if key == "helloworld":
+        keys = resolve_api_keys()
+        personal = load_api_keys()
+        if keys == [_DEMO_KEY]:
             parts.append("OCR.space: demo key (helloworld) — rate-limited")
         else:
-            parts.append(f"OCR.space: key {masked}")
+            sticky = preferred_api_key() or keys[0]
+            parts.append(
+                f"OCR.space: {len(personal) or len(keys)} key(s), "
+                f"sticky {_mask_key(sticky)}"
+            )
         parts.append(f"OCR.space engine: {active_ocr_engine()} (Engine 3 is slower)")
     except Exception as exc:  # noqa: BLE001
         parts.append(f"OCR.space: unavailable ({exc})")

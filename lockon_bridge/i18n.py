@@ -24,6 +24,12 @@ class Strings:
     ocr_backend_auto: str
     ocr_backend_windows: str
     ocr_backend_tesseract: str
+    ocr_mode_auto: str
+    ocr_mode_ocrspace: str
+    ocr_mode_easyocr: str
+    ocr_active_idle: str
+    ocr_active_now: str
+    ocr_active_fallback: str
     setup_tesseract: str
     setup_tesseract_body: str
     setup_tesseract_no_exe: str
@@ -145,6 +151,12 @@ EN = Strings(
     ocr_backend_auto="Auto (Windows + Tesseract)",
     ocr_backend_windows="Windows only",
     ocr_backend_tesseract="Tesseract only",
+    ocr_mode_auto="Auto (OCR.space → EasyOCR)",
+    ocr_mode_ocrspace="OCR.space only",
+    ocr_mode_easyocr="EasyOCR only",
+    ocr_active_idle="Active: waiting for a battle",
+    ocr_active_now="Active now: {engine}",
+    ocr_active_fallback="Active now: {engine} (fallback)",
     setup_tesseract="Setup Tesseract OCR…",
     setup_tesseract_body=(
         "Tesseract can read Ukrainian and other WT languages that Windows OCR lacks.\n\n"
@@ -340,6 +352,12 @@ UK = Strings(
     ocr_backend_auto="Авто (Windows + Tesseract)",
     ocr_backend_windows="Лише Windows",
     ocr_backend_tesseract="Лише Tesseract",
+    ocr_mode_auto="Авто (OCR.space → EasyOCR)",
+    ocr_mode_ocrspace="Лише OCR.space",
+    ocr_mode_easyocr="Лише EasyOCR",
+    ocr_active_idle="Зараз: очікує бій",
+    ocr_active_now="Зараз працює: {engine}",
+    ocr_active_fallback="Зараз працює: {engine} (запасний)",
     setup_tesseract="Налаштувати Tesseract OCR…",
     setup_tesseract_body=(
         "Tesseract читає українську та інші мови WT, яких немає у Windows OCR.\n\n"
@@ -537,6 +555,12 @@ RU = Strings(
     ocr_backend_auto="Авто (Windows + Tesseract)",
     ocr_backend_windows="Только Windows",
     ocr_backend_tesseract="Только Tesseract",
+    ocr_mode_auto="Авто (OCR.space → EasyOCR)",
+    ocr_mode_ocrspace="Только OCR.space",
+    ocr_mode_easyocr="Только EasyOCR",
+    ocr_active_idle="Сейчас: ждёт бой",
+    ocr_active_now="Сейчас работает: {engine}",
+    ocr_active_fallback="Сейчас работает: {engine} (запасной)",
     setup_tesseract="Настроить Tesseract OCR…",
     setup_tesseract_body=(
         "Tesseract читает языки WT, которых нет в Windows OCR.\n\n"

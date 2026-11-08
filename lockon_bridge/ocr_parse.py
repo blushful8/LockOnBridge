@@ -62,6 +62,8 @@ class BattleReport:
     # Bridge match UUID for this battle. A Messages dump may still carry the
     # WT session hex. Empty only when this build did not assign a match id.
     session_id: str = ""
+    # Stable miss code when source is ocr-miss (empty-ocr, gate:…, …). Empty on success.
+    miss_reason: str = ""
 
     def to_json(self) -> dict[str, Any]:
         payload = {
@@ -75,6 +77,7 @@ class BattleReport:
             "source": self.source,
             "provisional": bool(self.provisional),
             "sessionId": self.session_id or "",
+            "missReason": self.miss_reason or "",
         }
         return payload
 
@@ -1287,11 +1290,27 @@ def parse_rewards_from_ocr_text(
     # --- 6. Single-column on-screen totals (no with/without premium table) ---
     # When the results screen shows one reward column, bank what is visible —
     # typically a premium account. Do not require has_premium_account=True.
+    #
+    # The medal header (RP/SL beside «Ваше місце в команді») is the banked
+    # total the player sees. The lower «Всього» row can be a smaller partial
+    # sum when boosts lift the top figure — never let that row shrink SL.
     onscreen_hit = False
-    if (rp is None or sl is None) and _looks_like_single_column_debrief(text):
+    if _looks_like_single_column_debrief(text):
+        header_rp, header_sl = _pair_from_onscreen_header(cleaned)
         on_rp, on_sl = _pair_from_total_completed_by_header(cleaned)
         if not _plausible_reward_pair(on_rp, on_sl):
-            on_rp, on_sl = _pair_from_onscreen_header(cleaned)
+            on_rp, on_sl = header_rp, header_sl
+        # Prefer the medal-header SL over a lower Total-row SL even when Total
+        # already filled both fields (2026-11-08 shot4: 34129 vs 31572).
+        if (
+            header_sl is not None
+            and _plausible_reward_pair(header_rp, header_sl)
+            and (sl is None or header_sl >= int(sl))
+        ):
+            if sl != header_sl:
+                sl = header_sl
+            onscreen_hit = True
+            premium_hit = True
         if _plausible_reward_pair(on_rp, on_sl):
             assert on_rp is not None and on_sl is not None
             if rp is None and sl is None:
@@ -1303,6 +1322,10 @@ def parse_rewards_from_ocr_text(
                 onscreen_hit = True
                 premium_hit = True
             elif sl is not None and rp is None and (on_sl == sl or abs(on_sl - sl) <= 2):
+                rp = on_rp
+                onscreen_hit = True
+                premium_hit = True
+            elif rp is None:
                 rp = on_rp
                 onscreen_hit = True
                 premium_hit = True

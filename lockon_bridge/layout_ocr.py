@@ -687,27 +687,38 @@ def ocrspace_layout_variants(
         cloud_limited,
         read_text,
     )
+    from .ocr_active import note_ocr_provider
     from .ocr_parse import parse_rewards_from_ocr_text
     from .ocr_space import ocr_space_parse
     from .settings import load_settings
 
-    chosen = (engine or load_settings().ocr_backend or "ocrspace").strip().lower()
-    if chosen in ("ocr.space", "cloud", "auto", "", "paddle"):
-        chosen = "ocrspace" if chosen != "paddle" else "easyocr"
+    settings = load_settings()
+    chosen = (engine or settings.ocr_backend or "auto").strip().lower()
+    if chosen in ("ocr.space", "cloud", ""):
+        chosen = "ocrspace"
+    if chosen == "paddle":
+        chosen = "easyocr"
+    # Auto = OCR.space first, EasyOCR only after the cloud pool fails.
+    allow_fallback = chosen == "auto" or (
+        chosen == "ocrspace" and bool(settings.allow_ocr_fallback)
+    )
+    if chosen == "auto":
+        chosen = "ocrspace"
 
-    def _local(name: str, *, wait: bool) -> list[tuple[str, str]]:
+    def _local(name: str, *, wait: bool, reason: str) -> list[tuple[str, str]]:
         crop = crop_parse_zone(frame)
         text = read_text(crop, engine=name, wait=wait)
         if not text.strip():
             return []
+        note_ocr_provider(name, reason=reason)
         log.info("layout OCR %s chars=%s head=%r", name, len(text), text[:80].replace("\n", " | "))
         return [(f"{name}:zone", text)]
 
-    def _local_fallback(*, wait: bool) -> list[tuple[str, str]]:
+    def _local_fallback(*, wait: bool, reason: str) -> list[tuple[str, str]]:
         order = ["easyocr"]
         for name in order:
             try:
-                variants = _local(name, wait=wait)
+                variants = _local(name, wait=wait, reason=reason)
             except RuntimeError as exc:
                 log.warning("local OCR %s skipped: %s", name, exc)
                 if "still being prepared" in str(exc):
@@ -718,11 +729,14 @@ def ocrspace_layout_variants(
         return []
 
     if chosen in LOCAL_ENGINES:
-        return _local_fallback(wait=False)
+        return _local_fallback(wait=False, reason="selected")
 
     if cloud_limited():
-        log.info("OCR.space monthly or daily limit is spent — local OCR")
-        return _local_fallback(wait=False)
+        # Local ledger thinks the pool is spent — still try every personal key
+        # once; EasyOCR only after the cloud pool itself reports all-key failure.
+        log.info(
+            "OCR.space local quota looks spent — still trying key pool before EasyOCR"
+        )
 
     variants: list[tuple[str, str]] = []
     crops = [("zone", crop_parse_zone(frame))]
@@ -733,15 +747,21 @@ def ocrspace_layout_variants(
                 png, api_key=api_key, language="auto", overlay=True
             )
         except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
             log.warning("OCR.space layout crop %s failed: %s", tag, exc)
-            if cloud_error_is_fallback(str(exc)):
-                return _local_fallback(wait=False)
+            # ocr_space_parse already rotated through every key. EasyOCR only then.
+            if allow_fallback and (
+                ("all " in msg.lower() and "key" in msg.lower())
+                or cloud_error_is_fallback(msg)
+            ):
+                return _local_fallback(wait=False, reason="fallback")
             continue
         full = parsed.get("text") or ""
         lines = parsed.get("lines") or []
         text = select_structured_text(full, lines)
         if not text.strip():
             continue
+        note_ocr_provider("ocrspace", reason="preferred")
         variants.append((f"ocrspace:layout/{tag}", text))
         log.info(
             "layout OCR %s chars=%s lines=%s head=%r",

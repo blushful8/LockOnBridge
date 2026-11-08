@@ -309,6 +309,56 @@ def test_single_column_onscreen_header_without_premium_setting():
         assert report.confidence >= 0.7
 
 
+def test_single_column_header_sl_beats_lower_total_row():
+    """
+    2026-11-08 13:52 shot4: medal header SL 34 129, lower «Всього» SL 31 572.
+
+    Boosts lift the top figure; banking the partial Total row under-reports SL.
+    Vehicle-research RP still wins over the header RP.
+    """
+    text = (
+        "8 537\n"
+        "Ваше місце в команді: 4\n"
+        "34 129\n"
+        "Знищено повітряних цілей\n"
+        "2\n"
+        "3 245\n"
+        "Фатальні пошкодження\n"
+        "2\n"
+        "12 983\n"
+        "Критичні ушкодження\n"
+        "2\n"
+        "1 623\n"
+        "Ушкодження\n"
+        "5\n"
+        "2 026\n"
+        "Зльоти\n"
+        "1\n"
+        "Час активності\n"
+        "1:09\n"
+        "3 477\n"
+        "Активність\n"
+        "100%\n"
+        "Бонус навичок\n"
+        "1 317\n"
+        "Нагорода за перемогу\n"
+        "10 910\n"
+        "Всього\n"
+        "7 602\n"
+        "31 572\n"
+        "Дослідження модифікацій\n"
+        "8 841\n"
+        "Дослідження техніки\n"
+        "7 957\n"
+        "Вільні очки досліджень\n"
+        "7 524\n"
+    )
+    report = parse_rewards_from_ocr_text(text, prefer_premium_rewards=False)
+    assert report is not None
+    assert report.research_points == 7957
+    assert report.silver_lions == 34129
+
+
 def test_single_column_vehicle_research_beats_header_totals():
     """
     2026-11-06 21:45 battle: header/mods/Всього = 9 478, but «Дослідження техніки» = 948.

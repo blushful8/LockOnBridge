@@ -78,6 +78,11 @@ def make_handler(store: ReportStore, session: MatchSession | None = None, *, tok
                 reports = store.list_reports()
                 self._send(200, {"reports": [r.to_json() for r in reports]})
                 return
+            if path in ("/v1/miss-stats", "/miss-stats"):
+                from .miss_stats import snapshot
+
+                self._send(200, snapshot())
+                return
             if path in ("/v1/latest-report", "/latest-report"):
                 report = store.latest()
                 if report is None:

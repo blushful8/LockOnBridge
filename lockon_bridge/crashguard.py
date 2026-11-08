@@ -75,6 +75,12 @@ def write_crash_report(kind: str, detail: str) -> Path | None:
         # Keep a stable pointer to the newest report.
         (crash_dir() / "last_crash.txt").write_text(body, encoding="utf-8")
         log.error("crash report written → %s", path)
+        try:
+            from .alert_mail import notify_failure
+
+            notify_failure(f"crash-{kind}", body)
+        except Exception:  # noqa: BLE001
+            log.debug("crash alert mail skipped", exc_info=True)
         return path
     except Exception as exc:  # noqa: BLE001
         try:
@@ -125,5 +131,12 @@ def install_crash_guard() -> None:
     sys.excepthook = _excepthook
     if hasattr(threading, "excepthook"):
         threading.excepthook = _thread_excepthook  # type: ignore[assignment]
+
+    try:
+        from .alert_mail import install_error_mail_handler
+
+        install_error_mail_handler()
+    except Exception:  # noqa: BLE001
+        log.debug("alert mail handler not installed", exc_info=True)
 
     breadcrumb("process start")

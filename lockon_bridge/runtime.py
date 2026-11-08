@@ -667,9 +667,12 @@ class BridgeRuntime:
         """Bank RP=0/SL=0 when every OCR fallback was unusable junk."""
         import hashlib
 
+        from .miss_stats import normalize_reason, record_miss
+
         sid = (session_id or "").strip()
+        code = normalize_reason(reason)
         stamp_ms = int(time.time() * 1000)
-        raw = f"zero-miss:{sid}:{reason}:{stamp_ms}"
+        raw = f"zero-miss:{sid}:{code}:{stamp_ms}"
         report = BattleReport(
             captured_at_epoch_millis=stamp_ms,
             research_points=0,
@@ -679,18 +682,32 @@ class BridgeRuntime:
             confidence=0.0,
             source="ocr-miss",
             session_id=sid,
+            miss_reason=code,
         )
         report = self.match.stamp(report, session_id=sid or None)
+        try:
+            record_miss(code, session_id=sid)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("miss_stats record failed: %s", exc)
+        try:
+            from .alert_mail import notify_failure
+
+            notify_failure(
+                "ocr-miss",
+                f"reason={code}\nsession={sid or '—'}\nRP=0 SL=0",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("ocr-miss alert failed: %s", exc)
         if self.store.publish(report):
             log.info(
                 "OCR miss — published RP=0 SL=0 (%s) session=%s",
-                reason,
+                code,
                 (sid or "—")[:12],
             )
         else:
             log.info(
                 "OCR miss — zero report duplicate (%s) session=%s",
-                reason,
+                code,
                 (sid or "—")[:12],
             )
         return report
@@ -883,16 +900,17 @@ class BridgeRuntime:
             len(decoded),
             last_preview or "(none)",
         )
-        # Only bank zeros when every parsed fallback was unexpected junk
-        # (deferred overlay, preliminary mismatch, …). Empty OCR → no report.
-        if (
-            publish
-            and parsed_fallbacks > 0
-            and len(weird_reasons) >= parsed_fallbacks
-        ):
+        if not publish:
+            return None
+        # Publish a typed zero-miss so the phone can classify the failure.
+        if parsed_fallbacks > 0 and len(weird_reasons) >= parsed_fallbacks:
             summary = ",".join(sorted(set(weird_reasons))) or "unusable"
             return self._publish_zero_miss(session_id, reason=summary)
-        return None
+        if any(pair is not None for pair in decoded):
+            return self._publish_zero_miss(session_id, reason="select-none")
+        if last_preview and last_preview not in ("(none)", "(empty OCR)"):
+            return self._publish_zero_miss(session_id, reason="no-parse")
+        return self._publish_zero_miss(session_id, reason="empty-ocr")
 
     def _write_ocr_dump(self, text: str, *, png: bytes | None = None) -> None:
         try:

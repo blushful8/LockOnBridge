@@ -157,16 +157,36 @@ def cloud_error_is_fallback(message: str) -> bool:
 
 
 def cloud_limited() -> bool:
-    """Engine 3 monthly budget or the free daily wall is already spent."""
+    """Engine 3 monthly budget or the free daily wall is already spent.
+
+    With several personal OCR.space keys the free caps scale by key count so
+    one exhausted key does not force EasyOCR while others still have quota.
+    """
     try:
         from .ocr_quota import quota_view
+        from .ocr_space import personal_key_count
 
         view = quota_view()
+        keys = max(1, int(personal_key_count() or 1))
     except Exception:  # noqa: BLE001
         return False
-    if int(view.get("left3") or 0) <= 0:
+    left3 = int(view.get("left3") or 0)
+    # quota_view assumes a single free account; approximate remaining pool.
+    if keys > 1:
+        cap3 = int(view.get("cap3") or 0)
+        used3 = int(view.get("used3") or 0)
+        left3 = max(0, keys * cap3 - used3)
+    if left3 <= 0:
         return True
-    return view.get("plan") == "free" and int(view.get("day_left") or 0) <= 0
+    if view.get("plan") == "free":
+        day_left = int(view.get("day_left") or 0)
+        if keys > 1:
+            day_cap = int(view.get("day_cap") or 0)
+            today = int(view.get("today") or 0)
+            day_left = max(0, keys * day_cap - today)
+        if day_left <= 0:
+            return True
+    return False
 
 
 def _venv_python() -> Path:

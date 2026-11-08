@@ -21,8 +21,9 @@ class BridgeSettings:
     language: str = "en"
     # War Thunder UI language for OCR pack advice (en/uk/ru/…).
     wt_ui_language: str = "uk"
-    # auto | windows | tesseract | ocrspace — shipping default is OCR.space only.
-    ocr_backend: str = "ocrspace"
+    # auto | ocrspace | easyocr | windows | tesseract
+    # Shipping default: Auto = OCR.space first, EasyOCR only after cloud fails.
+    ocr_backend: str = "auto"
     # Free key from https://ocr.space/ocrapi (stored in LocalAppData settings only).
     ocr_space_api_key: str = ""
     # OCR.space Engine 3 only. Engine 2 misreads this results strip.
@@ -65,13 +66,13 @@ class BridgeSettings:
         wt_ui = str(raw.get("wt_ui_language") or language or "uk").strip().lower()
         if len(wt_ui) > 8:
             wt_ui = wt_ui[:8]
-        backend = str(raw.get("ocr_backend") or "ocrspace").strip().lower()
+        backend = str(raw.get("ocr_backend") or "auto").strip().lower()
         if backend in ("ocr.space", "cloud"):
             backend = "ocrspace"
         if backend == "paddle":
             backend = "easyocr"
         if backend not in ("auto", "windows", "tesseract", "ocrspace", "easyocr"):
-            backend = "ocrspace"
+            backend = "auto"
         ocr_eng = 3
         # Default True when key missing (previous builds always registered on enable).
         if "autostart_with_windows" in raw:
@@ -90,10 +91,20 @@ class BridgeSettings:
                 return None
             return v
 
+        # Soft-migrate: previous shipping "ocrspace" + fallback was Auto.
+        # Forced cloud-only stays ``ocrspace`` with allow_ocr_fallback=false.
+        if backend == "ocrspace" and bool(raw.get("allow_ocr_fallback", True)):
+            backend = "auto"
+
         # Soft-migrate: OCR.space settle path — never navigate the hangar.
-        if backend == "ocrspace":
+        if backend in ("ocrspace", "auto"):
             use_clip = False
-            allow_ocr = True
+            if backend == "auto":
+                allow_ocr = True
+            elif "allow_ocr_fallback" in raw:
+                allow_ocr = bool(raw.get("allow_ocr_fallback"))
+            else:
+                allow_ocr = False
         else:
             if "use_clipboard_results" in raw:
                 use_clip = bool(raw.get("use_clipboard_results"))
@@ -144,11 +155,16 @@ def load_settings() -> BridgeSettings:
             if not isinstance(raw, dict):
                 return BridgeSettings(language=detect_system_language())
             updated = BridgeSettings.from_dict(raw)
-            # Persist soft-migration (e.g. idle 30s → 120s) so next boots stay light.
-            if updated.to_dict().get("idle_poll_sec") != raw.get("idle_poll_sec"):
+            # Persist soft-migration so next boots keep the new defaults.
+            migrated = updated.to_dict()
+            if (
+                migrated.get("idle_poll_sec") != raw.get("idle_poll_sec")
+                or migrated.get("ocr_backend") != raw.get("ocr_backend")
+                or migrated.get("allow_ocr_fallback") != raw.get("allow_ocr_fallback")
+            ):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(
-                    json.dumps(updated.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                    json.dumps(migrated, indent=2, ensure_ascii=False) + "\n",
                     encoding="utf-8",
                 )
             return updated

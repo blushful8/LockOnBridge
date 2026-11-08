@@ -596,18 +596,19 @@ class BridgeApp:
         self.wt_language_combo.pack(side="right")
         self.wt_language_combo.bind("<<ComboboxSelected>>", self._on_wt_language_chosen)
 
-        ocr_labels = ("OCR.space", "EasyOCR")
         self._ship_ocr_by_label = {
-            "OCR.space": "ocrspace",
-            "EasyOCR": "easyocr",
+            t.ocr_mode_auto: "auto",
+            t.ocr_mode_ocrspace: "ocrspace",
+            t.ocr_mode_easyocr: "easyocr",
         }
+        ocr_labels = tuple(self._ship_ocr_by_label.keys())
         current_ocr = next(
             (
                 label
                 for label, code in self._ship_ocr_by_label.items()
                 if code == self.settings.ocr_backend
             ),
-            "OCR.space",
+            t.ocr_mode_auto,
         )
         self.ocr_choice_var = tk.StringVar(value=current_ocr)
         ocr_row = tk.Frame(self.root, bg=BG)
@@ -618,10 +619,24 @@ class BridgeApp:
             textvariable=self.ocr_choice_var,
             values=ocr_labels,
             state="readonly",
-            width=18,
+            width=28,
         )
         self.ocr_choice_combo.pack(side="right")
         self.ocr_choice_combo.bind("<<ComboboxSelected>>", self._on_ship_ocr_chosen)
+
+        self.ocr_active_var = tk.StringVar(value=t.ocr_active_idle)
+        self.ocr_active_label = tk.Label(
+            self.root,
+            textvariable=self.ocr_active_var,
+            font=("Segoe UI", 9),
+            fg=MUTED,
+            bg=BG,
+            anchor="e",
+        )
+        self.ocr_active_label.pack(fill="x", padx=20, pady=(0, 2))
+        self._ocr_active_token = getattr(self, "_ocr_active_token", 0) + 1
+        token = self._ocr_active_token
+        self.root.after(400, lambda: self._refresh_ocr_active_label(token))
 
         if self._dev_unlocked:
             self._quota_var = tk.StringVar(value="")
@@ -833,8 +848,46 @@ class BridgeApp:
 
     def _on_ship_ocr_chosen(self, _event=None) -> None:
         label = self.ocr_choice_var.get()
-        code = self._ship_ocr_by_label.get(label, "ocrspace")
+        code = self._ship_ocr_by_label.get(label, "auto")
         self._apply_ocr_choice(code)
+
+    def _ocr_choice_label(self, code: str) -> str:
+        return next(
+            (
+                name
+                for name, value in self._ship_ocr_by_label.items()
+                if value == code
+            ),
+            self.strings.ocr_mode_auto,
+        )
+
+    def _update_ocr_active_label(self) -> None:
+        if not hasattr(self, "ocr_active_var"):
+            return
+        try:
+            from .ocr_active import last_ocr_provider, provider_label
+
+            state = last_ocr_provider()
+            engine = provider_label(str(state.get("provider") or ""))
+            reason = str(state.get("reason") or "")
+            if not engine:
+                text = self.strings.ocr_active_idle
+            elif reason == "fallback":
+                text = self.strings.ocr_active_fallback.format(engine=engine)
+            else:
+                text = self.strings.ocr_active_now.format(engine=engine)
+            self.ocr_active_var.set(text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _refresh_ocr_active_label(self, token: int | None = None) -> None:
+        if self._closing:
+            return
+        if token is not None and token != getattr(self, "_ocr_active_token", token):
+            return
+        self._update_ocr_active_label()
+        nxt = token if token is not None else getattr(self, "_ocr_active_token", 0)
+        self.root.after(1000, lambda: self._refresh_ocr_active_label(nxt))
 
     def _apply_ocr_choice(self, code: str) -> None:
         from .local_ocr import begin_install, installation_state
@@ -845,31 +898,52 @@ class BridgeApp:
 
         def show_choice(active: str) -> None:
             if hasattr(self, "ocr_choice_var"):
-                self.ocr_choice_var.set(next(
-                    (name for name, value in self._ship_ocr_by_label.items() if value == active),
-                    "OCR.space",
-                ))
-            if hasattr(self, "ocr_backend_var"):
+                self.ocr_choice_var.set(self._ocr_choice_label(active))
+            if hasattr(self, "ocr_backend_var") and active in (
+                "ocrspace",
+                "easyocr",
+                "auto",
+            ):
+                # Dev radio still uses legacy labels; map auto → OCR.space entry.
+                mapped = "ocrspace" if active == "auto" else active
                 self.ocr_backend_var.set(next(
-                    (name for name, value in self._ocr_backend_by_label.items() if value == active),
+                    (
+                        name
+                        for name, value in self._ocr_backend_by_label.items()
+                        if value == mapped
+                    ),
                     "OCR.space",
                 ))
 
+        def persist(active: str) -> None:
+            if active == "auto":
+                self.settings = update_settings(
+                    ocr_backend="auto",
+                    allow_ocr_fallback=True,
+                )
+            elif active == "ocrspace":
+                self.settings = update_settings(
+                    ocr_backend="ocrspace",
+                    allow_ocr_fallback=False,
+                )
+            else:
+                self.settings = update_settings(ocr_backend=active)
+            show_choice(active)
+            self._update_ocr_active_label()
+
         if code != "easyocr":
-            self.settings = update_settings(ocr_backend=code)
-            show_choice(code)
+            persist(code)
             return
 
         # Keep cloud OCR operational until the local engine and its models work.
         previous = self.settings.ocr_backend
         if previous == "easyocr":
-            previous = "ocrspace"
-            self.settings = update_settings(ocr_backend=previous)
+            previous = "auto"
+            persist(previous)
         show_choice(previous)
         state = begin_install(code)
         if state == "ready":
-            self.settings = update_settings(ocr_backend=code)
-            show_choice(code)
+            persist(code)
             return
         self.status_var.set(self.strings.easyocr_preparing)
 
@@ -880,8 +954,7 @@ class BridgeApp:
             if state == "installing":
                 self.root.after(500, poll)
             elif state == "ready":
-                self.settings = update_settings(ocr_backend=code)
-                show_choice(code)
+                persist(code)
                 self.status_var.set(self.strings.easyocr_ready)
             else:
                 show_choice(previous)

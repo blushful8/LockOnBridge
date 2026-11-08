@@ -242,6 +242,7 @@ def _report_from_json(raw: Any) -> BattleReport | None:
             id=report_id,
             provisional=provisional,
             session_id=str(raw.get("sessionId") or ""),
+            miss_reason=str(raw.get("missReason") or ""),
         )
     except (TypeError, ValueError):
         return None
