@@ -24,12 +24,23 @@ from .paths import data_root, log_dir
 
 log = logging.getLogger("lockon_bridge.alert_mail")
 
-_DEFAULT_TO = "dimka.tyutyunnik@gmail.com"
+# XOR-obfuscated default recipient (not credentials). Plaintext stays out of source/git.
+_ALERT_TO_KEY = b"LockOnBridge.alert-to.v1"
+_ALERT_TO_BLOB = bytes.fromhex(
+    "28060e002e40360b1c101e10400f050e32134015064258522302"
+)
 _SECRET_NAME = "alert_mail.bin"
 _SECRET_ENTROPY = b"LockOnBridge.alert-mail.v1"
 _MIN_INTERVAL_SEC = 15 * 60
 _lock = threading.Lock()
 _last_sent: dict[str, float] = {}
+
+
+def default_alert_to() -> str:
+    """Decode the built-in alert recipient at runtime."""
+    key = _ALERT_TO_KEY
+    blob = _ALERT_TO_BLOB
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(blob)).decode("ascii")
 
 
 def _secret_path() -> Path:
@@ -88,14 +99,15 @@ def store_smtp_config(
     *,
     user: str,
     password: str,
-    to_addr: str = _DEFAULT_TO,
+    to_addr: str | None = None,
     host: str = "smtp.gmail.com",
     port: int = 587,
 ) -> None:
     """Persist Gmail (or other) SMTP settings encrypted for this Windows user."""
     user = (user or "").strip()
     password = (password or "").strip()
-    to_addr = (to_addr or _DEFAULT_TO).strip()
+    fallback = default_alert_to()
+    to_addr = (to_addr or fallback).strip() or fallback
     if not user or not password:
         raise ValueError("SMTP user and app password are required")
     payload = {
@@ -104,7 +116,7 @@ def store_smtp_config(
         "port": int(port) or 587,
         "user": user,
         "password": password,
-        "to": to_addr or _DEFAULT_TO,
+        "to": to_addr,
     }
     path = _secret_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +144,7 @@ def load_smtp_config() -> dict[str, Any] | None:
         "port": int(raw.get("port") or 587),
         "user": user,
         "password": password,
-        "to": str(raw.get("to") or _DEFAULT_TO).strip() or _DEFAULT_TO,
+        "to": str(raw.get("to") or default_alert_to()).strip() or default_alert_to(),
     }
 
 
@@ -244,7 +256,7 @@ def notify_failure(kind: str, detail: str, *, force: bool = False) -> None:
             log.warning(
                 "alert mail skipped — configure Gmail App Password "
                 "(recipient %s)",
-                _DEFAULT_TO,
+                default_alert_to(),
             )
             return
         try:
