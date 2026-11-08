@@ -624,7 +624,8 @@ class BridgeApp:
         self.ocr_choice_combo.pack(side="right")
         self.ocr_choice_combo.bind("<<ComboboxSelected>>", self._on_ship_ocr_chosen)
 
-        self.ocr_active_var = tk.StringVar(value=t.ocr_active_idle)
+        # Shown only after a real OCR read; idle status is already on the top badge.
+        self.ocr_active_var = tk.StringVar(value="")
         self.ocr_active_label = tk.Label(
             self.root,
             textvariable=self.ocr_active_var,
@@ -633,7 +634,6 @@ class BridgeApp:
             bg=BG,
             anchor="e",
         )
-        self.ocr_active_label.pack(fill="x", padx=20, pady=(0, 2))
         self._ocr_active_token = getattr(self, "_ocr_active_token", 0) + 1
         token = self._ocr_active_token
         self.root.after(400, lambda: self._refresh_ocr_active_label(token))
@@ -862,7 +862,7 @@ class BridgeApp:
         )
 
     def _update_ocr_active_label(self) -> None:
-        if not hasattr(self, "ocr_active_var"):
+        if not hasattr(self, "ocr_active_var") or not hasattr(self, "ocr_active_label"):
             return
         try:
             from .ocr_active import last_ocr_provider, provider_label
@@ -871,12 +871,16 @@ class BridgeApp:
             engine = provider_label(str(state.get("provider") or ""))
             reason = str(state.get("reason") or "")
             if not engine:
-                text = self.strings.ocr_active_idle
-            elif reason == "fallback":
+                self.ocr_active_var.set("")
+                self.ocr_active_label.pack_forget()
+                return
+            if reason == "fallback":
                 text = self.strings.ocr_active_fallback.format(engine=engine)
             else:
                 text = self.strings.ocr_active_now.format(engine=engine)
             self.ocr_active_var.set(text)
+            if not self.ocr_active_label.winfo_ismapped():
+                self.ocr_active_label.pack(fill="x", padx=20, pady=(0, 2))
         except Exception:  # noqa: BLE001
             pass
 

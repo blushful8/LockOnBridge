@@ -27,7 +27,6 @@ class Strings:
     ocr_mode_auto: str
     ocr_mode_ocrspace: str
     ocr_mode_easyocr: str
-    ocr_active_idle: str
     ocr_active_now: str
     ocr_active_fallback: str
     setup_tesseract: str
@@ -154,7 +153,6 @@ EN = Strings(
     ocr_mode_auto="Auto (OCR.space → EasyOCR)",
     ocr_mode_ocrspace="OCR.space only",
     ocr_mode_easyocr="EasyOCR only",
-    ocr_active_idle="Active: waiting for a battle",
     ocr_active_now="Active now: {engine}",
     ocr_active_fallback="Active now: {engine} (fallback)",
     setup_tesseract="Setup Tesseract OCR…",
@@ -355,7 +353,6 @@ UK = Strings(
     ocr_mode_auto="Авто (OCR.space → EasyOCR)",
     ocr_mode_ocrspace="Лише OCR.space",
     ocr_mode_easyocr="Лише EasyOCR",
-    ocr_active_idle="Зараз: очікує бій",
     ocr_active_now="Зараз працює: {engine}",
     ocr_active_fallback="Зараз працює: {engine} (запасний)",
     setup_tesseract="Налаштувати Tesseract OCR…",
@@ -558,7 +555,6 @@ RU = Strings(
     ocr_mode_auto="Авто (OCR.space → EasyOCR)",
     ocr_mode_ocrspace="Только OCR.space",
     ocr_mode_easyocr="Только EasyOCR",
-    ocr_active_idle="Сейчас: ждёт бой",
     ocr_active_now="Сейчас работает: {engine}",
     ocr_active_fallback="Сейчас работает: {engine} (запасной)",
     setup_tesseract="Настроить Tesseract OCR…",
