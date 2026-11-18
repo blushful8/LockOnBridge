@@ -302,6 +302,7 @@ def prep_png_for_ocr_space(png: bytes) -> bytes:
         im = Image.open(BytesIO(png)).convert("RGB")
     except Exception:  # noqa: BLE001
         return png
+    source_size = im.size
     # Upscale small/medium crops so grouped thousands stay separable.
     if max(im.size) < 2400:
         im = im.resize(
@@ -311,9 +312,22 @@ def prep_png_for_ocr_space(png: bytes) -> bytes:
     gray = ImageOps.grayscale(im)
     inv = ImageOps.invert(gray)
     inv = ImageEnhance.Contrast(inv).enhance(2.0)
-    out = BytesIO()
-    inv.convert("RGB").save(out, format="PNG", optimize=True)
-    return out.getvalue()
+    max_bytes = 1_500_000  # OCR.space Free's 1.5 MB file limit.
+    while True:
+        out = BytesIO()
+        inv.convert("RGB").save(out, format="PNG", optimize=True)
+        result = out.getvalue()
+        if len(result) <= max_bytes:
+            return result
+        width, height = inv.size
+        if width > source_size[0] or height > source_size[1]:
+            resized = (min(width, source_size[0]), min(height, source_size[1]))
+        else:
+            scale = max(0.5, min(0.95, (max_bytes / len(result)) ** 0.5 * 0.98))
+            resized = (max(1, int(width * scale)), max(1, int(height * scale)))
+        if resized == inv.size:
+            return result
+        inv = inv.resize(resized, Image.Resampling.LANCZOS)
 
 
 def ocr_space_png(

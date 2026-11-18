@@ -156,6 +156,7 @@ class BridgeApp:
         self.enabled_var = tk.BooleanVar(value=self.settings.enabled)
         self.port_var = tk.StringVar(value=str(self.settings.port))
         self.status_var = tk.StringVar(value="…")
+        self.status_var.trace_add("write", self._sync_status_label)
         self.badge_var = tk.StringVar(value="")
         self.language_var = tk.StringVar(value=self._language_label(self.settings.language))
         self._wt_code_by_label: dict[str, str] = {}
@@ -321,6 +322,14 @@ class BridgeApp:
         except Exception as exc:  # noqa: BLE001
             log.debug("window icon skipped: %s", exc)
 
+    def _sync_status_label(self, *_args) -> None:
+        if not hasattr(self, "status_label"):
+            return
+        if self.status_var.get() == self.strings.status_enabled_waiting:
+            self.status_label.pack_forget()
+        elif self.status_label.winfo_manager() != "pack":
+            self.status_label.pack(fill="x", anchor="w", padx=16, pady=(12, 12))
+
     def _wrapped_labels(self) -> list[tk.Label]:
         labels = [
             self.status_label,
@@ -485,7 +494,7 @@ class BridgeApp:
             justify="left",
             anchor="w",
         )
-        self.status_label.pack(fill="x", anchor="w", padx=16, pady=(12, 12))
+        self._sync_status_label()
 
         self.phone_banner = tk.Label(
             card,

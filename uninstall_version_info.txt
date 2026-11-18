@@ -20,12 +20,12 @@ VSVersionInfo(
           [
             StringStruct("CompanyName", "LockOn"),
             StringStruct("FileDescription", "LockOn Bridge Uninstaller"),
-            StringStruct("FileVersion", "0.5.114"),
+            StringStruct("FileVersion", "0.5.115"),
             StringStruct("InternalName", "uninstall"),
             StringStruct("LegalCopyright", "Copyright (c) LockOn contributors"),
             StringStruct("OriginalFilename", "uninstall.exe"),
             StringStruct("ProductName", "LockOn Bridge"),
-            StringStruct("ProductVersion", "0.5.114"),
+            StringStruct("ProductVersion", "0.5.115"),
           ],
         )
       ]
